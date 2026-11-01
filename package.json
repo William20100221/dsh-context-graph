@@ -1,0 +1,45 @@
+{
+  "name": "dsh-context-graph",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness plugin: remembers past conversations as a small graph so the model reads short gists instead of old messages and recalls verbatim text on demand",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./graph": "./graph.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "graph.js",
+    "store.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --import ./test/resolve-dsh.mjs --test test/graph.test.js test/plugin.test.js"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "deepseek",
+    "memory",
+    "context",
+    "knowledge-graph"
+  ],
+  "license": "MIT",
+  "engines": {
+    "dsh": ">=0.2.1-rc.5 <0.3.0",
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": ">=0.2.1-rc.5 <0.3.0",
+    "@deepseek-ai/dsh-tools": ">=0.2.1-rc.5 <0.3.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

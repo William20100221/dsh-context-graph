@@ -1,0 +1,15 @@
+# Mounted at the profile root so the recall tool, the matcher and the builder are available to
+# every agent. Every value below is the default; restate the whole config block when you change one.
+- insert:
+    - id: context-graph
+      name: dsh-context-graph
+      config:
+        dir: .context-graph        # relative to the agent workspace, or an absolute path
+        buildEveryTurns: 4         # index after this many new human turns
+        buildMinChars: 400         # ...and at least this much new text
+        maxHits: 5                 # nodes shown per human turn
+        inlineMaxChars: 1200       # one dominant hit this short is shown verbatim, no recall needed
+        surfaceMaxNodes: 40        # god nodes listed at the start of a session
+        builderMaxTokens: 2048
+        provider: ''               # empty: reuse the conversation's routed provider/model
+        model: ''
