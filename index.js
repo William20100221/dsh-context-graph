@@ -382,17 +382,19 @@ export function apply(ctx, config = {}) {
                 return fold(agent, { force: true })
               })
               if (result.status !== 'folded') return { kind: 'error', text: `Not folded: ${result.reason}` }
-              return { kind: 'success', text: `Folded turns t1-t${result.turns}: ~${result.before} tokens replaced by a ~${result.after}-token table of contents.` }
+              return { kind: 'success', text: `Folded t1-t${result.turns} · ~${result.before} → ~${result.after} tokens per request\nThe model now sees a table of contents for these turns and calls recall for exact text.` }
             }
             if (sub === 'build') {
               const result = await agent.runMaintenance(() => build(agent, { force: true }))
               if (result.status !== 'built') return { kind: 'error', text: `Build ${result.status}: ${result.reason ?? ''}`.trim() }
-              return { kind: 'success', text: `Indexed ${result.nodes} nodes (${result.newNodes} new); graph now ${result.totalNodes} nodes, ${result.edges} edges at ${result.dir}` }
+              return { kind: 'success', text: `${result.nodes} topics indexed (${result.newNodes} new) · graph has ${result.totalNodes} topics\nLinks: ${result.edges}\nFolder: ${result.dir}` }
             }
             const graph = await getGraph(dirFor(agent))
             if (sub === 'find') {
               const hits = matchNodes(graph, rest.join(' '), { max: cfg.maxHits })
-              return { kind: 'success', text: hits.length ? renderHits(graph, hits) : 'No matching nodes.' }
+              if (hits.length === 0) return { kind: 'success', text: 'No matching topics' }
+              const lines = hits.map(({ id, node }) => `${id} ${node.label}: ${node.gist}`)
+              return { kind: 'success', text: [`${hits.length} matching ${hits.length === 1 ? 'topic' : 'topics'}`, ...lines].join('\n') }
             }
             if (sub !== 'stats') return { kind: 'error', text: 'Usage: /context-graph [stats|build|fold|find <words>]' }
             const m = meter.main
@@ -403,9 +405,10 @@ export function apply(ctx, config = {}) {
             return {
               kind: 'success',
               text: [
+                `${Object.keys(graph.nodes).length} topics · ${graph.edges.length} links · ${pending} turns waiting to be indexed${updates.current() ? ' · update available' : ''}`,
                 `Version ${version}: ${updates.current() ?? 'no newer version found'}`,
-                `Graph: ${Object.keys(graph.nodes).length} nodes, ${graph.edges.length} edges (${dirFor(agent)})`,
-                `This chat: ${pending} human turns not indexed yet; auto-index at ${cfg.buildEveryTurns}, or run /context-graph build now.`,
+                `Graph folder: ${dirFor(agent)}`,
+                `This chat indexes itself every ${cfg.buildEveryTurns} turns; /context-graph build indexes it now.`,
                 'Counters below are since the app started:',
                 `Builds: ${meter.builds}; builder tokens in/out: ${meter.builder.input + meter.builder.cacheRead + meter.builder.cacheWrite}/${meter.builder.output}`,
                 `Folds: ${meter.folds}; ~${meter.foldSaved} input tokens removed from every later request`,

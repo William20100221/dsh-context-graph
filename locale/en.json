@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Context Graph",
+    "description": "Remembers past chats as a small topic graph and folds old turns of a long chat into a table of contents, so fewer input tokens are sent. Exact text is recalled on demand."
+  }
+}

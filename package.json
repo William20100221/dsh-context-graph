@@ -1,12 +1,15 @@
 {
   "name": "dsh-context-graph",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "DeepSeek Harness plugin: remembers past conversations as a small graph and folds old turns of a long chat into a table of contents, so fewer input tokens are sent; exact text is recalled on demand",
+  "icon": "./icon.svg",
   "type": "module",
   "main": "index.js",
   "exports": {
     ".": "./index.js",
+    "./client": "./lib/client.js",
     "./graph": "./graph.js",
+    "./locale/*.json": "./locale/*.json",
     "./package.json": "./package.json"
   },
   "files": [
@@ -14,12 +17,16 @@
     "graph.js",
     "store.js",
     "update.js",
+    "lib/client.js",
+    "locale",
+    "icon.svg",
     "cordis.patch.yml",
     "README.md",
+    "README.zh.md",
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --import ./test/resolve-dsh.mjs --test test/graph.test.js test/fold.test.js test/update.test.js test/plugin.test.js"
+    "test": "node --import ./test/resolve-dsh.mjs --test test/graph.test.js test/fold.test.js test/update.test.js test/client.test.js test/plugin.test.js"
   },
   "keywords": [
     "dsh-plugin",
@@ -49,6 +56,13 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-locale"
+      ]
     }
   }
 }

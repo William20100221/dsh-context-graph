@@ -83,7 +83,7 @@ test('plugin: build, inject for a later session, recall, meter', { skip }, async
     const agentA = { options: { cwd }, session: sessionA, runMaintenance: (fn) => fn() }
     const built = await ctx.commands[0].handler({ rawInput: 'build', agent: agentA })
     assert.equal(built.kind, 'success', built.text)
-    assert.match(built.text, /Indexed 1 nodes \(1 new\)/)
+    assert.match(built.text, /^1 topics indexed \(1 new\)/)
     assert.equal(llm.calls.length, 1)
     assert.equal(llm.calls[0].purpose, 'context-graph')
     assert.equal(llm.calls[0].model, 'deepseek-chat')
@@ -134,12 +134,12 @@ test('plugin: build, inject for a later session, recall, meter', { skip }, async
     for await (const c of ctx.listeners['llm/stream']({ purpose: undefined }, () => (async function* () { yield* chunks })())) out.push(c)
     assert.deepEqual(out, chunks)
     const stats = await ctx.commands[0].handler({ rawInput: '', agent: agentB })
-    assert.match(stats.text, /Graph: 1 nodes, 0 edges/)
-    assert.match(stats.text, /This chat: 0 human turns not indexed yet/)
+    assert.match(stats.text, /^1 topics · 0 links/)
+    assert.match(stats.text, /0 turns waiting to be indexed/)
     assert.match(stats.text, /Main requests: 1; input 10 uncached \+ 90 cache-read \+ 0 cache-write; cache-hit 90%/)
     assert.match(stats.text, /recalls: 1/)
     const find = await ctx.commands[0].handler({ rawInput: 'find gpg', agent: agentB })
-    assert.match(find.text, /- n1 commit signing/)
+    assert.match(find.text, /n1 commit signing: /)
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }
@@ -154,8 +154,8 @@ test('plugin: builder failures are contained', { skip }, async () => {
     const session = fakeSession('sC', cwd, [user('hello there, this is long enough to matter for the build threshold')])
     const agent = { options: { cwd }, session, runMaintenance: (fn) => fn() }
     const skipped = await ctx.commands[0].handler({ rawInput: 'stats', agent })
-    assert.match(skipped.text, /Graph: 0 nodes/)
-    assert.match(skipped.text, /This chat: 1 human turns not indexed yet; auto-index at 4/)
+    assert.match(skipped.text, /^0 topics/)
+    assert.match(skipped.text, /1 turns waiting to be indexed/)
     const failed = await ctx.commands[0].handler({ rawInput: 'build', agent })
     assert.equal(failed.kind, 'error')
     assert.match(failed.text, /not the expected JSON/)
@@ -248,7 +248,7 @@ test('plugin: an available update is mentioned once per app start and in stats',
     const second = await ctx.listeners['agent/pre-step']({ agent, messages: ask.messages }, async () => ask)
     assert.equal(second.messages.length, 1, 'only once')
     const stats = await ctx.commands[0].handler({ rawInput: 'stats', agent })
-    assert.match(stats.text, /^Version \d+\.\d+\.\d+: dsh-context-graph 9\.9\.9 is available/)
+    assert.match(stats.text, /update available\nVersion \d+\.\d+\.\d+: dsh-context-graph 9\.9\.9 is available/)
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }

@@ -12,8 +12,16 @@ turn (t1, t2, ...). The model follows that table to the exact part it needs with
 or `recall("n12")`. Your newest turns stay word for word. Nothing is deleted: the full turns stay
 in the session log and in the chat window.
 
-Status: v0.2.0. Installs and loads in the dsh desktop app; folding and indexing are not yet
-verified with a live model. 18 tests pass against the published dsh packages.
+**Looks like dsh (v0.3.0).** The Plugins page shows the plugin's own icon in dsh's icon style, a
+title and description in English or Chinese (上下文图谱), and a Chinese detail page. In chat,
+`/context-graph` results appear in dsh's own command card: a titled row with a one-line summary
+that expands to the details.
+
+Status: v0.3.0. Installs and loads in the dsh desktop app (dsh 0.2.1-rc.5); folding and indexing
+are not yet verified with a live model. 28 tests pass against the published dsh packages.
+
+Using Claude Code instead? The Claude version is a separate plugin built for Claude's app:
+[claude-context-graph](https://github.com/William20100221/claude-context-graph).
 
 ## What it does
 
@@ -99,6 +107,10 @@ Defaults live in [cordis.patch.yml](cordis.patch.yml). A patch replaces the row'
 index.js          dsh plugin: builder, matcher, recall tool, meter, /context-graph command
 graph.js          pure core: tokenize, match, merge, render, builder prompt and parser
 store.js          graph.json and src/<id>.md read/write
+update.js         once-per-start check of npm for a newer version
+lib/client.js     dsh chat card for /context-graph (DisclosureRow, en/zh titles)
+icon.svg          Plugins page icon in dsh's built-in icon style
+locale/           Plugins page title and description (en, zh); zh links README.zh.md
 cordis.patch.yml  mounts the plugin at the profile root with default config
 test/             node --test; plugin.test.js needs DSH_NODE_MODULES (see below)
 docs/             design
