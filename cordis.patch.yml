@@ -10,7 +10,7 @@
         maxHits: 5                 # nodes shown per human turn
         inlineMaxChars: 1200       # one dominant hit this short is shown verbatim, no recall needed
         surfaceMaxNodes: 40        # god nodes listed at the start of a session
-        builderMaxTokens: 2048
+        builderMaxTokens: 8192     # thinking models spend part of this on reasoning
         provider: ''               # empty: reuse the conversation's routed provider/model
         model: ''
         fold: true                 # replace old turns of the current chat with a table of contents

@@ -13,7 +13,7 @@
  */
 
 import { isAbsolute, join } from 'node:path'
-import { stat } from 'node:fs/promises'
+import { mkdir, stat, writeFile } from 'node:fs/promises'
 
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -37,7 +37,7 @@ const DEFAULTS = {
   maxHits: 5,
   inlineMaxChars: 1200,
   surfaceMaxNodes: 40,
-  builderMaxTokens: 2048,
+  builderMaxTokens: 8192,
   provider: '',
   model: '',
   fold: true,
@@ -135,8 +135,20 @@ export function apply(ctx, config = {}) {
       })) assembler.push(chunk)
       const finish = assembler.finish
       if (finish?.kind === 'error' || finish?.kind === 'aborted') throw new Error(finish.failure?.message ?? finish.kind)
-      const delta = parseBuilderOutput(textOf(assembler.blocks()))
-      if (!delta) return { status: 'failed', reason: 'builder output was not the expected JSON' }
+      const blocks = assembler.blocks()
+      const answer = textOf(blocks)
+      // Some thinking models put everything, JSON included, into reasoning blocks.
+      const reasoning = blocks.filter((b) => b?.type === 'reasoning').map((b) => b.text).join('\n')
+      const delta = parseBuilderOutput(answer) ?? parseBuilderOutput(reasoning)
+      if (!delta || (delta.nodes.length === 0 && finish?.kind === 'max-tokens')) {
+        const saved = join(dir, 'last-builder-output.txt')
+        await mkdir(dir, { recursive: true })
+        await writeFile(saved, `finish: ${finish?.kind}\n\n--- answer ---\n${answer}\n\n--- reasoning ---\n${reasoning}\n`, 'utf8')
+        const why = finish?.kind === 'max-tokens'
+          ? `the model ran out of output tokens (builderMaxTokens ${cfg.builderMaxTokens}) before finishing`
+          : 'builder output was not the expected JSON'
+        return { status: 'failed', reason: `${why}; raw output saved to ${saved}` }
+      }
       // Reversibility rule: a node is written only when it cites text we can store verbatim.
       delta.nodes = delta.nodes.filter((n) => n.msgs.some((i) => span.messages[i]))
       const now = new Date().toISOString()

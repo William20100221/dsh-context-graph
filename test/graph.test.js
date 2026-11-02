@@ -143,3 +143,14 @@ test('store round-trips graph and source text', async () => {
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('parseBuilderOutput survives thinking text and output cut off mid-way', () => {
+  const thinking = '<think>Maybe {"nodes": [] } ... let me think {about} it</think>\n{"nodes":[{"id":null,"label":"a","gist":"g","msgs":[0]}],"edges":[]}'
+  assert.deepEqual(parseBuilderOutput(thinking).nodes.map((n) => n.label), ['a'])
+  const unclosed = '<think>still thinking {"nodes": [{"label":"fake","msgs":[0]}]'
+  assert.equal(parseBuilderOutput(unclosed), undefined, 'an unfinished think block is not the answer')
+  const truncated = '```json\n{"nodes":[{"id":null,"label":"one","gist":"has } and \\" inside","msgs":[0]},{"id":null,"label":"two","msgs":[1]},{"id":null,"label":"thr'
+  assert.deepEqual(parseBuilderOutput(truncated).nodes.map((n) => n.label), ['one', 'two'], 'complete nodes are kept')
+  const withEdges = '{"nodes":[{"label":"x","msgs":[0]}],"edges":[["x","n1","uses"],["bad"],["y", "x", "relates-to"]]}'
+  assert.deepEqual(parseBuilderOutput(withEdges).edges, [['x', 'n1', 'uses'], ['y', 'x', 'relates-to']])
+})

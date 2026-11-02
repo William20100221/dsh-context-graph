@@ -1,6 +1,6 @@
 {
   "name": "dsh-context-graph",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "DeepSeek Harness plugin: remembers past conversations as a small graph and folds old turns of a long chat into a table of contents, so fewer input tokens are sent; exact text is recalled on demand",
   "type": "module",
   "main": "index.js",

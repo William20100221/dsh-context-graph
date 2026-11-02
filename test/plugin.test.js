@@ -158,6 +158,7 @@ test('plugin: builder failures are contained', { skip }, async () => {
     const failed = await ctx.commands[0].handler({ rawInput: 'build', agent })
     assert.equal(failed.kind, 'error')
     assert.match(failed.text, /not the expected JSON/)
+    assert.match(await readFile(join(cwd, '.context-graph', 'last-builder-output.txt'), 'utf8'), /--- answer ---\nnot json at all/)
     // turn-stopping never throws and never blocks
     assert.equal(ctx.listeners['agent/turn-stopping']({ agent, turn: 1 }), undefined)
   } finally {

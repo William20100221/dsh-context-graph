@@ -85,7 +85,7 @@ Defaults live in [cordis.patch.yml](cordis.patch.yml). A patch replaces the row'
 | `maxHits` | `5` | Nodes shown per human turn |
 | `inlineMaxChars` | `1200` | A single dominant hit this short is shown verbatim |
 | `surfaceMaxNodes` | `40` | Nodes listed at the start of a session |
-| `builderMaxTokens` | `2048` | Output cap for the indexing call |
+| `builderMaxTokens` | `8192` | Output cap for the indexing call; thinking models spend part of it reasoning |
 | `provider`, `model` | `''` | Empty: reuse the conversation's routed provider and model |
 | `fold` | `true` | Fold old turns of the current chat into a table of contents |
 | `foldAtTokens` | `24000` | Fold once the foldable part costs this much per request |

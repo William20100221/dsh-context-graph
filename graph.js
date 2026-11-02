@@ -187,18 +187,48 @@ export function builderInstruction(graph) {
   ].join('\n')
 }
 
-/** Tolerant JSON extraction: fences, leading prose, trailing commas. `undefined` when nothing usable. */
+/** Complete top-level `{...}` objects inside the array that opens at `open`; an unfinished last one is dropped. */
+function objectsInArray(text, open) {
+  const out = []
+  let depth = 0
+  let start = -1
+  let inString = false
+  for (let i = open + 1; i < text.length; i++) {
+    const ch = text[i]
+    if (inString) {
+      if (ch === '\\') i++
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') inString = true
+    else if (ch === '{' || ch === '[') { if (depth++ === 0 && ch === '{') start = i }
+    else if (ch === '}' || ch === ']') {
+      if (depth === 0) break
+      if (--depth === 0 && ch === '}' && start >= 0) { out.push(text.slice(start, i + 1)); start = -1 }
+    }
+  }
+  return out
+}
+
+/**
+ * Tolerant extraction of the builder's JSON. Handles code fences, prose around it, `<think>` blocks,
+ * trailing commas, and output cut off mid-way (every complete node object is kept).
+ * `undefined` when there is no `"nodes"` array at all.
+ */
 export function parseBuilderOutput(text) {
-  const start = text.indexOf('{')
-  const end = text.lastIndexOf('}')
-  if (start < 0 || end <= start) return undefined
-  const body = text.slice(start, end + 1).replace(/,\s*([}\]])/g, '$1')
-  let parsed
-  try { parsed = JSON.parse(body) } catch { return undefined }
-  if (!parsed || !Array.isArray(parsed.nodes)) return undefined
-  const nodes = parsed.nodes.filter((n) => n && typeof n.label === 'string' && n.label.trim() && Array.isArray(n.msgs) && n.msgs.length > 0)
-  const edges = Array.isArray(parsed.edges) ? parsed.edges.filter((e) => Array.isArray(e) && e.length === 3 && e.every((x) => typeof x === 'string')) : []
-  return { nodes, edges }
+  const clean = String(text ?? '').replace(/<think>[\s\S]*?(?:<\/think>|$)/g, '')
+  const at = clean.search(/"nodes"\s*:\s*\[/)
+  if (at < 0) return undefined
+  const nodes = []
+  for (const raw of objectsInArray(clean, clean.indexOf('[', at))) {
+    try { nodes.push(JSON.parse(raw.replace(/,\s*([}\]])/g, '$1'))) } catch { /* skip a malformed node */ }
+  }
+  const edgesAt = clean.search(/"edges"\s*:/)
+  const edges = edgesAt < 0 ? [] : [...clean.slice(edgesAt).matchAll(/\[\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\]/g)].map((m) => [m[1], m[2], m[3]])
+  return {
+    nodes: nodes.filter((n) => n && typeof n.label === 'string' && n.label.trim() && Array.isArray(n.msgs) && n.msgs.length > 0),
+    edges
+  }
 }
 
 /**
