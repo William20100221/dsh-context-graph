@@ -29,6 +29,14 @@
     "knowledge-graph"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/William20100221/dsh-context-graph.git"
+  },
+  "homepage": "https://github.com/William20100221/dsh-context-graph#readme",
+  "bugs": {
+    "url": "https://github.com/William20100221/dsh-context-graph/issues"
+  },
   "engines": {
     "dsh": ">=0.2.1-rc.5 <0.3.0",
     "node": ">=20"

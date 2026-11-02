@@ -44,22 +44,33 @@ economics make cross-session memory the main win, is in [docs/core-design.md](do
 
 ## Install
 
-Desktop app: **Plugins → Add plugin**, official npm registry, enter
-`github:William20100221/dsh-context-graph`, install, restart if asked.
+Desktop app: **Plugins → Add plugin**, official npm registry, enter `dsh-context-graph`,
+install, then fully restart the app so the `/context-graph` command appears.
 
-Command line:
-
-```sh
-dsh plugin --profile web add github:William20100221/dsh-context-graph
-```
-
-Or a local checkout:
+Command line (use the profile your app runs; the desktop app uses `desktop`):
 
 ```sh
-dsh plugin --profile web add /absolute/path/to/dsh-context-graph
+dsh plugin --profile desktop add dsh-context-graph
 ```
 
-Remove with `dsh plugin --profile web remove dsh-context-graph`.
+**Updates.** Installed from npm, the plugin gets dsh's built-in updater: on the Plugins page
+press **Refresh**, and when a newer version is published an **Update** button appears on the
+plugin. Restart the app after updating. A `github:` install is not eligible for this; remove
+it and add `dsh-context-graph` from npm once.
+
+Remove with `dsh plugin --profile desktop remove dsh-context-graph`.
+
+## Releasing a new version
+
+```sh
+npm test
+npm version patch
+npm publish
+git push --follow-tags
+```
+
+`npm version patch` bumps the version, commits and tags it. `npm publish` needs `npm login`
+once. Users then see the new version after pressing Refresh on the Plugins page.
 
 ## Configuration
 
