@@ -163,3 +163,70 @@ test('plugin: builder failures are contained', { skip }, async () => {
     await rm(cwd, { recursive: true, force: true })
   }
 })
+
+function liveSession(id, cwd, events) {
+  const log = [...events]
+  const surface = { nodes: log.map((_, i) => i), replaceGeneration: 0 }
+  return {
+    id, log, surface,
+    header: { id, cwd },
+    eventAt: (seq) => log[seq],
+    requestHeader: () => ({ config: { provider: 'deepseek', model: 'deepseek-chat' } }),
+    append(type, data, intent) {
+      const seq = log.push({ type, data }) - 1
+      if (intent?.surfaceOp?.op === 'replace') {
+        const a = surface.nodes.indexOf(intent.surfaceOp.startSeq)
+        const b = surface.nodes.indexOf(intent.surfaceOp.endSeq)
+        surface.nodes = [...surface.nodes.slice(0, a), seq, ...surface.nodes.slice(b + 1)]
+        surface.replaceGeneration++
+      } else surface.nodes = [...surface.nodes, seq]
+      return { seq }
+    }
+  }
+}
+
+test('plugin: folds old turns into a table of contents, recall reads them back', { skip }, async () => {
+  const { apply } = await import('../index.js')
+  const cwd = await mkdtemp(join(tmpdir(), 'context-graph-fold-'))
+  try {
+    const ctx = fakeCtx(fakeLlm(BUILDER_REPLY))
+    apply(ctx, { foldAtTokens: 500, keepTurns: 1 })
+    const toolCall = { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'reading' }, { type: 'tool-call', id: 'c1', name: 'read', arguments: '{}' }] } } }
+    const toolResult = { type: 'tool/result', data: { message: { content: [{ type: 'text', text: 'LOG '.repeat(2000) }] } } }
+    const session = liveSession('sF', cwd, [
+      { type: 'system/message', data: {} },
+      { type: 'user/message', data: { source: { kind: 'skill-catalog' }, content: [{ type: 'text', text: 'SKILL LIST' }] } },
+      user('We decided to sign commits with the SSH key id_ed25519_signing'), toolCall, toolResult, assistant('Done, signing configured.'),
+      user('now check the build'), assistant('build is green')
+    ])
+    const agent = { options: { cwd }, session, runMaintenance: (fn) => fn() }
+    // Nothing indexed yet: no fold.
+    const prompt = { kind: 'enter', messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: 'what next?' }] }] }
+    await ctx.listeners['agent/pre-step']({ agent, messages: prompt.messages }, async () => prompt)
+    assert.equal(session.surface.replaceGeneration, 0)
+    // Index, then the next human turn folds t1 (t2 is kept).
+    assert.equal((await ctx.commands[0].handler({ rawInput: 'build', agent })).kind, 'success')
+    const out = await ctx.listeners['agent/pre-step']({ agent, messages: prompt.messages }, async () => prompt)
+    assert.equal(session.surface.replaceGeneration, 1)
+    assert.deepEqual(session.surface.nodes, [0, 8, 6, 7], 'system prompt, fold message, kept turn')
+    const foldMsg = session.log[8].data
+    assert.equal(foldMsg.source.fold, true)
+    assert.match(foldMsg.content[0].text, /Turns t1-t1 of this conversation are folded/)
+    assert.match(foldMsg.content[0].text, /- n1 commit signing: /)
+    assert.match(foldMsg.content[0].text, /- t1: We decided to sign commits/)
+    assert.equal(foldMsg.content[1].text, 'SKILL LIST', 'standing context survives the fold')
+    // After the fold, this chat's own topics match again.
+    const hit = await ctx.listeners['agent/pre-step']({ agent, messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: 'which signed commits key?' }] }] },
+      async () => ({ kind: 'enter', messages: [] }))
+    assert.match(hit.messages.at(-1).content[0].text, /- n1 commit signing/)
+    // The folded turn is still exact.
+    const t1 = await ctx.registered[0].execute({ id: 't1' }, { agent })
+    assert.equal(t1.status, 'ok')
+    assert.match(t1.text, /# t1 \(verbatim\)[\s\S]*id_ed25519_signing[\s\S]*tool call\*\* read[\s\S]*LOG LOG[\s\S]*signing configured/)
+    assert.equal((await ctx.registered[0].execute({ id: 't9' }, { agent })).status, 'unknown')
+    const stats = await ctx.commands[0].handler({ rawInput: 'stats', agent })
+    assert.match(stats.text, /Folds: 1; ~\d+ input tokens removed/)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})

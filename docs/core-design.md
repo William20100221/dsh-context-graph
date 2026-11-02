@@ -199,6 +199,15 @@ critical path), and the surface layer is injected on the first human turn of a s
 `agent/pre-step`. Benefits: no cache break ever, works in every profile, far less code. The
 `summarize()` override becomes an optional v1.1 extra for users who edit their preset.
 
+**v0.2.0 (2026-11-02): in-chat folding, requested by the user.** Old turns of the current chat are
+replaced (dsh surface `replace`, same mechanism as dsh-clear-conversation) by one message: this chat's
+topics plus one line per human turn (t1..tN). `recall("tN")` reads the turn back from the session log,
+which keeps shadowed events, so folding loses nothing. Folds run at the start of a human turn (no open
+tool call), only over indexed content, only when the old part costs >= `foldAtTokens` (24k) and the
+table of contents is under half of it. Standing context (skill catalog, runtime context) in the folded
+part is carried into the fold message. Cost model: one cache restart per fold, then every request is
+smaller; batching is what makes that trade positive.
+
 Shipped v1 (see README): `graph.js`, `store.js`, `index.js`, `cordis.patch.yml`, 12 tests.
 
 Original build order, kept for reference:

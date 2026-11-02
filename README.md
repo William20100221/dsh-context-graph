@@ -5,8 +5,15 @@ New sessions start with a one-screen map of what was decided before, each turn g
 nodes that match what you just asked, and the model fetches the verbatim original text only
 when it needs it. Old messages stop being re-sent; decisions stop getting lost.
 
-Status: v0.1.0, not yet run inside a real dsh. Unit and wiring tests pass against the
-published `@deepseek-ai/dsh-llm` and `@deepseek-ai/dsh-tools` packages.
+**Folding (v0.2.0).** Every chat normally re-sends all earlier messages on every turn. Once the
+older part of a chat costs more than `foldAtTokens` per request, the plugin replaces it with one
+short table of contents: the topics found in it and a one-line list of what you asked in each
+turn (t1, t2, ...). The model follows that table to the exact part it needs with `recall("t7")`
+or `recall("n12")`. Your newest turns stay word for word. Nothing is deleted: the full turns stay
+in the session log and in the chat window.
+
+Status: v0.2.0. Installs and loads in the dsh desktop app; folding and indexing are not yet
+verified with a live model. 18 tests pass against the published dsh packages.
 
 ## What it does
 
@@ -15,15 +22,18 @@ published `@deepseek-ai/dsh-llm` and `@deepseek-ai/dsh-tools` packages.
 | Every 4 human turns (default) | After the turn closes, one small auxiliary model call indexes the new messages into `.context-graph/graph.json` and stores the cited messages verbatim under `.context-graph/src/`. | about the span's tokens in, under 1k out, off the critical path |
 | First human turn of a session | A `[context-graph]` block lists the best-connected nodes from earlier sessions: id, label, one-line gist. | about 15 tokens per node, 40 nodes max |
 | Every human turn | The prompt is matched against node labels and aliases by word overlap (no model call). Up to 5 hits are appended to the message. One clearly dominant short hit is included verbatim. | under about 150 tokens |
-| Model calls `recall(id)` | Returns the node's verbatim source text and its neighbours. | one tool round trip |
-| `/context-graph` | `stats` (graph size, builder spend, injected tokens, cache-hit rate), `build` (index now), `find <words>`. | none |
+| Older part of this chat costs more than 24k tokens per request | At the start of your next turn it is replaced by a table of contents (topics plus one line per turn). The last 2 turns stay as they are. | breaks the provider cache once per fold, then every later request is smaller |
+| Model calls `recall(id)` | `n12`: the topic's verbatim source and neighbours. `t7`: folded turn 7 exactly, including tool calls. | one tool round trip |
+| `/context-graph` | `stats`, `build` (index now), `fold` (index and fold now), `find <words>`. | none |
 
 Design rules, in order of importance:
 
 1. **Nothing is written without its source.** A node is stored only together with the verbatim
    messages it was drawn from. The gist is a pointer, never the record.
-2. **The provider's prefix cache survives.** Injected blocks ride at the end of the newest user
-   message. Stock compaction is untouched; this plugin never rewrites earlier context.
+2. **Fold in batches, not every turn.** DeepSeek bills re-sent cached input at about 1/30 price,
+   and any fold restarts that cache. So a fold happens only when the old part is large
+   (24k tokens by default) and the table of contents is under half its size. Between folds the
+   prefix stays stable and cached. Matcher blocks ride at the end of the newest message.
 3. **Old decisions resolve to new ones.** A `supersedes` edge makes a hit on the old node show
    the replacement instead.
 4. **Matching is lexical.** Labels, aliases and gists; English words, identifiers and Chinese
@@ -66,6 +76,9 @@ Defaults live in [cordis.patch.yml](cordis.patch.yml). A patch replaces the row'
 | `surfaceMaxNodes` | `40` | Nodes listed at the start of a session |
 | `builderMaxTokens` | `2048` | Output cap for the indexing call |
 | `provider`, `model` | `''` | Empty: reuse the conversation's routed provider and model |
+| `fold` | `true` | Fold old turns of the current chat into a table of contents |
+| `foldAtTokens` | `24000` | Fold once the foldable part costs this much per request |
+| `keepTurns` | `2` | Newest human turns never folded |
 
 ## Files
 
@@ -101,4 +114,6 @@ Without the variable it is skipped. Nothing here calls a model.
   its whole surface. Existing ids are reused, so this costs one larger call, not duplicates.
 - Two agents writing the same workspace graph at once: last writer wins.
 - Subagent sessions are neither indexed nor given memory blocks.
-- Tool outputs are not indexed. For large tool output, use `dsh-plugin-save-token` alongside.
+- Tool outputs are not indexed as topics, but they are folded and `recall("tN")` returns them (each capped at 2000 characters).
+- Only indexed turns are folded. After an app restart the index position resets, so the first fold waits for one build.
+- A skill list or runtime-context message inside the folded part is copied into the fold message so the model keeps it.

@@ -19,8 +19,9 @@ import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
 import {
-  builderInstruction, collectSpan, emptyGraph, estimateTokens, matchNodes, mergeDelta, neighbors, onlyFromSession,
-  parseBuilderOutput, renderHits, renderSurface, SOURCE_KIND, surfaceNodes, transcriptForBuilder
+  builderInstruction, collectSpan, emptyGraph, estimateTokens, foldKept, matchNodes, mergeDelta, neighbors, onlyFromSession,
+  parseBuilderOutput, planFold, renderFoldIndex, renderHits, renderSurface, SOURCE_KIND, surfaceNodes, transcriptForBuilder,
+  turnIndex, turnTranscript
 } from './graph.js'
 import { appendSource, loadGraph, readSource, saveGraph } from './store.js'
 
@@ -38,7 +39,10 @@ const DEFAULTS = {
   surfaceMaxNodes: 40,
   builderMaxTokens: 2048,
   provider: '',
-  model: ''
+  model: '',
+  fold: true,
+  foldAtTokens: 24000,
+  keepTurns: 2
 }
 
 const textOf = (content) => (Array.isArray(content) ? content : []).filter((b) => b?.type === 'text').map((b) => b.text).join('\n').trim()
@@ -51,6 +55,8 @@ export function apply(ctx, config = {}) {
     main: { requests: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
     builder: { requests: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
     builds: 0,
+    folds: 0,
+    foldSaved: 0,
     injected: 0,
     injectedTokens: 0,
     recalls: 0
@@ -156,15 +162,55 @@ export function apply(ctx, config = {}) {
     void build(payload.agent, { turn: payload.turn })
   })
 
+  // ---------- fold: replace old turns of this chat with a table of contents ----------
+  function rangeTokens(session, seqs) {
+    const wanted = new Set(seqs)
+    try {
+      const nodes = ctx.get('tokenMeter')?.measure(session)?.nodes
+      if (Array.isArray(nodes)) return nodes.filter((n) => wanted.has(n.seq)).reduce((sum, n) => sum + (n.tokens ?? n.heuristicTokens ?? 0), 0)
+    } catch { /* fall back to the estimate */ }
+    return seqs.reduce((sum, seq) => sum + estimateTokens(JSON.stringify(session.eventAt(seq)?.data ?? '')), 0)
+  }
+
+  async function fold(agent, { force = false } = {}) {
+    const session = agent.session
+    const sid = String(session.id)
+    const eventAt = (seq) => session.eventAt(seq)
+    const plan = planFold(session.surface.nodes, eventAt, { keepTurns: cfg.keepTurns, maxSeq: state(sid).lastBuiltSeq })
+    if (!plan) return { status: 'skipped', reason: `nothing indexed outside the last ${cfg.keepTurns} turns yet` }
+    const before = rangeTokens(session, plan.shadowedSeqs)
+    if (!force && before < cfg.foldAtTokens) return { status: 'skipped', reason: `foldable part is ~${before} tokens, folds at ${cfg.foldAtTokens}` }
+    const turns = turnIndex(eventAt, plan.endSeq)
+    const index = renderFoldIndex(await getGraph(dirFor(agent)), sid, turns, { maxNodes: cfg.surfaceMaxNodes })
+    const kept = foldKept(plan.shadowedSeqs, eventAt)
+    const after = estimateTokens([index, ...kept.blocks.map((b) => b.text ?? '')].join('\n'))
+    // Never-worse gate: a fold must at least halve what it replaces, or it is not worth breaking the cache.
+    if (after * 2 > before) return { status: 'skipped', reason: `table of contents (~${after}) is not under half of the ~${before} tokens it would replace` }
+    const message = createUserMessage({
+      content: [{ type: 'text', text: index }, ...kept.blocks],
+      source: { kind: SOURCE_KIND, fold: true, keptKinds: kept.kinds, foldedTurns: turns.length, foldedTokens: before }
+    })
+    session.append('user/message', message, {
+      surfaceOp: { op: 'replace', startSeq: plan.startSeq, endSeq: plan.endSeq },
+      sourceEventSeqs: [...plan.shadowedSeqs]
+    })
+    meter.folds++
+    meter.foldSaved += before - after
+    return { status: 'folded', turns: turns.length, before, after }
+  }
+
   // ---------- matcher ----------
   ctx.on('agent/pre-step', async (payload, next) => {
+    const agent = payload.agent
+    const prompt = payload.messages.filter((m) => m.source?.kind === 'user').map((m) => textOf(m.content)).join('\n')
+    // Fold only at the start of a human turn: the previous turn is closed, so no tool call is open.
+    if (cfg.fold && prompt && !isSubagent(agent)) {
+      try { await fold(agent) } catch (error) { console.error('context-graph: fold failed (non-fatal)', error) }
+    }
     const decision = await next()
     if (decision.kind !== 'enter') return decision
     try {
-      const agent = payload.agent
-      if (isSubagent(agent)) return decision
-      const prompt = payload.messages.filter((m) => m.source?.kind === 'user').map((m) => textOf(m.content)).join('\n')
-      if (!prompt) return decision
+      if (isSubagent(agent) || !prompt) return decision
       const dir = dirFor(agent)
       const graph = await getGraph(dir)
       if (Object.keys(graph.nodes).length === 0) return decision
@@ -228,11 +274,11 @@ export function apply(ctx, config = {}) {
   ctx.tools.register(defineTool({
     name: 'recall',
     description: [
-      'Fetch the verbatim source text behind a context-graph node id (for example n17) listed in a [context-graph] block, plus its neighbouring nodes.',
+      'Fetch verbatim text behind an id shown in a [context-graph] block: a topic id (n17) returns its source messages and neighbouring topics; a turn id (t7) returns that folded turn of this conversation exactly.',
       'Call it when a gist is relevant but not precise enough to answer. Never invent an id; only use ids you were shown.'
     ].join(' '),
     parameters: {
-      id: { type: 'string', required: true, description: 'Node id such as n17.' },
+      id: { type: 'string', required: true, description: 'Topic id such as n17, or turn id such as t7.' },
       depth: { type: 'integer', description: '0 (default): this node only. 1: also include each neighbour\'s gist.' }
     },
     output: {
@@ -249,9 +295,16 @@ export function apply(ctx, config = {}) {
     async execute(args, exec) {
       const agent = exec.agent
       if (!agent?.session) return { status: 'unknown', text: 'recall is unavailable: no session attached to this call.' }
+      const id = String(args.id ?? '').trim()
+      const turn = /^t(\d+)$/.exec(id)
+      if (turn) {
+        const text = turnTranscript((seq) => agent.session.eventAt(seq), Number(turn[1]))
+        if (text === undefined) return { status: 'unknown', text: `No turn ${id} in this conversation.` }
+        meter.recalls++
+        return { status: 'ok', text: `# ${id} (verbatim)\n\n${text}` }
+      }
       const dir = dirFor(agent)
       const graph = await getGraph(dir)
-      const id = String(args.id ?? '').trim()
       const node = graph.nodes[id]
       if (!node) return { status: 'unknown', text: `No node "${id}" in this project's context graph. Only use ids shown in a [context-graph] block.` }
       meter.recalls++
@@ -281,10 +334,18 @@ export function apply(ctx, config = {}) {
       cmdCtx.effect(function* () {
         yield cmdCtx.commands.register({
           name: 'context-graph',
-          description: 'Project memory graph: /context-graph [stats|build|find <words>]',
+          description: 'Project memory graph: /context-graph [stats|build|fold|find <words>]',
           async handler(invocation) {
             const [sub = 'stats', ...rest] = invocation.rawInput.trim().split(/\s+/).filter(Boolean)
             const agent = invocation.agent
+            if (sub === 'fold') {
+              const result = await agent.runMaintenance(async () => {
+                await build(agent, { force: true })
+                return fold(agent, { force: true })
+              })
+              if (result.status !== 'folded') return { kind: 'error', text: `Not folded: ${result.reason}` }
+              return { kind: 'success', text: `Folded turns t1-t${result.turns}: ~${result.before} tokens replaced by a ~${result.after}-token table of contents.` }
+            }
             if (sub === 'build') {
               const result = await agent.runMaintenance(() => build(agent, { force: true }))
               if (result.status !== 'built') return { kind: 'error', text: `Build ${result.status}: ${result.reason ?? ''}`.trim() }
@@ -295,7 +356,7 @@ export function apply(ctx, config = {}) {
               const hits = matchNodes(graph, rest.join(' '), { max: cfg.maxHits })
               return { kind: 'success', text: hits.length ? renderHits(graph, hits) : 'No matching nodes.' }
             }
-            if (sub !== 'stats') return { kind: 'error', text: 'Usage: /context-graph [stats|build|find <words>]' }
+            if (sub !== 'stats') return { kind: 'error', text: 'Usage: /context-graph [stats|build|fold|find <words>]' }
             const m = meter.main
             const cached = m.cacheRead + m.cacheWrite
             const hitRate = m.input + cached > 0 ? Math.round((m.cacheRead / (m.input + cached)) * 100) : 0
@@ -308,6 +369,7 @@ export function apply(ctx, config = {}) {
                 `This chat: ${pending} human turns not indexed yet; auto-index at ${cfg.buildEveryTurns}, or run /context-graph build now.`,
                 'Counters below are since the app started:',
                 `Builds: ${meter.builds}; builder tokens in/out: ${meter.builder.input + meter.builder.cacheRead + meter.builder.cacheWrite}/${meter.builder.output}`,
+                `Folds: ${meter.folds}; ~${meter.foldSaved} input tokens removed from every later request`,
                 `Injected blocks: ${meter.injected} (~${meter.injectedTokens} tokens); recalls: ${meter.recalls}`,
                 `Main requests: ${m.requests}; input ${m.input} uncached + ${m.cacheRead} cache-read + ${m.cacheWrite} cache-write; cache-hit ${hitRate}%`
               ].join('\n')

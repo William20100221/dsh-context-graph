@@ -13,3 +13,6 @@
         builderMaxTokens: 2048
         provider: ''               # empty: reuse the conversation's routed provider/model
         model: ''
+        fold: true                 # replace old turns of the current chat with a table of contents
+        foldAtTokens: 24000        # fold once the foldable part costs this much per request
+        keepTurns: 2               # newest human turns always kept word for word

@@ -269,3 +269,113 @@ function textOf(content) {
   if (!Array.isArray(content)) return ''
   return content.filter((b) => b?.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n').trim()
 }
+
+// ---------- folding: replace old turns of the current chat with a table of contents ----------
+
+/** Injected context kinds that must survive a fold (carried into the fold message verbatim). */
+export const KEEP_KINDS = ['skill-catalog', 'runtime-context']
+
+const isHuman = (event) => event?.type === 'user/message' && event.data?.source?.kind === 'user'
+export const isFold = (event) => event?.type === 'user/message' && event.data?.source?.kind === SOURCE_KIND && event.data.source.fold === true
+
+function toolDelta(event) {
+  if (event?.type === 'assistant/message') return (event.data?.message?.content ?? []).filter((b) => b.type === 'tool-call').length
+  return event?.type === 'tool/result' ? -1 : 0
+}
+
+/**
+ * Choose the surface range to fold: everything after the system prompt up to (not including) the
+ * human prompt that starts the last `keepTurns` turns. Only content already indexed (seq <= maxSeq)
+ * is folded, and the cut never splits a tool call from its result.
+ * @returns {{ startSeq, endSeq, shadowedSeqs } | undefined}
+ */
+export function planFold(nodes, eventAt, { keepTurns = 2, maxSeq = Infinity } = {}) {
+  const first = eventAt(nodes[0])?.type === 'system/message' ? 1 : 0
+  const humans = []
+  for (let i = first; i < nodes.length; i++) if (isHuman(eventAt(nodes[i]))) humans.push(i)
+  for (let h = humans.length - keepTurns; h >= 1; h--) {
+    const cut = humans[h]
+    const range = nodes.slice(first, cut)
+    if (!range.some((seq) => isHuman(eventAt(seq)))) return undefined
+    if (range.some((seq) => seq > maxSeq && !isFold(eventAt(seq)))) continue
+    let open = 0
+    for (const seq of nodes.slice(0, cut)) open += toolDelta(eventAt(seq))
+    if (open !== 0) continue
+    return { startSeq: range[0], endSeq: range.at(-1), shadowedSeqs: range }
+  }
+  return undefined
+}
+
+/** Every human prompt in the session log up to `endSeq`, numbered t1, t2, ... in log order. */
+export function turnIndex(eventAt, endSeq = Infinity) {
+  const turns = []
+  for (let seq = 0; seq <= endSeq; seq++) {
+    const event = eventAt(seq)
+    if (!event) break
+    if (isHuman(event)) turns.push({ turn: turns.length + 1, seq, text: textOf(event.data.content) })
+  }
+  return turns
+}
+
+/** Verbatim text of turn `n` (its prompt through the step before the next human prompt). */
+export function turnTranscript(eventAt, n, { maxToolChars = 2000 } = {}) {
+  let count = 0
+  let seq = 0
+  for (; ; seq++) {
+    const event = eventAt(seq)
+    if (!event) return undefined
+    if (isHuman(event) && ++count === n) break
+  }
+  const out = []
+  for (let s = seq; ; s++) {
+    const event = eventAt(s)
+    if (!event || (s > seq && isHuman(event))) break
+    if (isHuman(event)) out.push(`**user:**\n${textOf(event.data.content)}`)
+    else if (event.type === 'assistant/message') {
+      const blocks = event.data?.message?.content ?? []
+      const text = textOf(blocks)
+      if (text) out.push(`**assistant:**\n${text}`)
+      for (const b of blocks) if (b.type === 'tool-call') out.push(`**tool call** ${b.name} ${String(b.arguments ?? '').slice(0, 300)}`)
+    } else if (event.type === 'tool/result') {
+      const text = textOf(event.data?.message?.content)
+      out.push(`**tool result:**\n${text.length > maxToolChars ? `${text.slice(0, maxToolChars)}\n…[${text.length - maxToolChars} more chars]` : text}`)
+    }
+  }
+  return out.join('\n\n')
+}
+
+/** Content blocks the fold message must carry: latest standing context of each KEEP_KINDS kind. */
+export function foldKept(shadowedSeqs, eventAt) {
+  const kept = new Map()
+  for (const seq of shadowedSeqs) {
+    const event = eventAt(seq)
+    if (isFold(event)) {
+      const kinds = event.data.source.keptKinds ?? []
+      kinds.forEach((kind, i) => kept.set(kind, event.data.content[i + 1]))
+    } else if (event?.type === 'user/message' && KEEP_KINDS.includes(event.data?.source?.kind)) {
+      kept.set(event.data.source.kind, { type: 'text', text: textOf(event.data.content) })
+    }
+  }
+  return { kinds: [...kept.keys()], blocks: [...kept.values()].filter(Boolean) }
+}
+
+/** The table of contents that replaces the folded turns. */
+export function renderFoldIndex(graph, session, turns, { maxNodes = 40, maxTurns = 60, width = 90 } = {}) {
+  const lines = [
+    `[${SOURCE_KIND}] Turns t1-t${turns.length} of this conversation are folded to save tokens. They are not lost.`,
+    'Below is their table of contents. Before answering anything that depends on their details, call recall with a topic id (n12) for the facts, or a turn id (t7) for the exact messages of that turn. Do not guess folded details.'
+  ]
+  const ids = surfaceNodes(graph, Infinity).filter((id) => (graph.nodes[id].src ?? []).some((s) => s.session === session)).slice(0, maxNodes)
+  if (ids.length > 0) {
+    lines.push('', 'Topics:')
+    for (const id of ids) lines.push(`- ${id} ${graph.nodes[id].label}: ${graph.nodes[id].gist}`)
+  }
+  lines.push('', 'Turns (what the user asked):')
+  const shown = turns.slice(-maxTurns)
+  if (shown.length < turns.length) lines.push(`- t1-t${turns.length - shown.length}: earlier turns, recall by id`)
+  for (const t of shown) {
+    const first = t.text.replace(/\s+/g, ' ').trim()
+    lines.push(`- t${t.turn}: ${first.length > width ? `${first.slice(0, width - 1)}…` : first}`)
+  }
+  return lines.join('\n')
+}
