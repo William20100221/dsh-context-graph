@@ -71,6 +71,7 @@ test('plugin: build, inject for a later session, recall, meter', { skip }, async
     assert.ok(ctx.listeners['agent/pre-step'] && ctx.listeners['agent/turn-stopping'] && ctx.listeners['llm/stream'])
     assert.equal(ctx.registered[0].name, 'recall')
     assert.equal(ctx.commands[0].name, 'context-graph')
+    assert.equal(ctx.commands[0].input?.hint, '[stats|build|fold|find <words>]', 'declares arguments so clients pass them through')
 
     // Session A: two messages, then an explicit build through the command.
     const sessionA = fakeSession('sA', cwd, [

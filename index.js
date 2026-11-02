@@ -335,6 +335,8 @@ export function apply(ctx, config = {}) {
         yield cmdCtx.commands.register({
           name: 'context-graph',
           description: 'Project memory graph: /context-graph [stats|build|fold|find <words>]',
+          // Without `input`, dsh clients run the bare name and send any typed arguments to the model as chat.
+          input: { hint: '[stats|build|fold|find <words>]' },
           async handler(invocation) {
             const [sub = 'stats', ...rest] = invocation.rawInput.trim().split(/\s+/).filter(Boolean)
             const agent = invocation.agent
