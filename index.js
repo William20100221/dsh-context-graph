@@ -1,36 +1,37 @@
 /**
- * dsh-context-graph: memory of past conversations as a small graph, so the model reads node
- * gists instead of old messages and fetches verbatim text only when it needs it.
+ * dsh-context-graph: memory of past chats as small per-chat graphs, switched on per chat.
  *
- * - `agent/turn-stopping`: every few human turns, one cheap auxiliary model call indexes the new
- *   span into `<workspace>/.context-graph/graph.json` and stores the cited messages verbatim.
- * - `agent/pre-step`: on a human turn, lexically match the prompt against the graph and append one
- *   short `[context-graph]` block to the admitted messages (end of the request, so the provider's
- *   prefix cache survives). The first human turn of a session also gets the cross-session surface layer.
- * - Tool `recall`: verbatim source and neighbours of one node.
+ * Nothing happens in a chat until `/context-graph on`. Then:
+ * - `agent/turn-stopping`: every few human turns, one auxiliary model call indexes the new span
+ *   into `<workspace>/.context-graph/chats/<session>/graph.json` and stores the cited text verbatim.
+ * - `agent/pre-step`: on a human turn, match the prompt against the other shared chats of this
+ *   workspace (a named day is searched first) and append one short `[context-graph]` block at the
+ *   end of the request, so the provider's prefix cache survives. Right after `on`, one block lists
+ *   the shared chats, newest first.
+ * - Tool `recall`: a topic (c3n12), a chat (c3), a day (2026-11-01) or a turn of this chat (t7).
  * - `llm/stream`: meters main vs builder tokens and cache reads for `/context-graph stats`.
- * Stock compaction is untouched.
+ * Nothing is merged between chats; sharing is a flag on the chat. Stock compaction is untouched.
  */
 
 import { isAbsolute, join } from 'node:path'
 import { readFileSync } from 'node:fs'
-import { mkdir, stat, writeFile } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
 import {
-  builderInstruction, collectSpan, emptyGraph, estimateTokens, foldKept, matchNodes, mergeDelta, neighbors, onlyFromSession,
-  parseBuilderOutput, planFold, renderFoldIndex, renderHits, renderSurface, SOURCE_KIND, surfaceNodes, transcriptForBuilder,
-  turnIndex, turnTranscript
+  builderInstruction, collectSpan, estimateTokens, matchAcross, mergeDelta, neighbors, parseBuilderOutput, parseTimeRange,
+  renderChatIndex, renderChats, renderHits, renderMap, renderRange, SOURCE_KIND, titleOf, transcriptForBuilder, turnTranscript
 } from './graph.js'
-import { appendSource, loadGraph, readSource, saveGraph } from './store.js'
+import { appendSource, chatDir, ensureMeta, listChats, loadGraph, loadMeta, readSource, saveGraph, saveMeta } from './store.js'
 import { startUpdateCheck } from './update.js'
 
 export const name = 'context-graph'
 export const inject = ['tools']
 
 const PURPOSE = 'context-graph'
+const USAGE = '[on|off|share|unshare|stats|build|map|find <words>]'
 const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
 
 const DEFAULTS = {
@@ -39,13 +40,10 @@ const DEFAULTS = {
   buildMinChars: 400,
   maxHits: 5,
   inlineMaxChars: 1200,
-  surfaceMaxNodes: 40,
+  surfaceMaxChats: 20,
   builderMaxTokens: 8192,
   provider: '',
-  model: '',
-  fold: true,
-  foldAtTokens: 24000,
-  keepTurns: 2
+  model: ''
 }
 
 const textOf = (content) => (Array.isArray(content) ? content : []).filter((b) => b?.type === 'text').map((b) => b.text).join('\n').trim()
@@ -57,13 +55,10 @@ export function apply(ctx, config = {}) {
   const updates = _updates ?? startUpdateCheck(version)
   let noticeShown = false
   const sessions = new Map()
-  const graphCache = new Map()
   const meter = {
     main: { requests: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
     builder: { requests: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
     builds: 0,
-    folds: 0,
-    foldSaved: 0,
     injected: 0,
     injectedTokens: 0,
     recalls: 0
@@ -71,24 +66,41 @@ export function apply(ctx, config = {}) {
 
   const state = (sid) => {
     let st = sessions.get(sid)
-    if (!st) { st = { lastBuiltSeq: -1, building: false, surfaceSent: false }; sessions.set(sid, st) }
+    if (!st) { st = { lastBuiltSeq: -1, building: false, announce: false }; sessions.set(sid, st) }
     return st
   }
+
+  const sidOf = (agent) => String(agent.session.id)
+  const isSubagent = (agent) => agent.options?.origin === 'subagent' || agent.session.header?.origin === 'subagent'
 
   function dirFor(agent) {
     const base = agent.options?.cwd ?? agent.session.header?.cwd ?? process.cwd()
     return isAbsolute(cfg.dir) ? cfg.dir : join(base, cfg.dir)
   }
 
-  /** Graph read with an mtime check so other sessions' builds show up without a restart. */
-  async function getGraph(dir) {
-    let mtimeMs = 0
-    try { mtimeMs = (await stat(join(dir, 'graph.json'))).mtimeMs } catch { return emptyGraph() }
-    const cached = graphCache.get(dir)
-    if (cached && cached.mtimeMs === mtimeMs) return cached.graph
-    const graph = await loadGraph(dir)
-    graphCache.set(dir, { mtimeMs, graph })
-    return graph
+  const metaFor = (agent) => loadMeta(dirFor(agent), sidOf(agent))
+
+  async function setFlags(agent, flags) {
+    const dir = dirFor(agent)
+    const session = agent.session
+    const now = new Date().toISOString()
+    const meta = await ensureMeta(dir, sidOf(agent), { title: titleOf((seq) => session.eventAt(seq)), workspace: dir, now })
+    Object.assign(meta, flags, { lastActiveAt: now })
+    await saveMeta(dir, sidOf(agent), meta)
+    return meta
+  }
+
+  /** Own chat plus every shared chat of the workspace, graphs loaded. ponytail: re-read per turn; cache by mtime if a workspace grows large. */
+  async function loadViews(agent) {
+    const dir = dirFor(agent)
+    const sid = sidOf(agent)
+    const views = []
+    for (const { sid: other, meta } of await listChats(dir)) {
+      const own = other === sid
+      if (!own && !meta.shared) continue
+      views.push({ sid: other, cid: meta.cid, meta, own, graph: await loadGraph(chatDir(dir, other)) })
+    }
+    return views
   }
 
   function resolveTarget(agent) {
@@ -99,25 +111,18 @@ export function apply(ctx, config = {}) {
     return provider && model ? { provider, model } : undefined
   }
 
-  function surfaceAlreadyOnLog(session) {
-    return session.surface.nodes.some((seq) => {
-      const event = session.eventAt(seq)
-      return event?.type === 'user/message' && event.data?.source?.kind === SOURCE_KIND && event.data.source.layer === 'surface'
-    })
-  }
-
   // ---------- builder ----------
-  const isSubagent = (agent) => agent.options?.origin === 'subagent' || agent.session.header?.origin === 'subagent'
-
   async function build(agent, { force = false, turn = null } = {}) {
     const session = agent.session
-    const sid = String(session.id)
+    const sid = sidOf(agent)
     const st = state(sid)
     if (st.building) return { status: 'busy' }
-    // ponytail: subagent chatter stays out of the project graph; revisit if delegated work holds decisions worth keeping.
+    // ponytail: subagent chatter stays out of the graph; revisit if delegated work holds decisions worth keeping.
     if (isSubagent(agent)) return { status: 'skipped', reason: 'subagent session' }
     st.building = true
     try {
+      const meta = await metaFor(agent)
+      if (!meta?.memory) return { status: 'off', reason: 'memory is off for this chat; run /context-graph on' }
       const span = collectSpan(session.surface.nodes, (seq) => session.eventAt(seq), st.lastBuiltSeq)
       const chars = span.messages.reduce((n, m) => n + m.text.length, 0)
       if (span.messages.length === 0) return { status: 'nothing', reason: 'no new messages since the last build' }
@@ -128,8 +133,8 @@ export function apply(ctx, config = {}) {
       if (!llm) return { status: 'unavailable', reason: 'no llm service in this composition' }
       const target = resolveTarget(agent)
       if (!target) return { status: 'unavailable', reason: 'no provider/model routed yet' }
-      const dir = dirFor(agent)
-      const graph = await loadGraph(dir)
+      const chat = chatDir(dirFor(agent), sid)
+      const graph = await loadGraph(chat)
       const prompt = `${transcriptForBuilder(span.messages)}\n\n${builderInstruction(graph)}`
       const assembler = new BlockAssembler()
       for await (const chunk of llm.stream({
@@ -148,8 +153,8 @@ export function apply(ctx, config = {}) {
       const reasoning = blocks.filter((b) => b?.type === 'reasoning').map((b) => b.text).join('\n')
       const delta = parseBuilderOutput(answer) ?? parseBuilderOutput(reasoning)
       if (!delta || (delta.nodes.length === 0 && finish?.kind === 'max-tokens')) {
-        const saved = join(dir, 'last-builder-output.txt')
-        await mkdir(dir, { recursive: true })
+        const saved = join(chat, 'last-builder-output.txt')
+        await mkdir(chat, { recursive: true })
         await writeFile(saved, `finish: ${finish?.kind}\n\n--- answer ---\n${answer}\n\n--- reasoning ---\n${reasoning}\n`, 'utf8')
         const why = finish?.kind === 'max-tokens'
           ? `the model ran out of output tokens (builderMaxTokens ${cfg.builderMaxTokens}) before finishing`
@@ -162,12 +167,13 @@ export function apply(ctx, config = {}) {
       const touched = mergeDelta(graph, delta, { session: sid, turn, now })
       for (const { id, msgs } of touched) {
         const cited = msgs.map((i) => span.messages[i]).filter(Boolean)
-        if (cited.length > 0) await appendSource(dir, id, { session: sid, turn, at: now, messages: cited })
+        if (cited.length > 0) await appendSource(chat, id, { session: sid, turn, at: now, messages: cited })
       }
-      await saveGraph(dir, graph)
+      await saveGraph(chat, graph)
+      await saveMeta(dirFor(agent), sid, { ...meta, title: meta.title ?? titleOf((seq) => session.eventAt(seq)), lastActiveAt: now, turns: (meta.turns ?? 0) + span.userTurns })
       st.lastBuiltSeq = span.lastSeq
       meter.builds++
-      return { status: 'built', nodes: touched.length, newNodes: touched.filter((t) => t.isNew).length, totalNodes: Object.keys(graph.nodes).length, edges: graph.edges.length, dir }
+      return { status: 'built', nodes: touched.length, newNodes: touched.filter((t) => t.isNew).length, totalNodes: Object.keys(graph.nodes).length, edges: graph.edges.length, dir: chat }
     } catch (error) {
       console.error('context-graph: build failed (non-fatal)', error)
       return { status: 'failed', reason: String(error?.message ?? error) }
@@ -181,51 +187,10 @@ export function apply(ctx, config = {}) {
     void build(payload.agent, { turn: payload.turn })
   })
 
-  // ---------- fold: replace old turns of this chat with a table of contents ----------
-  function rangeTokens(session, seqs) {
-    const wanted = new Set(seqs)
-    try {
-      const nodes = ctx.get('tokenMeter')?.measure(session)?.nodes
-      if (Array.isArray(nodes)) return nodes.filter((n) => wanted.has(n.seq)).reduce((sum, n) => sum + (n.tokens ?? n.heuristicTokens ?? 0), 0)
-    } catch { /* fall back to the estimate */ }
-    return seqs.reduce((sum, seq) => sum + estimateTokens(JSON.stringify(session.eventAt(seq)?.data ?? '')), 0)
-  }
-
-  async function fold(agent, { force = false } = {}) {
-    const session = agent.session
-    const sid = String(session.id)
-    const eventAt = (seq) => session.eventAt(seq)
-    const plan = planFold(session.surface.nodes, eventAt, { keepTurns: cfg.keepTurns, maxSeq: state(sid).lastBuiltSeq })
-    if (!plan) return { status: 'skipped', reason: `nothing indexed outside the last ${cfg.keepTurns} turns yet` }
-    const before = rangeTokens(session, plan.shadowedSeqs)
-    if (!force && before < cfg.foldAtTokens) return { status: 'skipped', reason: `foldable part is ~${before} tokens, folds at ${cfg.foldAtTokens}` }
-    const turns = turnIndex(eventAt, plan.endSeq)
-    const index = renderFoldIndex(await getGraph(dirFor(agent)), sid, turns, { maxNodes: cfg.surfaceMaxNodes })
-    const kept = foldKept(plan.shadowedSeqs, eventAt)
-    const after = estimateTokens([index, ...kept.blocks.map((b) => b.text ?? '')].join('\n'))
-    // Never-worse gate: a fold must at least halve what it replaces, or it is not worth breaking the cache.
-    if (after * 2 > before) return { status: 'skipped', reason: `table of contents (~${after}) is not under half of the ~${before} tokens it would replace` }
-    const message = createUserMessage({
-      content: [{ type: 'text', text: index }, ...kept.blocks],
-      source: { kind: SOURCE_KIND, fold: true, keptKinds: kept.kinds, foldedTurns: turns.length, foldedTokens: before }
-    })
-    session.append('user/message', message, {
-      surfaceOp: { op: 'replace', startSeq: plan.startSeq, endSeq: plan.endSeq },
-      sourceEventSeqs: [...plan.shadowedSeqs]
-    })
-    meter.folds++
-    meter.foldSaved += before - after
-    return { status: 'folded', turns: turns.length, before, after }
-  }
-
   // ---------- matcher ----------
   ctx.on('agent/pre-step', async (payload, next) => {
     const agent = payload.agent
     const prompt = payload.messages.filter((m) => m.source?.kind === 'user').map((m) => textOf(m.content)).join('\n')
-    // Fold only at the start of a human turn: the previous turn is closed, so no tool call is open.
-    if (cfg.fold && prompt && !isSubagent(agent)) {
-      try { await fold(agent) } catch (error) { console.error('context-graph: fold failed (non-fatal)', error) }
-    }
     const decision = await next()
     if (decision.kind !== 'enter') return decision
     const result = await addMemory(agent, prompt, decision)
@@ -247,31 +212,30 @@ export function apply(ctx, config = {}) {
   async function addMemory(agent, prompt, decision) {
     try {
       if (isSubagent(agent) || !prompt) return decision
-      const dir = dirFor(agent)
-      const graph = await getGraph(dir)
-      if (Object.keys(graph.nodes).length === 0) return decision
-      const sid = String(agent.session.id)
-      const st = state(sid)
-      const sessionCompacted = agent.session.surface.replaceGeneration > 0
+      if (!(await metaFor(agent))?.memory) return decision
+      const st = state(sidOf(agent))
+      const views = await loadViews(agent)
       const parts = []
       let layer
-      if (!st.surfaceSent) {
-        st.surfaceSent = true
-        // Nodes that only come from this very session are still in its context: no need to repeat them.
-        const ids = surfaceNodes(graph, cfg.surfaceMaxNodes).filter((id) => sessionCompacted || !onlyFromSession(graph.nodes[id], sid))
-        if (ids.length > 0 && !surfaceAlreadyOnLog(agent.session)) {
-          parts.push(renderSurface(graph, ids))
-          layer = 'surface'
+      if (st.announce) {
+        st.announce = false
+        const list = renderChats(views, { max: cfg.surfaceMaxChats })
+        if (list) { parts.push(list); layer = 'surface' }
+      }
+      const range = parseTimeRange(prompt)
+      const { hits, slice } = matchAcross(views, prompt, { max: cfg.maxHits, range })
+      if (hits.length === 0 && range) {
+        parts.push(renderRange(views.filter((v) => !v.own), range))
+      } else {
+        let inline
+        if (hits.length === 1 || (hits.length > 1 && hits[0].score >= 2 * hits[1].score)) {
+          const top = hits[0]
+          const text = await readSource(chatDir(dirFor(agent), top.view.sid), top.id.slice(top.id.indexOf('n')))
+          if (text && text.length <= cfg.inlineMaxChars) inline = { id: top.id, text }
         }
+        const block = renderHits(hits, { inline, slice })
+        if (block) parts.push(block)
       }
-      const hits = matchNodes(graph, prompt, { max: cfg.maxHits, session: sid, sessionCompacted })
-      let inline
-      if (hits.length === 1 || (hits.length > 1 && hits[0].score >= 2 * hits[1].score)) {
-        const text = await readSource(dir, hits[0].id)
-        if (text && text.length <= cfg.inlineMaxChars) inline = { id: hits[0].id, text }
-      }
-      const block = renderHits(graph, hits, { inline })
-      if (block) parts.push(block)
       if (parts.length === 0) return decision
       const text = parts.join('\n\n')
       meter.injected++
@@ -310,12 +274,13 @@ export function apply(ctx, config = {}) {
   ctx.tools.register(defineTool({
     name: 'recall',
     description: [
-      'Fetch verbatim text behind an id shown in a [context-graph] block: a topic id (n17) returns its source messages and neighbouring topics; a turn id (t7) returns that folded turn of this conversation exactly.',
+      'Fetch the exact text behind an id shown in a [context-graph] block. A topic id (c3n12) returns its verbatim source and linked topics;',
+      'a chat id (c3) returns that chat\'s topics; a day (2026-11-01) returns every chat and topic from that day; a turn id (t7) returns turn 7 of this chat word for word.',
       'Call it when a gist is relevant but not precise enough to answer. Never invent an id; only use ids you were shown.'
     ].join(' '),
     parameters: {
-      id: { type: 'string', required: true, description: 'Topic id such as n17, or turn id such as t7.' },
-      depth: { type: 'integer', description: '0 (default): this node only. 1: also include each neighbour\'s gist.' }
+      id: { type: 'string', required: true, description: 'c3n12 (topic), c3 (chat), 2026-11-01 (day) or t7 (turn of this chat).' },
+      depth: { type: 'integer', description: '0 (default): this topic only. 1: also include each linked topic\'s gist.' }
     },
     output: {
       schema: {
@@ -332,33 +297,38 @@ export function apply(ctx, config = {}) {
       const agent = exec.agent
       if (!agent?.session) return { status: 'unknown', text: 'recall is unavailable: no session attached to this call.' }
       const id = String(args.id ?? '').trim()
+      const ok = (text) => { meter.recalls++; return { status: 'ok', text } }
       const turn = /^t(\d+)$/.exec(id)
       if (turn) {
         const text = turnTranscript((seq) => agent.session.eventAt(seq), Number(turn[1]))
-        if (text === undefined) return { status: 'unknown', text: `No turn ${id} in this conversation.` }
-        meter.recalls++
-        return { status: 'ok', text: `# ${id} (verbatim)\n\n${text}` }
+        return text === undefined ? { status: 'unknown', text: `No turn ${id} in this chat.` } : ok(`# ${id} (verbatim)\n\n${text}`)
       }
-      const dir = dirFor(agent)
-      const graph = await getGraph(dir)
-      const node = graph.nodes[id]
-      if (!node) return { status: 'unknown', text: `No node "${id}" in this project's context graph. Only use ids shown in a [context-graph] block.` }
-      meter.recalls++
+      const views = await loadViews(agent)
+      if (/^\d{4}-\d{2}-\d{2}$/.test(id)) return ok(renderRange(views.filter((v) => !v.own), parseTimeRange(id)))
+      const m = /^(?:c(\d+))?(n\d+)?$/.exec(id)
+      if (!m || (!m[1] && !m[2])) return { status: 'unknown', text: `"${id}" is not an id. Use c3n12, c3, 2026-11-01 or t7, and only ids you were shown.` }
+      const view = m[1] ? views.find((v) => String(v.cid) === m[1]) : views.find((v) => v.own)
+      if (!view) return { status: 'unknown', text: `No chat c${m[1]} shared in this workspace.` }
+      if (!m[2]) return ok(renderChatIndex(view))
+      const node = view.graph.nodes[m[2]]
+      if (!node) return { status: 'unknown', text: `No topic ${id}. Only use ids shown in a [context-graph] block.` }
       node.hits = (node.hits ?? 0) + 1
-      saveGraph(dir, graph).catch((error) => console.error('context-graph: hit count save failed', error))
+      const chat = chatDir(dirFor(agent), view.sid)
+      saveGraph(chat, view.graph).catch((error) => console.error('context-graph: hit count save failed', error))
       const lines = [`# ${id} ${node.label}`, `${node.kind}. ${node.gist}`, '']
-      const source = await readSource(dir, id)
-      lines.push(source ? source.trim() : '(no verbatim source stored for this node)')
-      const links = neighbors(graph, id)
+      const source = await readSource(chat, m[2])
+      lines.push(source ? source.trim() : '(no verbatim source stored for this topic)')
+      const links = neighbors(view.graph, m[2])
       if (links.length > 0) {
-        lines.push('', 'Neighbours:')
+        lines.push('', 'Linked topics:')
         for (const link of links) {
-          const other = graph.nodes[link.id]
-          const arrow = link.direction === 'out' ? `${id} ${link.relation} ${link.id}` : `${link.id} ${link.relation} ${id}`
+          const other = view.graph.nodes[link.id]
+          const otherId = `c${view.cid}${link.id}`
+          const arrow = link.direction === 'out' ? `${id} ${link.relation} ${otherId}` : `${otherId} ${link.relation} ${id}`
           lines.push(`- ${arrow}: ${other.label}${args.depth >= 1 ? ` — ${other.gist}` : ''}`)
         }
       }
-      return { status: 'ok', text: lines.join('\n') }
+      return ok(lines.join('\n'))
     }
   }))
 
@@ -370,48 +340,64 @@ export function apply(ctx, config = {}) {
       cmdCtx.effect(function* () {
         yield cmdCtx.commands.register({
           name: 'context-graph',
-          description: 'Project memory graph: /context-graph [stats|build|fold|find <words>]',
+          description: `Chat memory graph: /context-graph ${USAGE}`,
           // Without `input`, dsh clients run the bare name and send any typed arguments to the model as chat.
-          input: { hint: '[stats|build|fold|find <words>]' },
+          input: { hint: USAGE },
           async handler(invocation) {
             const [sub = 'stats', ...rest] = invocation.rawInput.trim().split(/\s+/).filter(Boolean)
             const agent = invocation.agent
-            if (sub === 'fold') {
-              const result = await agent.runMaintenance(async () => {
-                await build(agent, { force: true })
-                return fold(agent, { force: true })
-              })
-              if (result.status !== 'folded') return { kind: 'error', text: `Not folded: ${result.reason}` }
-              return { kind: 'success', text: `Folded t1-t${result.turns} · ~${result.before} → ~${result.after} tokens per request\nThe model now sees a table of contents for these turns and calls recall for exact text.` }
+            const sid = sidOf(agent)
+            if (sub === 'on') {
+              await setFlags(agent, { memory: true })
+              state(sid).announce = true
+              const result = await agent.runMaintenance(() => build(agent, { force: true }))
+              const shared = (await loadViews(agent)).filter((v) => !v.own).length
+              const indexed = result.status === 'built' ? `${result.totalNodes} topics in this chat` : `nothing indexed yet (${result.reason ?? result.status})`
+              return { kind: 'success', text: `Memory on · ${indexed} · ${shared} shared ${shared === 1 ? 'chat' : 'chats'} to draw on\nThis chat indexes itself every ${cfg.buildEveryTurns} turns. /context-graph share lets other chats use it; /context-graph off stops it.` }
+            }
+            if (sub === 'off') {
+              await setFlags(agent, { memory: false })
+              return { kind: 'success', text: 'Memory off · nothing is added to requests\nThe graph file stays; /context-graph on resumes.' }
+            }
+            if (sub === 'share' || sub === 'unshare') {
+              const meta = await setFlags(agent, { shared: sub === 'share' })
+              const topics = Object.keys((await loadGraph(chatDir(dirFor(agent), sid))).nodes).length
+              const hint = meta.memory ? '' : '\nMemory is off for this chat, so it has nothing new to share until /context-graph on.'
+              return { kind: 'success', text: sub === 'share' ? `Shared with the workspace · ${topics} topics\nOther chats with memory on can now match and recall this chat.${hint}` : `No longer shared · ${topics} topics stay private to this chat` }
             }
             if (sub === 'build') {
               const result = await agent.runMaintenance(() => build(agent, { force: true }))
               if (result.status !== 'built') return { kind: 'error', text: `Build ${result.status}: ${result.reason ?? ''}`.trim() }
-              return { kind: 'success', text: `${result.nodes} topics indexed (${result.newNodes} new) · graph has ${result.totalNodes} topics\nLinks: ${result.edges}\nFolder: ${result.dir}` }
+              return { kind: 'success', text: `${result.nodes} topics indexed (${result.newNodes} new) · this chat has ${result.totalNodes} topics\nLinks: ${result.edges}\nFolder: ${result.dir}` }
             }
-            const graph = await getGraph(dirFor(agent))
+            const views = await loadViews(agent)
+            if (sub === 'map') {
+              const all = []
+              for (const { sid: other, meta } of await listChats(dirFor(agent))) all.push({ sid: other, cid: meta.cid, meta, own: other === sid, graph: await loadGraph(chatDir(dirFor(agent), other)) })
+              return { kind: 'success', text: `${all.length} ${all.length === 1 ? 'chat' : 'chats'} in ${dirFor(agent)}\n${renderMap(all)}` }
+            }
             if (sub === 'find') {
-              const hits = matchNodes(graph, rest.join(' '), { max: cfg.maxHits })
-              if (hits.length === 0) return { kind: 'success', text: 'No matching topics' }
-              const lines = hits.map(({ id, node }) => `${id} ${node.label}: ${node.gist}`)
-              return { kind: 'success', text: [`${hits.length} matching ${hits.length === 1 ? 'topic' : 'topics'}`, ...lines].join('\n') }
+              const query = rest.join(' ')
+              const { hits } = matchAcross(views, query, { max: cfg.maxHits, range: parseTimeRange(query) })
+              if (hits.length === 0) return { kind: 'success', text: 'No matching topics in shared chats' }
+              return { kind: 'success', text: [`${hits.length} matching ${hits.length === 1 ? 'topic' : 'topics'}`, ...hits.map(({ id, node }) => `${id} ${node.label}: ${node.gist}`)].join('\n') }
             }
-            if (sub !== 'stats') return { kind: 'error', text: 'Usage: /context-graph [stats|build|fold|find <words>]' }
+            if (sub !== 'stats') return { kind: 'error', text: `Usage: /context-graph ${USAGE}` }
+            const own = views.find((v) => v.own)
             const m = meter.main
             const cached = m.cacheRead + m.cacheWrite
             const hitRate = m.input + cached > 0 ? Math.round((m.cacheRead / (m.input + cached)) * 100) : 0
             const session = agent.session
-            const pending = collectSpan(session.surface.nodes, (seq) => session.eventAt(seq), state(String(session.id)).lastBuiltSeq).userTurns
+            const pending = collectSpan(session.surface.nodes, (seq) => session.eventAt(seq), state(sid).lastBuiltSeq).userTurns
+            const shared = views.filter((v) => !v.own).length
             return {
               kind: 'success',
               text: [
-                `${Object.keys(graph.nodes).length} topics · ${graph.edges.length} links · ${pending} turns waiting to be indexed${updates.current() ? ' · update available' : ''}`,
+                `Memory ${own?.meta.memory ? 'on' : 'off'} · ${Object.keys(own?.graph.nodes ?? {}).length} topics in this chat · ${own?.meta.shared ? 'shared' : 'private'} · ${shared} shared ${shared === 1 ? 'chat' : 'chats'} · ${pending} turns waiting to be indexed${updates.current() ? ' · update available' : ''}`,
                 `Version ${version}: ${updates.current() ?? 'no newer version found'}`,
                 `Graph folder: ${dirFor(agent)}`,
-                `This chat indexes itself every ${cfg.buildEveryTurns} turns; /context-graph build indexes it now.`,
                 'Counters below are since the app started:',
                 `Builds: ${meter.builds}; builder tokens in/out: ${meter.builder.input + meter.builder.cacheRead + meter.builder.cacheWrite}/${meter.builder.output}`,
-                `Folds: ${meter.folds}; ~${meter.foldSaved} input tokens removed from every later request`,
                 `Injected blocks: ${meter.injected} (~${meter.injectedTokens} tokens); recalls: ${meter.recalls}`,
                 `Main requests: ${m.requests}; input ${m.input} uncached + ${m.cacheRead} cache-read + ${m.cacheWrite} cache-write; cache-hit ${hitRate}%`
               ].join('\n')

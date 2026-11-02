@@ -1,7 +1,7 @@
 {
   "name": "dsh-context-graph",
-  "version": "0.3.0",
-  "description": "DeepSeek Harness plugin: remembers past conversations as a small graph and folds old turns of a long chat into a table of contents, so fewer input tokens are sent; exact text is recalled on demand",
+  "version": "0.4.0",
+  "description": "DeepSeek Harness plugin: per-chat memory graphs you switch on with /context-graph on; other chats in the workspace recall exact past text by topic, chat or day, so fewer input tokens are re-sent",
   "icon": "./icon.svg",
   "type": "module",
   "main": "index.js",
@@ -26,7 +26,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --import ./test/resolve-dsh.mjs --test test/graph.test.js test/fold.test.js test/update.test.js test/client.test.js test/plugin.test.js"
+    "test": "node --import ./test/resolve-dsh.mjs --test test/graph.test.js test/update.test.js test/client.test.js test/plugin.test.js"
   },
   "keywords": [
     "dsh-plugin",

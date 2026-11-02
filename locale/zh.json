@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "上下文图谱",
-    "description": "把过往对话记成一张小型主题图谱，并把长对话的旧轮次折叠成目录，从而减少发送的输入 token；需要时按需取回原文。",
+    "description": "按对话开启的记忆：/context-graph on。工作区里的其他对话可按主题、对话或日期取回过往原文，而不是把旧消息重复发送，从而减少输入 token。",
     "detail": "README.zh.md"
   }
 }

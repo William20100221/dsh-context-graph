@@ -44,17 +44,18 @@ test('registers one card keyed to the /context-graph command, with en and zh tex
 
 test('title follows the subcommand; line 1 is the summary; the rest opens on click', () => {
   const client = loadClient()
-  assert.equal(client.subcommandOf(' fold'), 'fold')
+  assert.equal(client.subcommandOf(' on'), 'on')
+  assert.equal(client.subcommandOf(' map'), 'map')
   assert.equal(client.subcommandOf(''), 'stats')
   assert.equal(client.subcommandOf('nonsense'), 'stats')
-  const text = 'Folded t1-t9 · ~30000 → ~900 tokens per request\nThe model now sees a table of contents.'
-  const closed = row(client.ContextGraphCard({ node: { args: ' fold', outcome: { kind: 'success', text } }, t }))
-  assert.equal(closed.title, 't:fold')
-  assert.equal(closed.collapsedContent.props.children, 'Folded t1-t9 · ~30000 → ~900 tokens per request')
+  const text = 'Memory on · 3 topics in this chat · 2 shared chats to draw on\nThis chat indexes itself every 4 turns.'
+  const closed = row(client.ContextGraphCard({ node: { args: ' on', outcome: { kind: 'success', text } }, t }))
+  assert.equal(closed.title, 't:on')
+  assert.equal(closed.collapsedContent.props.children, 'Memory on · 3 topics in this chat · 2 shared chats to draw on')
   assert.equal(closed.expandable, true)
   assert.equal(closed.children, undefined, 'body hidden until opened')
-  const opened = row(loadClient({ openState: true }).ContextGraphCard({ node: { args: ' fold', outcome: { kind: 'success', text } }, t }))
-  assert.equal(opened.children.props.children, 'The model now sees a table of contents.')
+  const opened = row(loadClient({ openState: true }).ContextGraphCard({ node: { args: ' on', outcome: { kind: 'success', text } }, t }))
+  assert.equal(opened.children.props.children, 'This chat indexes itself every 4 turns.')
 })
 
 test('running and failed states', () => {

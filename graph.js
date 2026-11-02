@@ -1,8 +1,9 @@
 /**
  * context-graph core. Pure: no I/O, no dsh imports, so `node --test` covers it without a harness.
  *
- * A graph is `{ version, nextId, nodes: { [id]: Node }, edges: [[from, to, relation], ...] }`.
+ * One graph per chat: `{ version, nextId, nodes: { [id]: Node }, edges: [[from, to, relation], ...] }`.
  * A Node is `{ label, gist, aliases, kind, src: [{ session, turn, at }], updated, hits }`.
+ * Ids inside a graph are `n12`; across chats they are prefixed by the chat's number: `c3n12`.
  * The verbatim source text of a node lives outside the graph (see store.js); `src` is provenance.
  */
 
@@ -61,11 +62,6 @@ function nodeTokens(node) {
   }
 }
 
-/** True when every provenance entry of `node` comes from `session` (its text is still in that session's context). */
-export function onlyFromSession(node, session) {
-  return Boolean(session) && (node.src ?? []).length > 0 && node.src.every((s) => s.session === session)
-}
-
 export function degree(graph, id) {
   let n = 0
   for (const [a, b] of graph.edges) if (a === id || b === id) n++
@@ -96,17 +92,15 @@ export function resolveSuperseded(graph, id) {
 }
 
 /**
- * Lexical match of a user message against node labels/aliases (weight 2) and gists (weight 1),
- * with a small boost for well-connected nodes. Nodes whose every source is the current session are
- * skipped while that session has not compacted: their text is still on the surface.
- * @returns [{ id, node, score }] best first, at most `max`, only nodes with a strong (label/alias) hit.
+ * Lexical match of a user message against one graph: labels/aliases weigh 2, gists 1, plus a small
+ * boost for well-connected nodes. Only nodes with a strong (label/alias) hit count.
+ * @returns [{ id, node, score, via }] best first, at most `max`.
  */
-export function matchNodes(graph, query, { max = 5, session, sessionCompacted = false } = {}) {
+export function matchNodes(graph, query, { max = 5 } = {}) {
   const q = tokenize(query)
   if (q.length === 0) return []
   const scored = []
   for (const [rawId, node] of Object.entries(graph.nodes)) {
-    if (!sessionCompacted && onlyFromSession(node, session)) continue
     const { strong, weak } = nodeTokens(node)
     let strongHits = 0
     let weakHits = 0
@@ -133,31 +127,139 @@ export function surfaceNodes(graph, max = 40) {
     .map(({ id }) => id)
 }
 
-function line(id, node) {
-  const date = (node.updated ?? '').slice(0, 10)
-  return `- ${id} ${node.label}: ${node.gist}${date ? ` (${date})` : ''}`
+// ---------- time: the first filter when a message names a day ----------
+
+const DAY = 86400000
+const dayStart = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x }
+
+/**
+ * A from/to range (to exclusive) when the text names a time: yesterday, today, N days ago, last/this
+ * week or month, 2026-11-01, 11月1日, 昨天, 上周 ... `undefined` otherwise. No model call.
+ */
+export function parseTimeRange(text, now = new Date()) {
+  const s = String(text ?? '').toLowerCase()
+  const today = dayStart(now)
+  const days = (offset, label, span = 1) => ({ from: new Date(+today + offset * DAY), to: new Date(+today + (offset + span) * DAY), label })
+  let m
+  if ((m = /\b(\d{4})-(\d{2})-(\d{2})\b/.exec(s))) {
+    const d = new Date(+m[1], +m[2] - 1, +m[3])
+    return { from: d, to: new Date(+d + DAY), label: m[0] }
+  }
+  if ((m = /(\d{1,2})月(\d{1,2})[日号]/.exec(s))) {
+    const d = new Date(now.getFullYear(), +m[1] - 1, +m[2])
+    if (d > now) d.setFullYear(d.getFullYear() - 1)
+    return { from: d, to: new Date(+d + DAY), label: m[0] }
+  }
+  if (/day before yesterday|前天/.test(s)) return days(-2, 'the day before yesterday')
+  if (/\byesterday\b|昨天|昨日/.test(s)) return days(-1, 'yesterday')
+  if (/\btoday\b|this morning|今天|今早|今日/.test(s)) return days(0, 'today')
+  if ((m = /\b(\d+) days? ago\b/.exec(s)) || (m = /(\d+)天前/.exec(s))) return days(-Number(m[1]), m[0])
+  const monday = new Date(+today - ((today.getDay() + 6) % 7) * DAY)
+  if (/\blast week\b|上周|上星期|上个星期/.test(s)) return { from: new Date(+monday - 7 * DAY), to: monday, label: 'last week' }
+  if (/\bthis week\b|本周|这周|这星期|这个星期/.test(s)) return { from: monday, to: new Date(+monday + 7 * DAY), label: 'this week' }
+  if (/\blast month\b|上个月|上月/.test(s)) {
+    return { from: new Date(now.getFullYear(), now.getMonth() - 1, 1), to: new Date(now.getFullYear(), now.getMonth(), 1), label: 'last month' }
+  }
+  if (/\bthis month\b|本月|这个月/.test(s)) {
+    return { from: new Date(now.getFullYear(), now.getMonth(), 1), to: new Date(now.getFullYear(), now.getMonth() + 1, 1), label: 'this month' }
+  }
+  return undefined
 }
 
+const inRange = (iso, range) => Boolean(iso) && new Date(iso) >= range.from && new Date(iso) < range.to
+/** A chat overlaps the range when it was active at any point inside it. */
+export const chatInRange = (meta, range) => Boolean(meta?.startedAt) && new Date(meta.startedAt) < range.to && new Date(meta.lastActiveAt ?? meta.startedAt) >= range.from
+
+// ---------- views: one chat's graph seen from another chat ----------
+
+/** A view is `{ sid, cid, meta, graph, own }`; `own` is the chat the request belongs to. */
+export const globalId = (view, id) => `c${view.cid}${id}`
+
+/**
+ * Match across every view except the own chat (its text is still in context). With a time range,
+ * try chats active in that range first, then topics updated in it, then everything.
+ * @returns { hits: [{ id, node, score, via, view }], slice }
+ */
+export function matchAcross(views, query, { max = 5, range } = {}) {
+  const others = views.filter((v) => !v.own)
+  const run = (vs, keep = () => true) => vs
+    .flatMap((view) => matchNodes(view.graph, query, { max }).map((h) => ({ ...h, id: globalId(view, h.id), via: h.via && globalId(view, h.via), view })))
+    .filter(keep)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, max)
+  if (range) {
+    const byChat = run(others.filter((v) => chatInRange(v.meta, range)))
+    if (byChat.length > 0) return { hits: byChat, slice: `${range.label} (by chat)` }
+    const byTopic = run(others, (h) => inRange(h.node.updated, range))
+    if (byTopic.length > 0) return { hits: byTopic, slice: `${range.label} (by topic)` }
+  }
+  return { hits: run(others), slice: undefined }
+}
+
+const day = (iso) => String(iso ?? '').slice(0, 10)
+const topicLine = (id, node) => `- ${id} ${node.label}: ${node.gist}${node.updated ? ` (${day(node.updated)})` : ''}`
+const chatLine = (view) => `- c${view.cid} ${day(view.meta.lastActiveAt ?? view.meta.startedAt)} ${view.meta.title ?? '(untitled)'} (${Object.keys(view.graph.nodes).length} topics${view.own ? ', this chat' : ''})`
+const newestFirst = (views) => [...views].sort((a, b) => String(b.meta.lastActiveAt ?? '').localeCompare(String(a.meta.lastActiveAt ?? '')))
+
 /** The per-turn block appended to the user's message. `inline` carries one node's verbatim text when it is short. */
-export function renderHits(graph, hits, { inline } = {}) {
+export function renderHits(hits, { inline, slice } = {}) {
   if (hits.length === 0) return ''
-  const lines = [`[${SOURCE_KIND}] Related past context. Call recall(id) for the verbatim source.`]
-  for (const { id, node, via } of hits) lines.push(line(id, node) + (via ? ` [replaces ${via}]` : ''))
+  const lines = [`[${SOURCE_KIND}] Related past context${slice ? ` from ${slice}` : ''}. Call recall(id) for the verbatim source.`]
+  for (const { id, node, via } of hits) lines.push(topicLine(id, node) + (via ? ` [replaces ${via}]` : ''))
   if (inline) lines.push('', `Verbatim source of ${inline.id}:`, inline.text.trim())
   return lines.join('\n')
 }
 
-/** The cross-session surface layer sent once at the start of a session. */
-export function renderSurface(graph, ids) {
-  if (ids.length === 0) return ''
+/** Sent once after memory is switched on: the chats this chat can draw on, newest first. */
+export function renderChats(views, { max = 20 } = {}) {
+  const shared = newestFirst(views.filter((v) => !v.own))
+  if (shared.length === 0) return ''
   const lines = [
-    `[${SOURCE_KIND}] Memory of earlier sessions in this project (${Object.keys(graph.nodes).length} nodes). ` +
-    'Each line is one node: id, label, gist. Call recall(id) for the verbatim source and its neighbours. ' +
+    `[${SOURCE_KIND}] Memory is on. Earlier chats in this workspace, newest first. ` +
+    'Call recall("c3") for a chat\'s topics, recall("2026-11-01") for everything from a day, recall("c3n12") for one topic\'s exact text. ' +
     'Treat this as background; do not restate it.'
   ]
-  for (const id of ids) lines.push(line(id, graph.nodes[id]))
+  for (const view of shared.slice(0, max)) lines.push(chatLine(view))
+  if (shared.length > max) lines.push(`- ... ${shared.length - max} older chats; name a day to see them`)
   return lines.join('\n')
 }
+
+/** One chat's topics, most connected first. */
+export function renderChatIndex(view, { max = 40 } = {}) {
+  const lines = [`# c${view.cid} ${view.meta.title ?? '(untitled)'} (${day(view.meta.startedAt)} → ${day(view.meta.lastActiveAt)})`]
+  const ids = surfaceNodes(view.graph, max)
+  if (ids.length === 0) lines.push('(no topics indexed yet)')
+  for (const id of ids) lines.push(topicLine(globalId(view, id), view.graph.nodes[id]))
+  return lines.join('\n')
+}
+
+/** Everything that happened in a time range: each chat active then, with its topics from that range first. */
+export function renderRange(views, range, { maxChats = 10, maxTopics = 10 } = {}) {
+  const chats = newestFirst(views.filter((v) => chatInRange(v.meta, range)))
+  if (chats.length === 0) return `[${SOURCE_KIND}] No chats from ${range.label}.`
+  const lines = [`[${SOURCE_KIND}] Chats from ${range.label}:`]
+  for (const view of chats.slice(0, maxChats)) {
+    lines.push(chatLine(view))
+    const ids = Object.keys(view.graph.nodes).sort((a, b) => Number(inRange(view.graph.nodes[b].updated, range)) - Number(inRange(view.graph.nodes[a].updated, range)))
+    for (const id of ids.slice(0, maxTopics)) lines.push('  ' + topicLine(globalId(view, id), view.graph.nodes[id]))
+  }
+  return lines.join('\n')
+}
+
+/** The /context-graph map: workspace → chats (newest first) → topics. */
+export function renderMap(views, { maxTopics = 8 } = {}) {
+  if (views.length === 0) return 'No chats indexed in this workspace yet. Run /context-graph on in a chat to start.'
+  const lines = []
+  for (const view of newestFirst(views)) {
+    const meta = view.meta
+    const flags = [view.own ? 'this chat' : undefined, meta.memory ? 'memory on' : undefined, meta.shared ? 'shared' : 'private'].filter(Boolean).join(', ')
+    lines.push(`c${view.cid} ${day(meta.startedAt)} ${meta.title ?? '(untitled)'} · ${Object.keys(view.graph.nodes).length} topics · ${flags}`)
+    for (const id of surfaceNodes(view.graph, maxTopics)) lines.push('  ' + topicLine(globalId(view, id), view.graph.nodes[id]))
+  }
+  return lines.join('\n')
+}
+
+// ---------- builder ----------
 
 /** `[m0 user] ...` transcript the builder reads; each message capped so one huge paste cannot eat the call. */
 export function transcriptForBuilder(messages, maxChars = 2000) {
@@ -270,6 +372,15 @@ export function mergeDelta(graph, delta, { session, turn, now }) {
   return touched
 }
 
+// ---------- session events ----------
+
+const isHuman = (event) => event?.type === 'user/message' && event.data?.source?.kind === 'user'
+
+function textOf(content) {
+  if (!Array.isArray(content)) return ''
+  return content.filter((b) => b?.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n').trim()
+}
+
 /**
  * Pull the human/assistant exchange out of dsh session events in surface order.
  * @param nodes surface seqs; @param eventAt session lookup; @param afterSeq only events past this seq.
@@ -284,7 +395,7 @@ export function collectSpan(nodes, eventAt, afterSeq = -1) {
     const event = eventAt(seq)
     if (!event) continue
     lastSeq = Math.max(lastSeq, seq)
-    if (event.type === 'user/message' && event.data?.source?.kind === 'user') {
+    if (isHuman(event)) {
       const text = textOf(event.data.content)
       if (text) { messages.push({ seq, role: 'user', text }); userTurns++ }
     } else if (event.type === 'assistant/message') {
@@ -295,56 +406,16 @@ export function collectSpan(nodes, eventAt, afterSeq = -1) {
   return { messages, lastSeq, userTurns }
 }
 
-function textOf(content) {
-  if (!Array.isArray(content)) return ''
-  return content.filter((b) => b?.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n').trim()
-}
-
-// ---------- folding: replace old turns of the current chat with a table of contents ----------
-
-/** Injected context kinds that must survive a fold (carried into the fold message verbatim). */
-export const KEEP_KINDS = ['skill-catalog', 'runtime-context']
-
-const isHuman = (event) => event?.type === 'user/message' && event.data?.source?.kind === 'user'
-export const isFold = (event) => event?.type === 'user/message' && event.data?.source?.kind === SOURCE_KIND && event.data.source.fold === true
-
-function toolDelta(event) {
-  if (event?.type === 'assistant/message') return (event.data?.message?.content ?? []).filter((b) => b.type === 'tool-call').length
-  return event?.type === 'tool/result' ? -1 : 0
-}
-
-/**
- * Choose the surface range to fold: everything after the system prompt up to (not including) the
- * human prompt that starts the last `keepTurns` turns. Only content already indexed (seq <= maxSeq)
- * is folded, and the cut never splits a tool call from its result.
- * @returns {{ startSeq, endSeq, shadowedSeqs } | undefined}
- */
-export function planFold(nodes, eventAt, { keepTurns = 2, maxSeq = Infinity } = {}) {
-  const first = eventAt(nodes[0])?.type === 'system/message' ? 1 : 0
-  const humans = []
-  for (let i = first; i < nodes.length; i++) if (isHuman(eventAt(nodes[i]))) humans.push(i)
-  for (let h = humans.length - keepTurns; h >= 1; h--) {
-    const cut = humans[h]
-    const range = nodes.slice(first, cut)
-    if (!range.some((seq) => isHuman(eventAt(seq)))) return undefined
-    if (range.some((seq) => seq > maxSeq && !isFold(eventAt(seq)))) continue
-    let open = 0
-    for (const seq of nodes.slice(0, cut)) open += toolDelta(eventAt(seq))
-    if (open !== 0) continue
-    return { startSeq: range[0], endSeq: range.at(-1), shadowedSeqs: range }
-  }
-  return undefined
-}
-
-/** Every human prompt in the session log up to `endSeq`, numbered t1, t2, ... in log order. */
-export function turnIndex(eventAt, endSeq = Infinity) {
-  const turns = []
-  for (let seq = 0; seq <= endSeq; seq++) {
+/** First human prompt of the log, shortened: the chat's title until dsh gives us a better one. */
+export function titleOf(eventAt, width = 60) {
+  for (let seq = 0; ; seq++) {
     const event = eventAt(seq)
-    if (!event) break
-    if (isHuman(event)) turns.push({ turn: turns.length + 1, seq, text: textOf(event.data.content) })
+    if (!event) return undefined
+    if (isHuman(event)) {
+      const text = textOf(event.data.content).replace(/\s+/g, ' ')
+      return text.length > width ? `${text.slice(0, width - 1)}…` : text
+    }
   }
-  return turns
 }
 
 /** Verbatim text of turn `n` (its prompt through the step before the next human prompt). */
@@ -372,40 +443,4 @@ export function turnTranscript(eventAt, n, { maxToolChars = 2000 } = {}) {
     }
   }
   return out.join('\n\n')
-}
-
-/** Content blocks the fold message must carry: latest standing context of each KEEP_KINDS kind. */
-export function foldKept(shadowedSeqs, eventAt) {
-  const kept = new Map()
-  for (const seq of shadowedSeqs) {
-    const event = eventAt(seq)
-    if (isFold(event)) {
-      const kinds = event.data.source.keptKinds ?? []
-      kinds.forEach((kind, i) => kept.set(kind, event.data.content[i + 1]))
-    } else if (event?.type === 'user/message' && KEEP_KINDS.includes(event.data?.source?.kind)) {
-      kept.set(event.data.source.kind, { type: 'text', text: textOf(event.data.content) })
-    }
-  }
-  return { kinds: [...kept.keys()], blocks: [...kept.values()].filter(Boolean) }
-}
-
-/** The table of contents that replaces the folded turns. */
-export function renderFoldIndex(graph, session, turns, { maxNodes = 40, maxTurns = 60, width = 90 } = {}) {
-  const lines = [
-    `[${SOURCE_KIND}] Turns t1-t${turns.length} of this conversation are folded to save tokens. They are not lost.`,
-    'Below is their table of contents. Before answering anything that depends on their details, call recall with a topic id (n12) for the facts, or a turn id (t7) for the exact messages of that turn. Do not guess folded details.'
-  ]
-  const ids = surfaceNodes(graph, Infinity).filter((id) => (graph.nodes[id].src ?? []).some((s) => s.session === session)).slice(0, maxNodes)
-  if (ids.length > 0) {
-    lines.push('', 'Topics:')
-    for (const id of ids) lines.push(`- ${id} ${graph.nodes[id].label}: ${graph.nodes[id].gist}`)
-  }
-  lines.push('', 'Turns (what the user asked):')
-  const shown = turns.slice(-maxTurns)
-  if (shown.length < turns.length) lines.push(`- t1-t${turns.length - shown.length}: earlier turns, recall by id`)
-  for (const t of shown) {
-    const first = t.text.replace(/\s+/g, ' ').trim()
-    lines.push(`- t${t.turn}: ${first.length > width ? `${first.slice(0, width - 1)}…` : first}`)
-  }
-  return lines.join('\n')
 }

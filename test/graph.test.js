@@ -5,10 +5,11 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 import {
-  builderInstruction, collectSpan, emptyGraph, estimateTokens, matchNodes, mergeDelta, neighbors,
-  parseBuilderOutput, renderHits, renderSurface, resolveSuperseded, surfaceNodes, tokenize, transcriptForBuilder
+  builderInstruction, chatInRange, collectSpan, emptyGraph, estimateTokens, matchAcross, matchNodes, mergeDelta, neighbors,
+  parseBuilderOutput, parseTimeRange, renderChatIndex, renderChats, renderHits, renderMap, renderRange, resolveSuperseded,
+  surfaceNodes, titleOf, tokenize, transcriptForBuilder
 } from '../graph.js'
-import { appendSource, loadGraph, readSource, saveGraph } from '../store.js'
+import { appendSource, chatDir, ensureMeta, listChats, loadGraph, loadMeta, readSource, saveGraph, saveMeta } from '../store.js'
 
 function sampleGraph() {
   const g = emptyGraph()
@@ -21,6 +22,24 @@ function sampleGraph() {
     edges: [['clear_conversation tool', 'pnpm not on PATH', 'uses']]
   }, { session: 'sA', turn: 1, now: '2026-11-01T10:00:00Z' })
   return g
+}
+
+const NOW = new Date(2026, 10, 2, 15, 0, 0) // Monday 2026-11-02 15:00 local
+const meta = (cid, startedAt, lastActiveAt, extra = {}) => ({ cid, title: `chat ${cid}`, startedAt, lastActiveAt, memory: true, shared: true, ...extra })
+
+/** Two shared chats (c1 yesterday, c2 last week) and the own chat c3. */
+function sampleViews() {
+  const old = emptyGraph()
+  mergeDelta(old, { nodes: [{ id: null, label: 'tunnel timeout', gist: '524 from the free tunnel after 120s', aliases: ['524', 'cloudflare'], kind: 'fact', msgs: [0] }], edges: [] },
+    { session: 'sOld', turn: 1, now: '2026-10-27T09:00:00' })
+  const own = emptyGraph()
+  mergeDelta(own, { nodes: [{ id: null, label: 'commit signing', gist: 'own copy, still in context', aliases: ['gpg'], kind: 'fact', msgs: [0] }], edges: [] },
+    { session: 'sOwn', turn: 1, now: '2026-11-02T14:00:00' })
+  return [
+    { sid: 'sA', cid: 1, meta: meta(1, '2026-11-01T09:00:00', '2026-11-01T12:00:00'), graph: sampleGraph(), own: false },
+    { sid: 'sOld', cid: 2, meta: meta(2, '2026-10-27T08:00:00', '2026-10-27T10:00:00'), graph: old, own: false },
+    { sid: 'sOwn', cid: 3, meta: meta(3, '2026-11-02T14:00:00', '2026-11-02T15:00:00', { shared: false }), graph: own, own: true }
+  ]
 }
 
 test('tokenize splits words, identifiers and CJK bigrams, drops stopwords', () => {
@@ -41,13 +60,6 @@ test('matchNodes ranks label hits above gist hits and needs a strong hit', () =>
   assert.equal(matchNodes(g, '清除上下文')[0].id, 'n1', 'Chinese alias matches')
 })
 
-test('matchNodes skips same-session nodes until that session compacted', () => {
-  const g = sampleGraph()
-  assert.equal(matchNodes(g, 'clear context', { session: 'sA' }).length, 0)
-  assert.equal(matchNodes(g, 'clear context', { session: 'sA', sessionCompacted: true }).length, 1)
-  assert.equal(matchNodes(g, 'clear context', { session: 'sB' }).length, 1)
-})
-
 test('supersedes edges redirect a hit to the newer node', () => {
   const g = sampleGraph()
   mergeDelta(g, {
@@ -66,6 +78,64 @@ test('surfaceNodes puts the most connected first', () => {
   assert.deepEqual(surfaceNodes(g, 2), ['n1', 'n3'], 'degree-1 nodes before the unlinked n2')
   assert.equal(surfaceNodes(g, 10).length, 3)
   assert.deepEqual(neighbors(g, 'n1'), [{ id: 'n3', relation: 'uses', direction: 'out' }])
+})
+
+test('parseTimeRange understands days, weeks and months in English and Chinese', () => {
+  const day = (r) => [r.from.toISOString().slice(0, 10), r.to.toISOString().slice(0, 10)]
+  const y = parseTimeRange('what did we decide yesterday?', NOW)
+  assert.equal(y.label, 'yesterday')
+  assert.ok(y.from < new Date(2026, 10, 1, 12) && y.to > new Date(2026, 10, 1, 12) && y.to <= new Date(2026, 10, 2))
+  assert.equal(parseTimeRange('昨天说的那个超时', NOW).label, 'yesterday')
+  assert.equal(parseTimeRange('today we continue', NOW).label, 'today')
+  assert.equal(parseTimeRange('3 days ago', NOW).from.getDate(), 30)
+  const lw = parseTimeRange('the plan from last week', NOW)
+  assert.equal(lw.from.getDay(), 1, 'weeks start on Monday')
+  assert.equal(lw.to.getTime(), new Date(2026, 10, 2).getTime())
+  assert.equal(parseTimeRange('上周的结论', NOW).label, 'last week')
+  assert.equal(parseTimeRange('on 2026-10-27 we said', NOW).from.getDate(), 27)
+  assert.equal(parseTimeRange('11月1日的对话', NOW).from.getMonth(), 10)
+  assert.equal(parseTimeRange('last month', NOW).from.getMonth(), 9)
+  assert.equal(parseTimeRange('no time words here', NOW), undefined)
+  assert.ok(day(y)[0] <= day(y)[1])
+  assert.equal(chatInRange(meta(1, '2026-11-01T09:00:00', '2026-11-01T12:00:00'), y), true)
+  assert.equal(chatInRange(meta(1, '2026-10-27T08:00:00', '2026-10-27T10:00:00'), y), false)
+})
+
+test('matchAcross skips the own chat, prefixes ids, and searches a named day first', () => {
+  const views = sampleViews()
+  const plain = matchAcross(views, 'gpg signed commits')
+  assert.deepEqual(plain.hits.map((h) => h.id), ['c1n2'], 'own-chat copy is not repeated')
+  assert.equal(plain.slice, undefined)
+  const byChat = matchAcross(views, 'the 524 tunnel problem from last week', { range: parseTimeRange('last week', NOW) })
+  assert.deepEqual(byChat.hits.map((h) => h.id), ['c2n1'])
+  assert.equal(byChat.slice, 'last week (by chat)')
+  const widened = matchAcross(views, 'the 524 tunnel problem from yesterday', { range: parseTimeRange('yesterday', NOW) })
+  assert.deepEqual(widened.hits.map((h) => h.id), ['c2n1'], 'no hit in that day: widened to everything')
+  assert.equal(widened.slice, undefined)
+  assert.equal(matchAcross(views, 'what happened yesterday', { range: parseTimeRange('yesterday', NOW) }).hits.length, 0)
+})
+
+test('render: hits, chat list, chat index, day range and map stay small and name ids the model can recall', () => {
+  const views = sampleViews()
+  const { hits } = matchAcross(views, 'clear context corepack signed commits 524')
+  const block = renderHits(hits)
+  assert.ok(block.startsWith('[context-graph]'))
+  assert.ok(block.includes('- c1n1 clear_conversation tool:') && block.includes('- c2n1 tunnel timeout:'))
+  assert.ok(estimateTokens(block) < 200, `block too big: ${estimateTokens(block)}`)
+  assert.equal(renderHits([]), '')
+  const inline = renderHits(hits.slice(0, 1), { inline: { id: 'c1n1', text: 'verbatim' }, slice: 'yesterday (by chat)' })
+  assert.ok(inline.includes('from yesterday (by chat)') && inline.endsWith('Verbatim source of c1n1:\nverbatim'))
+  const chats = renderChats(views)
+  assert.match(chats, /Memory is on[\s\S]*- c1 2026-11-01 chat 1 \(3 topics\)\n- c2 2026-10-27 chat 2 \(1 topics\)$/)
+  assert.equal(renderChats([views[2]]), '', 'nothing to list without shared chats')
+  assert.match(renderChatIndex(views[0]), /^# c1 chat 1 \(2026-11-01 → 2026-11-01\)\n- c1n1 /)
+  const day = renderRange(views, parseTimeRange('yesterday', NOW))
+  assert.match(day, /^\[context-graph\] Chats from yesterday:\n- c1 2026-11-01 chat 1 \(3 topics\)\n  - c1n1 /)
+  assert.ok(!day.includes('c2 '), 'other days stay out')
+  assert.match(renderRange(views, parseTimeRange('2020-01-01', NOW)), /No chats from 2020-01-01/)
+  const map = renderMap(views)
+  assert.match(map, /^c3 2026-11-02 chat 3 · 1 topics · this chat, memory on, private\n  - c3n1 [\s\S]*\nc1 2026-11-01 chat 1 · 3 topics · memory on, shared\n/)
+  assert.match(renderMap([]), /No chats indexed/)
 })
 
 test('parseBuilderOutput tolerates fences, prose and trailing commas; rejects junk', () => {
@@ -95,19 +165,6 @@ test('mergeDelta assigns ids, updates by id or label, unions aliases, dedupes ed
   assert.equal(g.nextId, 5)
 })
 
-test('renderHits stays small and renderSurface lists god nodes', () => {
-  const g = sampleGraph()
-  const hits = matchNodes(g, 'clear context corepack signed commits')
-  const block = renderHits(g, hits)
-  assert.ok(block.startsWith('[context-graph]'))
-  assert.ok(estimateTokens(block) < 150, `block too big: ${estimateTokens(block)}`)
-  assert.equal(renderHits(g, []), '')
-  const inline = renderHits(g, hits.slice(0, 1), { inline: { id: 'n1', text: 'verbatim' } })
-  assert.ok(inline.endsWith('Verbatim source of n1:\nverbatim'))
-  const surface = renderSurface(g, surfaceNodes(g))
-  assert.ok(surface.includes('3 nodes') && surface.includes('- n2 commit signing'))
-})
-
 test('collectSpan reads human and assistant text after a seq, ignoring tools and injected context', () => {
   const events = {
     0: { type: 'system/message', data: {} },
@@ -125,20 +182,32 @@ test('collectSpan reads human and assistant text after a seq, ignoring tools and
   assert.deepEqual(later.messages.map((m) => m.text), ['second ask'])
   assert.ok(transcriptForBuilder(span.messages, 5).includes('[m0 user]\nfirst\n…[4 more chars]'))
   assert.ok(builderInstruction(sampleGraph()).includes('n1: clear_conversation tool'))
+  assert.equal(titleOf((seq) => events[seq]), 'first ask')
+  assert.equal(titleOf(() => undefined), undefined)
 })
 
-test('store round-trips graph and source text', async () => {
+test('store: one folder per chat, meta with chat numbers, graph and source round-trip', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'context-graph-'))
   try {
-    assert.equal(Object.keys((await loadGraph(dir)).nodes).length, 0, 'missing file is an empty graph')
+    assert.deepEqual(await listChats(dir), [], 'no chats folder yet')
+    const a = await ensureMeta(dir, 'sA', { title: 'first', workspace: dir, now: '2026-11-01T09:00:00Z' })
+    const b = await ensureMeta(dir, 'sB', { title: 'second', workspace: dir, now: '2026-11-02T09:00:00Z' })
+    assert.equal(a.cid, 1)
+    assert.equal(b.cid, 2)
+    assert.deepEqual(await ensureMeta(dir, 'sA', { now: 'later' }), a, 'existing meta is kept')
+    await saveMeta(dir, 'sA', { ...a, shared: true })
+    assert.equal((await loadMeta(dir, 'sA')).shared, true)
+    assert.deepEqual((await listChats(dir)).map((c) => c.sid), ['sB', 'sA'], 'newest activity first')
+    const chat = chatDir(dir, 'sA')
+    assert.equal(Object.keys((await loadGraph(chat)).nodes).length, 0, 'missing file is an empty graph')
     const g = sampleGraph()
-    await saveGraph(dir, g)
-    assert.deepEqual(await loadGraph(dir), g)
-    await appendSource(dir, 'n1', { session: 'sA', turn: 1, at: 'T', messages: [{ seq: 1, role: 'user', text: 'hello' }] })
-    await appendSource(dir, 'n1', { session: 'sA', turn: 2, at: 'U', messages: [{ seq: 5, role: 'assistant', text: 'again' }] })
-    const text = await readSource(dir, 'n1')
+    await saveGraph(chat, g)
+    assert.deepEqual(await loadGraph(chat), g)
+    await appendSource(chat, 'n1', { session: 'sA', turn: 1, at: 'T', messages: [{ seq: 1, role: 'user', text: 'hello' }] })
+    await appendSource(chat, 'n1', { session: 'sA', turn: 2, at: 'U', messages: [{ seq: 5, role: 'assistant', text: 'again' }] })
+    const text = await readSource(chat, 'n1')
     assert.ok(text.includes('## T session sA turn 1') && text.includes('hello') && text.includes('## U session sA turn 2'))
-    assert.equal(await readSource(dir, 'n404'), undefined)
+    assert.equal(await readSource(chat, 'n404'), undefined)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

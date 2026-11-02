@@ -1,54 +1,57 @@
 # dsh-context-graph
 
-A DeepSeek Harness (dsh) plugin that remembers your past conversations as a small graph.
-New sessions start with a one-screen map of what was decided before, each turn gets the few
-nodes that match what you just asked, and the model fetches the verbatim original text only
-when it needs it. Old messages stop being re-sent; decisions stop getting lost.
+A DeepSeek Harness (dsh) plugin that gives each chat a small memory graph you switch on when you
+want it. Other chats in the same workspace then get a short pointer to what was decided before, and
+the model fetches the exact original text only when it needs it. Old messages are not re-sent;
+decisions are not lost.
 
-**Folding (v0.2.0).** Every chat normally re-sends all earlier messages on every turn. Once the
-older part of a chat costs more than `foldAtTokens` per request, the plugin replaces it with one
-short table of contents: the topics found in it and a one-line list of what you asked in each
-turn (t1, t2, ...). The model follows that table to the exact part it needs with `recall("t7")`
-or `recall("n12")`. Your newest turns stay word for word. Nothing is deleted: the full turns stay
-in the session log and in the chat window.
+First principle: save input tokens without losing quality. The plugin adds nothing to a request
+unless you turned memory on in that chat, and what it adds is a few lines that point at exact text.
 
-**Looks like dsh (v0.3.0).** The Plugins page shows the plugin's own icon in dsh's icon style, a
-title and description in English or Chinese (上下文图谱), and a Chinese detail page. In chat,
-`/context-graph` results appear in dsh's own command card: a titled row with a one-line summary
-that expands to the details.
-
-Status: v0.3.0. Installs and loads in the dsh desktop app (dsh 0.2.1-rc.5); folding and indexing
-are not yet verified with a live model. 28 tests pass against the published dsh packages.
+Status: v0.4.0. Loads in the dsh desktop app (dsh 0.2.1-rc.5); not yet verified with a live model.
+Tests pass against the published dsh packages.
 
 Using Claude Code instead? The Claude version is a separate plugin built for Claude's app:
 [claude-context-graph](https://github.com/William20100221/claude-context-graph).
 
-## What it does
+## How it works
+
+Nothing happens in a chat until you run `/context-graph on`. From then on:
 
 | Moment | What happens | Cost |
 |---|---|---|
-| Every 4 human turns (default) | After the turn closes, one small auxiliary model call indexes the new messages into `.context-graph/graph.json` and stores the cited messages verbatim under `.context-graph/src/`. | about the span's tokens in, under 1k out, off the critical path |
-| First human turn of a session | A `[context-graph]` block lists the best-connected nodes from earlier sessions: id, label, one-line gist. | about 15 tokens per node, 40 nodes max |
-| Every human turn | The prompt is matched against node labels and aliases by word overlap (no model call). Up to 5 hits are appended to the message. One clearly dominant short hit is included verbatim. | under about 150 tokens |
-| Older part of this chat costs more than 24k tokens per request | At the start of your next turn it is replaced by a table of contents (topics plus one line per turn). The last 2 turns stay as they are. | breaks the provider cache once per fold, then every later request is smaller |
-| Model calls `recall(id)` | `n12`: the topic's verbatim source and neighbours. `t7`: folded turn 7 exactly, including tool calls. | one tool round trip |
-| `/context-graph` | `stats`, `build` (index now), `fold` (index and fold now), `find <words>`. | none |
+| `/context-graph on` | The chat is indexed now, then again every 4 human turns: one small auxiliary model call writes topics into `.context-graph/chats/<chat>/graph.json` and stores the cited messages verbatim. | about the new text's tokens in, under 1k out, off the critical path |
+| First message after `on` | One block lists the shared chats of this workspace, newest first: chat id, date, title, topic count. | about 15 tokens per chat |
+| Every human message | Your words are matched against the topics of the other shared chats by word overlap (no model call). Up to 5 hits are appended to the message. One clearly dominant short hit is included verbatim. | under about 150 tokens |
+| Your message names a time | "yesterday", "last week", "11月1日", "2026-11-01" ... that slice is searched first: chats active then, then topics from then, then everything. If nothing matches, the chats from that time are listed instead. | same |
+| Model calls `recall(id)` | `c3n12`: the topic's verbatim source and linked topics. `c3`: a chat's topics. `2026-11-01`: every chat and topic from that day. `t7`: turn 7 of this chat word for word. | one tool round trip |
+| `/context-graph share` | Lets other chats in the workspace see this chat's graph. Nothing is copied or merged; it is a flag on the chat. | none |
 
-Design rules, in order of importance:
+Design rules, in order:
 
-1. **Nothing is written without its source.** A node is stored only together with the verbatim
+1. **Off until asked.** No surface map, no matches, no indexing in a chat that has not run `on`.
+2. **Nothing is written without its source.** A topic is stored only together with the verbatim
    messages it was drawn from. The gist is a pointer, never the record.
-2. **Fold in batches, not every turn.** DeepSeek bills re-sent cached input at about 1/30 price,
-   and any fold restarts that cache. So a fold happens only when the old part is large
-   (24k tokens by default) and the table of contents is under half its size. Between folds the
-   prefix stays stable and cached. Matcher blocks ride at the end of the newest message.
-3. **Old decisions resolve to new ones.** A `supersedes` edge makes a hit on the old node show
-   the replacement instead.
-4. **Matching is lexical.** Labels, aliases and gists; English words, identifiers and Chinese
-   bigrams. The builder is asked to write aliases precisely so this works without embeddings.
+3. **Organise, never merge.** Each chat's graph stays in its own folder with its own dates. Sharing
+   is a flag. Ids carry the chat number (`c3n12`) so every topic traces back to its chat.
+4. **Time is the first filter.** A named day or week narrows the search before anything else.
+5. **Append at the end.** Injected blocks ride at the tail of the newest message so the provider's
+   prefix cache survives. Hiding or folding old turns is not this plugin's job.
 
-The full design, including what was borrowed from `dsh-plugin-save-token` and why cache
-economics make cross-session memory the main win, is in [docs/core-design.md](docs/core-design.md).
+## Commands
+
+Type `/context-graph`, pick it from the menu, then type the word:
+
+| Command | Does |
+|---|---|
+| `on` / `off` | Start or stop memory for this chat. `off` keeps the graph file. |
+| `share` / `unshare` | Let other chats in the workspace use this chat's graph, or stop. |
+| `stats` (default) | Memory state, topic counts, shared chats, pending turns, token counters. |
+| `build` | Index this chat now. |
+| `map` | Every chat in the workspace, newest first, with its top topics. |
+| `find <words>` | Search the shared chats; time words narrow it. |
+
+Results show in dsh's own command card: a one-line summary that expands to the details.
 
 ## Install
 
@@ -79,9 +82,6 @@ npm publish
 git push --follow-tags
 ```
 
-`npm version patch` bumps the version, commits and tags it. `npm publish` needs `npm login`
-once. Users then see the new version after pressing Refresh on the Plugins page.
-
 ## Configuration
 
 Defaults live in [cordis.patch.yml](cordis.patch.yml). A patch replaces the row's whole
@@ -89,31 +89,35 @@ Defaults live in [cordis.patch.yml](cordis.patch.yml). A patch replaces the row'
 
 | Key | Default | Meaning |
 |---|---|---|
-| `dir` | `.context-graph` | Graph folder, relative to the agent workspace or absolute |
-| `buildEveryTurns` | `4` | Index after this many new human turns |
+| `dir` | `.context-graph` | Memory folder, relative to the agent workspace or absolute |
+| `buildEveryTurns` | `4` | Index after this many new human turns (chats with memory on) |
 | `buildMinChars` | `400` | ...and at least this much new text |
-| `maxHits` | `5` | Nodes shown per human turn |
+| `maxHits` | `5` | Topics shown per human turn |
 | `inlineMaxChars` | `1200` | A single dominant hit this short is shown verbatim |
-| `surfaceMaxNodes` | `40` | Nodes listed at the start of a session |
+| `surfaceMaxChats` | `20` | Chats listed right after `on` |
 | `builderMaxTokens` | `8192` | Output cap for the indexing call; thinking models spend part of it reasoning |
 | `provider`, `model` | `''` | Empty: reuse the conversation's routed provider and model |
-| `fold` | `true` | Fold old turns of the current chat into a table of contents |
-| `foldAtTokens` | `24000` | Fold once the foldable part costs this much per request |
-| `keepTurns` | `2` | Newest human turns never folded |
 
 ## Files
 
 ```
 index.js          dsh plugin: builder, matcher, recall tool, meter, /context-graph command
-graph.js          pure core: tokenize, match, merge, render, builder prompt and parser
-store.js          graph.json and src/<id>.md read/write
+graph.js          pure core: tokenize, match, time ranges, merge, render, builder prompt and parser
+store.js          chats/<chat>/{meta.json, graph.json, src/<id>.md}
 update.js         once-per-start check of npm for a newer version
 lib/client.js     dsh chat card for /context-graph (DisclosureRow, en/zh titles)
 icon.svg          Plugins page icon in dsh's built-in icon style
 locale/           Plugins page title and description (en, zh); zh links README.zh.md
 cordis.patch.yml  mounts the plugin at the profile root with default config
 test/             node --test; plugin.test.js needs DSH_NODE_MODULES (see below)
-docs/             design
+```
+
+On disk, per workspace:
+
+```
+.context-graph/chats/<sessionId>/meta.json    cid, title, startedAt, lastActiveAt, turns, memory, shared
+.context-graph/chats/<sessionId>/graph.json   topics and links; every topic has its time
+.context-graph/chats/<sessionId>/src/<id>.md  verbatim messages behind each topic
 ```
 
 ## Testing
@@ -135,10 +139,10 @@ Without the variable it is skipped. Nothing here calls a model.
 
 ## Known limits
 
-- Builds are indexed per process; after a restart the first build of a resumed session re-reads
-  its whole surface. Existing ids are reused, so this costs one larger call, not duplicates.
-- Two agents writing the same workspace graph at once: last writer wins.
+- Builds are indexed per process; after a restart the first build of a resumed chat re-reads its
+  whole surface. Existing ids are reused, so this costs one larger call, not duplicates.
+- Two agents writing the same chat's graph at once: last writer wins.
 - Subagent sessions are neither indexed nor given memory blocks.
-- Tool outputs are not indexed as topics, but they are folded and `recall("tN")` returns them (each capped at 2000 characters).
-- Only indexed turns are folded. After an app restart the index position resets, so the first fold waits for one build.
-- A skill list or runtime-context message inside the folded part is copied into the fold message so the model keeps it.
+- Tool outputs are not indexed as topics; `recall("tN")` returns them (each capped at 2000 characters).
+- The chat title is the first message, shortened, until dsh exposes its own titles to plugins.
+- The graph page (a visual map in the sidebar) is not built yet; `/context-graph map` is the text version.
