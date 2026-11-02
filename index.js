@@ -13,6 +13,7 @@
  */
 
 import { isAbsolute, join } from 'node:path'
+import { readFileSync } from 'node:fs'
 import { mkdir, stat, writeFile } from 'node:fs/promises'
 
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -24,11 +25,13 @@ import {
   turnIndex, turnTranscript
 } from './graph.js'
 import { appendSource, loadGraph, readSource, saveGraph } from './store.js'
+import { startUpdateCheck } from './update.js'
 
 export const name = 'context-graph'
 export const inject = ['tools']
 
 const PURPOSE = 'context-graph'
+const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
 
 const DEFAULTS = {
   dir: '.context-graph',
@@ -48,7 +51,11 @@ const DEFAULTS = {
 const textOf = (content) => (Array.isArray(content) ? content : []).filter((b) => b?.type === 'text').map((b) => b.text).join('\n').trim()
 
 export function apply(ctx, config = {}) {
-  const cfg = { ...DEFAULTS, ...config }
+  const { _updates, ...rest } = config
+  const cfg = { ...DEFAULTS, ...rest }
+  // `_updates` lets tests stand in for the network check.
+  const updates = _updates ?? startUpdateCheck(version)
+  let noticeShown = false
   const sessions = new Map()
   const graphCache = new Map()
   const meter = {
@@ -221,6 +228,23 @@ export function apply(ctx, config = {}) {
     }
     const decision = await next()
     if (decision.kind !== 'enter') return decision
+    const result = await addMemory(agent, prompt, decision)
+    return prompt && !isSubagent(agent) ? addUpdateNotice(result) : result
+  })
+
+  /** Once per app start, ask the model to pass an available update on to the user. */
+  function addUpdateNotice(decision) {
+    const notice = updates.current()
+    if (!notice || noticeShown) return decision
+    noticeShown = true
+    const message = createUserMessage({
+      content: [{ type: 'text', text: `[${SOURCE_KIND}] ${notice} At the end of your reply, tell the user this in one short line.` }],
+      source: { kind: SOURCE_KIND, notice: true }
+    })
+    return { ...decision, messages: [...decision.messages, message] }
+  }
+
+  async function addMemory(agent, prompt, decision) {
     try {
       if (isSubagent(agent) || !prompt) return decision
       const dir = dirFor(agent)
@@ -258,7 +282,7 @@ export function apply(ctx, config = {}) {
       console.error('context-graph: matcher failed (non-fatal)', error)
       return decision
     }
-  })
+  }
 
   // ---------- meter ----------
   ctx.on('llm/stream', (options, next) => {
@@ -379,6 +403,7 @@ export function apply(ctx, config = {}) {
             return {
               kind: 'success',
               text: [
+                `Version ${version}: ${updates.current() ?? 'no newer version found'}`,
                 `Graph: ${Object.keys(graph.nodes).length} nodes, ${graph.edges.length} edges (${dirFor(agent)})`,
                 `This chat: ${pending} human turns not indexed yet; auto-index at ${cfg.buildEveryTurns}, or run /context-graph build now.`,
                 'Counters below are since the app started:',

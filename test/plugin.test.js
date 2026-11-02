@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 const skip = !process.env.DSH_NODE_MODULES
+const NO_UPDATES = { current: () => undefined }
 
 const BUILDER_REPLY = JSON.stringify({
   nodes: [{ id: null, label: 'commit signing', gist: 'commits are signed with the SSH key id_ed25519_signing', aliases: ['gpg', 'signed commits', '签名'], kind: 'decision', msgs: [0, 1] }],
@@ -67,7 +68,7 @@ test('plugin: build, inject for a later session, recall, meter', { skip }, async
   try {
     const llm = fakeLlm(BUILDER_REPLY)
     const ctx = fakeCtx(llm)
-    apply(ctx, { buildEveryTurns: 1, buildMinChars: 1 })
+    apply(ctx, { _updates: NO_UPDATES, buildEveryTurns: 1, buildMinChars: 1 })
     assert.ok(ctx.listeners['agent/pre-step'] && ctx.listeners['agent/turn-stopping'] && ctx.listeners['llm/stream'])
     assert.equal(ctx.registered[0].name, 'recall')
     assert.equal(ctx.commands[0].name, 'context-graph')
@@ -149,7 +150,7 @@ test('plugin: builder failures are contained', { skip }, async () => {
   const cwd = await mkdtemp(join(tmpdir(), 'context-graph-plugin-'))
   try {
     const ctx = fakeCtx(fakeLlm('not json at all'))
-    apply(ctx, {})
+    apply(ctx, { _updates: NO_UPDATES })
     const session = fakeSession('sC', cwd, [user('hello there, this is long enough to matter for the build threshold')])
     const agent = { options: { cwd }, session, runMaintenance: (fn) => fn() }
     const skipped = await ctx.commands[0].handler({ rawInput: 'stats', agent })
@@ -192,7 +193,7 @@ test('plugin: folds old turns into a table of contents, recall reads them back',
   const cwd = await mkdtemp(join(tmpdir(), 'context-graph-fold-'))
   try {
     const ctx = fakeCtx(fakeLlm(BUILDER_REPLY))
-    apply(ctx, { foldAtTokens: 500, keepTurns: 1 })
+    apply(ctx, { _updates: NO_UPDATES, foldAtTokens: 500, keepTurns: 1 })
     const toolCall = { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'reading' }, { type: 'tool-call', id: 'c1', name: 'read', arguments: '{}' }] } } }
     const toolResult = { type: 'tool/result', data: { message: { content: [{ type: 'text', text: 'LOG '.repeat(2000) }] } } }
     const session = liveSession('sF', cwd, [
@@ -228,6 +229,26 @@ test('plugin: folds old turns into a table of contents, recall reads them back',
     assert.equal((await ctx.registered[0].execute({ id: 't9' }, { agent })).status, 'unknown')
     const stats = await ctx.commands[0].handler({ rawInput: 'stats', agent })
     assert.match(stats.text, /Folds: 1; ~\d+ input tokens removed/)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('plugin: an available update is mentioned once per app start and in stats', { skip }, async () => {
+  const { apply } = await import('../index.js')
+  const cwd = await mkdtemp(join(tmpdir(), 'context-graph-update-'))
+  try {
+    const ctx = fakeCtx(fakeLlm(BUILDER_REPLY))
+    apply(ctx, { _updates: { current: () => 'dsh-context-graph 9.9.9 is available (you have 0.2.3).' } })
+    const agent = { options: { cwd }, session: fakeSession('sU', cwd, [{ type: 'system/message', data: {} }]), runMaintenance: (fn) => fn() }
+    const ask = { kind: 'enter', messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: 'hello' }] }] }
+    const first = await ctx.listeners['agent/pre-step']({ agent, messages: ask.messages }, async () => ask)
+    assert.equal(first.messages.length, 2)
+    assert.match(first.messages[1].content[0].text, /9\.9\.9 is available.*tell the user this in one short line/)
+    const second = await ctx.listeners['agent/pre-step']({ agent, messages: ask.messages }, async () => ask)
+    assert.equal(second.messages.length, 1, 'only once')
+    const stats = await ctx.commands[0].handler({ rawInput: 'stats', agent })
+    assert.match(stats.text, /^Version \d+\.\d+\.\d+: dsh-context-graph 9\.9\.9 is available/)
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }

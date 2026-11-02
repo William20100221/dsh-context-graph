@@ -53,10 +53,12 @@ Command line (use the profile your app runs; the desktop app uses `desktop`):
 dsh plugin --profile desktop add dsh-context-graph
 ```
 
-**Updates.** Installed from npm, the plugin gets dsh's built-in updater: on the Plugins page
-press **Refresh**, and when a newer version is published an **Update** button appears on the
-plugin. Restart the app after updating. A `github:` install is not eligible for this; remove
-it and add `dsh-context-graph` from npm once.
+**Updates.** dsh 0.2.1 desktop builds have no update check for third-party plugins, so the
+plugin checks npm itself once per app start. When a newer version exists, your next chat reply
+ends with one line saying so, and `/context-graph stats` shows it on its first line. To update:
+Plugins, open dsh-context-graph, **Uninstall**, then **Add plugin** `dsh-context-graph@<new version>`
+and restart the app. Name the exact version: dsh's pnpm holds back very new releases otherwise.
+Turn the check off with the environment variable `DSH_CONTEXT_GRAPH_NO_UPDATE_CHECK=1`.
 
 Remove with `dsh plugin --profile desktop remove dsh-context-graph`.
 
