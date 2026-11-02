@@ -133,6 +133,7 @@ test('plugin: build, inject for a later session, recall, meter', { skip }, async
     assert.deepEqual(out, chunks)
     const stats = await ctx.commands[0].handler({ rawInput: '', agent: agentB })
     assert.match(stats.text, /Graph: 1 nodes, 0 edges/)
+    assert.match(stats.text, /This chat: 0 human turns not indexed yet/)
     assert.match(stats.text, /Main requests: 1; input 10 uncached \+ 90 cache-read \+ 0 cache-write; cache-hit 90%/)
     assert.match(stats.text, /recalls: 1/)
     const find = await ctx.commands[0].handler({ rawInput: 'find gpg', agent: agentB })
@@ -152,6 +153,7 @@ test('plugin: builder failures are contained', { skip }, async () => {
     const agent = { options: { cwd }, session, runMaintenance: (fn) => fn() }
     const skipped = await ctx.commands[0].handler({ rawInput: 'stats', agent })
     assert.match(skipped.text, /Graph: 0 nodes/)
+    assert.match(skipped.text, /This chat: 1 human turns not indexed yet; auto-index at 4/)
     const failed = await ctx.commands[0].handler({ rawInput: 'build', agent })
     assert.equal(failed.kind, 'error')
     assert.match(failed.text, /not the expected JSON/)

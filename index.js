@@ -299,11 +299,15 @@ export function apply(ctx, config = {}) {
             const m = meter.main
             const cached = m.cacheRead + m.cacheWrite
             const hitRate = m.input + cached > 0 ? Math.round((m.cacheRead / (m.input + cached)) * 100) : 0
+            const session = agent.session
+            const pending = collectSpan(session.surface.nodes, (seq) => session.eventAt(seq), state(String(session.id)).lastBuiltSeq).userTurns
             return {
               kind: 'success',
               text: [
                 `Graph: ${Object.keys(graph.nodes).length} nodes, ${graph.edges.length} edges (${dirFor(agent)})`,
-                `Builds this process: ${meter.builds}; builder tokens in/out: ${meter.builder.input + meter.builder.cacheRead + meter.builder.cacheWrite}/${meter.builder.output}`,
+                `This chat: ${pending} human turns not indexed yet; auto-index at ${cfg.buildEveryTurns}, or run /context-graph build now.`,
+                'Counters below are since the app started:',
+                `Builds: ${meter.builds}; builder tokens in/out: ${meter.builder.input + meter.builder.cacheRead + meter.builder.cacheWrite}/${meter.builder.output}`,
                 `Injected blocks: ${meter.injected} (~${meter.injectedTokens} tokens); recalls: ${meter.recalls}`,
                 `Main requests: ${m.requests}; input ${m.input} uncached + ${m.cacheRead} cache-read + ${m.cacheWrite} cache-write; cache-hit ${hitRate}%`
               ].join('\n')

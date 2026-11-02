@@ -1,6 +1,6 @@
 {
   "name": "dsh-context-graph",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DeepSeek Harness plugin: remembers past conversations as a small graph so the model reads short gists instead of old messages and recalls verbatim text on demand",
   "type": "module",
   "main": "index.js",
