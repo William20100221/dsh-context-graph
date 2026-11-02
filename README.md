@@ -1,91 +1,180 @@
-# dsh-context-graph
+<p align="center">
+  <img src="icon.svg" width="72" height="72" alt="Context Graph icon">
+</p>
 
-A DeepSeek Harness (dsh) plugin that gives each chat a small memory graph you switch on when you
-want it. Other chats in the same workspace then get a short pointer to what was decided before, and
-the model fetches the exact original text only when it needs it. Old messages are not re-sent;
-decisions are not lost.
+<h1 align="center">Context Graph for DeepSeek Harness</h1>
 
-First principle: save input tokens without losing quality. The plugin adds nothing to a request
-unless you turned memory on in that chat, and what it adds is a few lines that point at exact text.
+<p align="center">
+  Memory for your chats that you switch on when you want it.<br>
+  Later chats get a few lines that point at what was decided; the model fetches the exact text only when it needs it.
+</p>
 
-Status: v0.4.0. Loads in the dsh desktop app (dsh 0.2.1-rc.5); not yet verified with a live model.
-Tests pass against the published dsh packages.
+<p align="center">
+  <a href="https://www.npmjs.com/package/dsh-context-graph"><img alt="npm" src="https://img.shields.io/npm/v/dsh-context-graph?label=npm&color=4A65E8"></a>
+  <img alt="dsh" src="https://img.shields.io/badge/dsh-0.2.1-7AC2FF">
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-lightgrey">
+  <a href="README.zh.md"><img alt="中文" src="https://img.shields.io/badge/文档-中文-4A65E8"></a>
+</p>
 
-Using Claude Code instead? The Claude version is a separate plugin built for Claude's app:
-[claude-context-graph](https://github.com/William20100221/claude-context-graph).
+---
 
-## How it works
+**The problem.** Every message you send re-sends the whole conversation, and a new chat knows
+nothing about the last one. You re-explain, the model re-reads, and you pay input tokens for both.
 
-Nothing happens in a chat until you run `/context-graph on`. From then on:
+**What this does.** In a chat where you ran `/context-graph on`, the plugin indexes what was
+decided into a small graph of topics, each stored together with the original messages. Other
+chats in the same workspace get, at most, a few lines like this appended to your message:
 
-| Moment | What happens | Cost |
-|---|---|---|
-| `/context-graph on` | The chat is indexed now, then again every 4 human turns: one small auxiliary model call writes topics into `.context-graph/chats/<chat>/graph.json` and stores the cited messages verbatim. | about the new text's tokens in, under 1k out, off the critical path |
-| First message after `on` | One block lists the shared chats of this workspace, newest first: chat id, date, title, topic count. | about 15 tokens per chat |
-| Every human message | Your words are matched against the topics of the other shared chats by word overlap (no model call). Up to 5 hits are appended to the message. One clearly dominant short hit is included verbatim. | under about 150 tokens |
-| Your message names a time | "yesterday", "last week", "11月1日", "2026-11-01" ... that slice is searched first: chats active then, then topics from then, then everything. If nothing matches, the chats from that time are listed instead. | same |
-| Model calls `recall(id)` | `c3n12`: the topic's verbatim source and linked topics. `c3`: a chat's topics. `2026-11-01`: every chat and topic from that day. `t7`: turn 7 of this chat word for word. | one tool round trip |
-| `/context-graph share` | Lets other chats in the workspace see this chat's graph. Nothing is copied or merged; it is a flag on the chat. | none |
+```
+[context-graph] Related past context from yesterday (by chat). Call recall(id) for the verbatim source.
+- c3n12 builder timeout: builderMaxTokens raised to 8192 after the 524s (2026-11-01)
+- c3n4 publish flow: npm version patch, npm publish (2FA), git push --follow-tags (2026-11-01)
+```
 
-Design rules, in order:
+The model calls `recall("c3n12")` when a gist is not precise enough and gets the original turns,
+word for word. Nothing is summarised away, and nothing is sent that you did not ask for.
 
-1. **Off until asked.** No surface map, no matches, no indexing in a chat that has not run `on`.
-2. **Nothing is written without its source.** A topic is stored only together with the verbatim
-   messages it was drawn from. The gist is a pointer, never the record.
-3. **Organise, never merge.** Each chat's graph stays in its own folder with its own dates. Sharing
-   is a flag. Ids carry the chat number (`c3n12`) so every topic traces back to its chat.
-4. **Time is the first filter.** A named day or week narrows the search before anything else.
-5. **Append at the end.** Injected blocks ride at the tail of the newest message so the provider's
-   prefix cache survives. Hiding or folding old turns is not this plugin's job.
+> **First principle:** save input tokens without losing quality. Off by default; a few lines when
+> on; exact text on demand.
 
-## Commands
+## Quick start
 
-Type `/context-graph`, pick it from the menu, then type the word:
+1. **Plugins → Add plugin**, official npm registry, type `dsh-context-graph`, install, then fully
+   restart the app (new slash commands need a restart).
+2. In a chat you want to remember, type `/context-graph`, pick it from the menu, then type `on`.
+3. Type `share` the same way so other chats can use it.
+4. Open a new chat in the same workspace, run `on` there too, and ask about something from the first.
 
-| Command | Does |
-|---|---|
-| `on` / `off` | Start or stop memory for this chat. `off` keeps the graph file. |
-| `share` / `unshare` | Let other chats in the workspace use this chat's graph, or stop. |
-| `stats` (default) | Memory state, topic counts, shared chats, pending turns, token counters. |
-| `build` | Index this chat now. |
-| `map` | Every chat in the workspace, newest first, with its top topics. |
-| `find <words>` | Search the shared chats; time words narrow it. |
-
-Results show in dsh's own command card: a one-line summary that expands to the details.
-
-## Install
-
-Desktop app: **Plugins → Add plugin**, official npm registry, enter `dsh-context-graph`,
-install, then fully restart the app so the `/context-graph` command appears.
-
-Command line (use the profile your app runs; the desktop app uses `desktop`):
+Command line instead of the Plugins page (the desktop app uses the `desktop` profile):
 
 ```sh
 dsh plugin --profile desktop add dsh-context-graph
 ```
 
-**Updates.** dsh 0.2.1 desktop builds have no update check for third-party plugins, so the
-plugin checks npm itself once per app start. When a newer version exists, your next chat reply
-ends with one line saying so, and `/context-graph stats` shows it on its first line. To update:
-Plugins, open dsh-context-graph, **Uninstall**, then **Add plugin** `dsh-context-graph@<new version>`
-and restart the app. Name the exact version: dsh's pnpm holds back very new releases otherwise.
-Turn the check off with the environment variable `DSH_CONTEXT_GRAPH_NO_UPDATE_CHECK=1`.
+## Commands
 
-Remove with `dsh plugin --profile desktop remove dsh-context-graph`.
+All commands are `/context-graph <word>`. Type `/context-graph`, pick it from the menu, then type
+the word. Results show in dsh's own command card: a one-line summary that expands to the details.
+No word means `stats`.
 
-## Releasing a new version
+### `on` — start memory for this chat
 
-```sh
-npm test
-npm version patch
-npm publish
-git push --follow-tags
+Indexes the chat right away and then again every 4 human turns (one small auxiliary model call
+each time, using the chat's own routed model unless you configure another). Creates
+`.context-graph/chats/<chat>/` with the chat's graph, its verbatim sources and a `meta.json`
+holding its title, dates and flags. From now on every message you send in this chat is matched
+against the other shared chats of the workspace, and the first message after `on` also carries the
+list of those chats, newest first.
+
+Card: `Memory on · 7 topics in this chat · 2 shared chats to draw on`
+
+### `off` — stop memory for this chat
+
+Stops indexing and stops adding anything to your requests. The graph folder stays on disk, so
+`on` later resumes where it left off. Other chats keep seeing this chat if it is shared.
+
+### `share` / `unshare` — let other chats use this chat
+
+`share` sets a flag on the chat; from then on other chats with memory on can match and recall its
+topics. Nothing is copied or merged: the graph stays in its own folder with its own dates, and its
+ids carry the chat number (`c3n12`) so every hit traces back to where it came from. `unshare`
+clears the flag; the chat becomes private again at once. Sharing a chat that never ran `on` is
+allowed but pointless until it is indexed, and the card says so.
+
+Card: `Shared with the workspace · 7 topics`
+
+### `stats` — where things stand (default)
+
+First line: memory on/off, topics in this chat, shared/private, how many shared chats are
+visible, how many of this chat's turns are waiting to be indexed, and `update available` when a
+newer version is on npm. The body shows the version, the memory folder, and counters since the app
+started: builds and builder tokens, injected blocks and their size, recalls, and the main
+conversation's input split into uncached, cache-read and cache-write with the cache-hit rate. A
+high cache-hit rate is the sign that memory is saving money rather than spending it.
+
+Card: `Memory on · 7 topics in this chat · shared · 2 shared chats · 3 turns waiting to be indexed`
+
+### `build` — index this chat now
+
+Runs the indexing call immediately instead of waiting for the next 4-turn mark. Useful right
+before you switch chats. Needs memory on. If the model's answer cannot be read, the raw output is
+saved to `last-builder-output.txt` in the chat's folder and the card tells you why.
+
+Card: `3 topics indexed (2 new) · this chat has 7 topics`
+
+### `map` — every chat in the workspace
+
+Lists all indexed chats newest first: chat id, start date, title, topic count and flags (`this
+chat`, `memory on`, `shared`/`private`), each followed by its most connected topics with their ids.
+This is the text form of the graph; a visual page is planned.
+
 ```
+2 chats in C:\Projects\site\.context-graph
+c2 2026-11-02 Fix the login redirect loop · 4 topics · this chat, memory on, private
+  - c2n1 redirect loop cause: session cookie set with the wrong path (2026-11-02)
+c1 2026-11-01 Set up CI for the site · 6 topics · memory on, shared
+  - c1n3 deploy step: GitHub Pages from the gh-pages branch (2026-11-01)
+```
+
+### `find <words>` — search the shared chats
+
+The same matcher the plugin runs on your messages, so you can see what the model would be shown.
+Time words narrow it: `find 524 timeout last week` looks in chats active last week first. Only
+shared chats of other conversations are searched; the current chat's own topics are left out
+because they are already in its context.
+
+Card: `2 matching topics`, then `c3n12 builder timeout: ...` per line.
+
+## How matching and recall work
+
+**Matching is lexical and free.** Your message is split into words, identifiers (`clear_conversation`
+also yields `clear` and `conversation`) and Chinese character pairs. Topic labels and aliases count
+double, gists single, well-connected topics get a small boost, and a topic only counts when a label
+or alias word matched. Up to 5 hits are shown; when one hit is clearly ahead and its source is
+short, the source is included verbatim so no `recall` round trip is needed. A changed decision
+links to its replacement with a `supersedes` edge, so a hit on the old one shows the new one.
+
+**Time is the first filter.** If your message names a time, the search runs in that slice first and
+widens only if it finds nothing:
+
+| You write | Searched first |
+|---|---|
+| `yesterday`, `昨天` | chats active yesterday |
+| `3 days ago`, `3天前` | that day |
+| `last week`, `上周` / `this week`, `本周` | Monday to Monday |
+| `last month`, `上个月` | that calendar month |
+| `2026-11-01`, `11月1日` | that day |
+
+If nothing matches in the slice and nothing matches anywhere, the chats from that time are listed
+instead, so "what did we do yesterday?" still gets a useful answer.
+
+**Recall ids.** The model (or you, in a message) can ask for:
+
+| Id | Returns |
+|---|---|
+| `c3n12` | Topic 12 of chat 3: label, gist, the original messages word for word, and linked topics |
+| `c3` | Chat 3: title, dates, and its topics most connected first |
+| `2026-11-01` | Every shared chat active that day, each with its topics from that day first |
+| `t7` | Turn 7 of the current chat word for word, including tool calls and results |
+
+## What it costs
+
+| Moment | Added to the request |
+|---|---|
+| Chats without `on` | nothing |
+| First message after `on` | about 15 tokens per shared chat, 20 chats at most |
+| Every later message | nothing when no topic matches; under about 150 tokens when some do |
+| Indexing | one auxiliary call every 4 turns, off the critical path; roughly the new text in, under 1k tokens out |
+| `recall` | one tool round trip with the exact text |
+
+Injected blocks are appended to the end of your newest message, never inserted earlier, so the
+provider's prefix cache keeps working. DeepSeek bills cached input at a small fraction of the
+uncached price; protecting that cache matters more than shaving a few lines.
 
 ## Configuration
 
-Defaults live in [cordis.patch.yml](cordis.patch.yml). A patch replaces the row's whole
-`config`, so restate every key you keep.
+Defaults live in [cordis.patch.yml](cordis.patch.yml). A patch replaces the row's whole `config`,
+so restate every key you keep.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -96,9 +185,30 @@ Defaults live in [cordis.patch.yml](cordis.patch.yml). A patch replaces the row'
 | `inlineMaxChars` | `1200` | A single dominant hit this short is shown verbatim |
 | `surfaceMaxChats` | `20` | Chats listed right after `on` |
 | `builderMaxTokens` | `8192` | Output cap for the indexing call; thinking models spend part of it reasoning |
-| `provider`, `model` | `''` | Empty: reuse the conversation's routed provider and model |
+| `provider`, `model` | `''` | Empty: reuse the conversation's routed provider and model. Set both to index with a cheaper or faster model |
 
-## Files
+## Updating
+
+dsh 0.2.1 desktop builds have no update check for third-party plugins, so the plugin checks npm
+itself once per app start. When a newer version exists, your next chat reply ends with one line
+saying so, and `/context-graph stats` shows it on its first line. To update: Plugins, open
+dsh-context-graph, **Uninstall**, then **Add plugin** `dsh-context-graph@<new version>` and restart.
+Name the exact version: dsh's pnpm holds back very new releases otherwise. Turn the check off with
+`DSH_CONTEXT_GRAPH_NO_UPDATE_CHECK=1`.
+
+Remove with `dsh plugin --profile desktop remove dsh-context-graph`.
+
+## On disk
+
+```
+.context-graph/chats/<sessionId>/meta.json    cid, title, startedAt, lastActiveAt, turns, memory, shared
+.context-graph/chats/<sessionId>/graph.json   topics and links; every topic has its time
+.context-graph/chats/<sessionId>/src/<id>.md  verbatim messages behind each topic
+```
+
+Delete a chat's folder to forget it. Delete `.context-graph/` to forget the workspace.
+
+## Development
 
 ```
 index.js          dsh plugin: builder, matcher, recall tool, meter, /context-graph command
@@ -109,40 +219,25 @@ lib/client.js     dsh chat card for /context-graph (DisclosureRow, en/zh titles)
 icon.svg          Plugins page icon in dsh's built-in icon style
 locale/           Plugins page title and description (en, zh); zh links README.zh.md
 cordis.patch.yml  mounts the plugin at the profile root with default config
-test/             node --test; plugin.test.js needs DSH_NODE_MODULES (see below)
+test/             node --test
 ```
 
-On disk, per workspace:
+Unit tests need nothing: `node --test test/graph.test.js`. The wiring test imports the real dsh
+packages from an existing install: `DSH_NODE_MODULES=/path/to/dsh/node_modules npm test`. Nothing
+here calls a model.
 
-```
-.context-graph/chats/<sessionId>/meta.json    cid, title, startedAt, lastActiveAt, turns, memory, shared
-.context-graph/chats/<sessionId>/graph.json   topics and links; every topic has its time
-.context-graph/chats/<sessionId>/src/<id>.md  verbatim messages behind each topic
-```
-
-## Testing
-
-Unit tests need nothing:
-
-```sh
-node --test test/graph.test.js
-```
-
-The wiring test imports the real dsh packages from an existing dsh install. Point it at that
-install's `node_modules`:
-
-```sh
-DSH_NODE_MODULES=/path/to/dsh/node_modules npm test
-```
-
-Without the variable it is skipped. Nothing here calls a model.
+Release: `npm test`, `npm version patch`, `npm publish`, `git push --follow-tags`.
 
 ## Known limits
 
-- Builds are indexed per process; after a restart the first build of a resumed chat re-reads its
+- Not yet verified with a live model; tests run against the published dsh packages.
+- Builds are tracked per process; after a restart the first build of a resumed chat re-reads its
   whole surface. Existing ids are reused, so this costs one larger call, not duplicates.
 - Two agents writing the same chat's graph at once: last writer wins.
 - Subagent sessions are neither indexed nor given memory blocks.
 - Tool outputs are not indexed as topics; `recall("tN")` returns them (each capped at 2000 characters).
 - The chat title is the first message, shortened, until dsh exposes its own titles to plugins.
-- The graph page (a visual map in the sidebar) is not built yet; `/context-graph map` is the text version.
+- The visual graph page is not built yet; `map` is the text version.
+
+Using Claude Code? The Claude version is a separate plugin built for Claude's app:
+[claude-context-graph](https://github.com/William20100221/claude-context-graph).
