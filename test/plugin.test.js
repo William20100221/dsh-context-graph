@@ -1,5 +1,5 @@
 /**
- * Wiring check of index.js against a fake harness: memory off by default, /context-graph on + share,
+ * Wiring check of index.js against a fake harness: memory on by default, /context-graph off + on + share,
  * injection into a second chat, recall by topic / chat / day / turn, and the meter. Needs the dsh peer packages:
  *   DSH_NODE_MODULES=<dsh install>/node_modules node --import ./test/resolve-dsh.mjs --test test/plugin.test.js
  * Skipped when DSH_NODE_MODULES is unset.
@@ -9,6 +9,8 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+
+import { day } from '../graph.js'
 
 const skip = !process.env.DSH_NODE_MODULES
 const NO_UPDATES = { current: () => undefined }
@@ -64,7 +66,7 @@ function fakeCtx(llm) {
   return ctx
 }
 
-test('plugin: off by default; on + share; a second chat gets the list, hits, time slices and recall', { skip }, async () => {
+test('plugin: on by default; off/on + share; a second chat gets the list, hits, time slices and recall', { skip }, async () => {
   const { apply } = await import('../index.js')
   const cwd = await mkdtemp(join(tmpdir(), 'context-graph-plugin-'))
   try {
@@ -78,19 +80,20 @@ test('plugin: off by default; on + share; a second chat gets the list, hits, tim
     const run = (agent, rawInput) => ctx.commands[0].handler({ rawInput, agent })
     const step = (agent, decision) => ctx.listeners['agent/pre-step']({ agent, messages: decision.messages }, async () => decision)
 
-    // Chat A: memory is off, so nothing is built or injected.
+    // Chat A: memory is on with no command; off stops building, on resumes.
     const sessionA = fakeSession('sA', cwd, [
       { type: 'system/message', data: {} },
       user('We decided to sign commits with the SSH key id_ed25519_signing'),
       assistant('Noted: commit signing uses that SSH key.')
     ])
     const agentA = { options: { cwd }, session: sessionA, runMaintenance: (fn) => fn() }
-    assert.match((await run(agentA, '')).text, /^Memory off · 0 topics in this chat · private · 0 shared chats · 1 turns waiting/)
-    assert.equal((await run(agentA, 'build')).kind, 'error')
+    assert.match((await run(agentA, '')).text, /^Memory on · 0 topics in this chat · private · 0 shared chats · 1 turns waiting/)
+    assert.equal((await step(agentA, ask('how do we sign commits?'))).messages.length, 1, 'empty graph injects nothing')
+    assert.match((await run(agentA, 'off')).text, /^Memory off for this chat[\s\S]*Plugins page/)
+    assert.equal((await run(agentA, 'build')).kind, 'error', 'off chats do not build')
     assert.equal(llm.calls.length, 0)
-    assert.equal((await step(agentA, ask('how do we sign commits?'))).messages.length, 1)
 
-    // /context-graph on indexes right away.
+    // /context-graph on resumes and indexes right away.
     const on = await run(agentA, 'on')
     assert.equal(on.kind, 'success', on.text)
     assert.match(on.text, /^Memory on · 1 topics in this chat · 0 shared chats to draw on/)
@@ -103,16 +106,18 @@ test('plugin: off by default; on + share; a second chat gets the list, hits, tim
     assert.match(await readFile(join(chatA, 'src', 'n1.md'), 'utf8'), /id_ed25519_signing/)
     const metaA = JSON.parse(await readFile(join(chatA, 'meta.json'), 'utf8'))
     assert.equal(metaA.cid, 1)
-    assert.equal(metaA.memory, true)
+    assert.equal(metaA.memoryOff, false)
     assert.equal(metaA.title, 'We decided to sign commits with the SSH key id_ed25519_sign…', 'title is the first message, shortened')
     // Its own topics are still in its context: nothing injected, no chats to announce.
     assert.equal((await step(agentA, ask('how do we sign commits?'))).messages.length, 1)
     assert.match((await run(agentA, 'share')).text, /^Shared with the workspace · 1 topics/)
 
-    // Chat B: still off until asked.
+    // Chat B: on by default, so its very first turn already gets chat A's memory.
     const sessionB = fakeSession('sB', cwd, [{ type: 'system/message', data: {} }])
     const agentB = { options: { cwd }, session: sessionB, runMaintenance: (fn) => fn() }
-    assert.equal((await step(agentB, ask('how do we sign commits?'))).messages.length, 1)
+    const untouched = await step(agentB, ask('how do we sign commits?'))
+    assert.equal(untouched.messages.length, 2)
+    assert.match(untouched.messages[1].content[0].text, /Earlier chats in this workspace[\s\S]*- c1n1 commit signing/)
     assert.match((await run(agentB, 'on')).text, /^Memory on · nothing indexed yet \(no new messages since the last build\) · 1 shared chat to draw on/)
     // First human turn after on: chat list + hit, inline because the source is short.
     const first = await step(agentB, ask('how do we sign commits?'))
@@ -140,7 +145,7 @@ test('plugin: off by default; on + share; a second chat gets the list, hits, tim
     assert.equal(topic.status, 'ok')
     assert.match(topic.text, /# c1n1 commit signing[\s\S]*id_ed25519_signing/)
     assert.match((await recall('c1')).text, /^# c1 We decided[\s\S]*- c1n1 commit signing/)
-    assert.match((await recall(new Date().toISOString().slice(0, 10))).text, /Chats from \d{4}-\d{2}-\d{2}:\n- c1 /)
+    assert.match((await recall(day(new Date().toISOString()))).text, /Chats from \d{4}-\d{2}-\d{2}:\n- c1 /)
     assert.match((await recall('t1', agentA)).text, /# t1 \(verbatim\)[\s\S]*id_ed25519_signing[\s\S]*Noted: commit signing/)
     assert.equal((await recall('t1')).status, 'unknown')
     assert.equal((await recall('c1n9')).status, 'unknown')

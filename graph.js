@@ -196,7 +196,12 @@ export function matchAcross(views, query, { max = 5, range } = {}) {
   return { hits: run(others), slice: undefined }
 }
 
-const day = (iso) => String(iso ?? '').slice(0, 10)
+/** Local calendar day (YYYY-MM-DD) of a timestamp, the same day recall("YYYY-MM-DD") and "today" search. */
+export function day(iso) {
+  const d = new Date(iso ?? NaN)
+  if (Number.isNaN(+d)) return ''
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 const topicLine = (id, node) => `- ${id} ${node.label}: ${node.gist}${node.updated ? ` (${day(node.updated)})` : ''}`
 const chatLine = (view) => `- c${view.cid} ${day(view.meta.lastActiveAt ?? view.meta.startedAt)} ${view.meta.title ?? '(untitled)'} (${Object.keys(view.graph.nodes).length} topics${view.own ? ', this chat' : ''})`
 const newestFirst = (views) => [...views].sort((a, b) => String(b.meta.lastActiveAt ?? '').localeCompare(String(a.meta.lastActiveAt ?? '')))
@@ -246,13 +251,16 @@ export function renderRange(views, range, { maxChats = 10, maxTopics = 10 } = {}
   return lines.join('\n')
 }
 
+/** Memory is on in every chat unless `/context-graph off` was run there; the Plugins page switch turns the whole plugin off. */
+export const memoryOn = (meta) => meta?.memoryOff !== true
+
 /** The /context-graph map: workspace → chats (newest first) → topics. */
 export function renderMap(views, { maxTopics = 8 } = {}) {
-  if (views.length === 0) return 'No chats indexed in this workspace yet. Run /context-graph on in a chat to start.'
+  if (views.length === 0) return 'No chats indexed in this workspace yet. Chats index themselves every few turns; /context-graph build indexes this one now.'
   const lines = []
   for (const view of newestFirst(views)) {
     const meta = view.meta
-    const flags = [view.own ? 'this chat' : undefined, meta.memory ? 'memory on' : undefined, meta.shared ? 'shared' : 'private'].filter(Boolean).join(', ')
+    const flags = [view.own ? 'this chat' : undefined, memoryOn(meta) ? 'memory on' : 'memory off', meta.shared ? 'shared' : 'private'].filter(Boolean).join(', ')
     lines.push(`c${view.cid} ${day(meta.startedAt)} ${meta.title ?? '(untitled)'} · ${Object.keys(view.graph.nodes).length} topics · ${flags}`)
     for (const id of surfaceNodes(view.graph, maxTopics)) lines.push('  ' + topicLine(globalId(view, id), view.graph.nodes[id]))
   }

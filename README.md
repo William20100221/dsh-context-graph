@@ -5,7 +5,7 @@
 <h1 align="center">Context Graph for DeepSeek Harness</h1>
 
 <p align="center">
-  Memory for your chats that you switch on when you want it.<br>
+  Memory for your chats, on from the moment you install it.<br>
   Later chats get a few lines that point at what was decided; the model fetches the exact text only when it needs it.
 </p>
 
@@ -21,7 +21,7 @@
 **The problem.** Every message you send re-sends the whole conversation, and a new chat knows
 nothing about the last one. You re-explain, the model re-reads, and you pay input tokens for both.
 
-**What this does.** In a chat where you ran `/context-graph on`, the plugin indexes what was
+**What this does.** In every chat (memory is on by default), the plugin indexes what was
 decided into a small graph of topics, each stored together with the original messages. Other
 chats in the same workspace get, at most, a few lines like this appended to your message:
 
@@ -34,8 +34,11 @@ chats in the same workspace get, at most, a few lines like this appended to your
 The model calls `recall("c3n12")` when a gist is not precise enough and gets the original turns,
 word for word. Nothing is summarised away, and nothing is sent that you did not ask for.
 
-> **First principle:** save input tokens without losing quality. Off by default; a few lines when
-> on; exact text on demand.
+> **First principle:** save input tokens without losing quality. A few lines per message; exact
+> text on demand.
+>
+> **Turning it off.** Plugins page → Context Graph → switch it off: no chat is indexed or gets
+> anything added. To stop only one chat, run `/context-graph off` in it.
 
 ## Quick start
 
@@ -57,18 +60,22 @@ All commands are `/context-graph <word>`. Type `/context-graph`, pick it from th
 the word. Results show in dsh's own command card: a one-line summary that expands to the details.
 No word means `stats`.
 
-### `on` — start memory for this chat
+### `on` — resume memory for this chat
+
+Memory is already on in every chat. `on` undoes an earlier `off` and indexes the chat right away.
 
 Indexes the chat right away and then again every 4 human turns (one small auxiliary model call
 each time, using the chat's own routed model unless you configure another). Creates
 `.context-graph/chats/<chat>/` with the chat's graph, its verbatim sources and a `meta.json`
 holding its title, dates and flags. From now on every message you send in this chat is matched
-against the other shared chats of the workspace, and the first message after `on` also carries the
+against the other shared chats of the workspace, and the first message of the chat also carries the
 list of those chats, newest first.
 
 Card: `Memory on · 7 topics in this chat · 2 shared chats to draw on`
 
-### `off` — stop memory for this chat
+### `off` — stop memory for this chat only
+
+To stop it in every chat, switch the plugin off on the Plugins page instead.
 
 Stops indexing and stops adding anything to your requests. The graph folder stays on disk, so
 `on` later resumes where it left off. Other chats keep seeing this chat if it is shared.
@@ -78,8 +85,8 @@ Stops indexing and stops adding anything to your requests. The graph folder stay
 `share` sets a flag on the chat; from then on other chats with memory on can match and recall its
 topics. Nothing is copied or merged: the graph stays in its own folder with its own dates, and its
 ids carry the chat number (`c3n12`) so every hit traces back to where it came from. `unshare`
-clears the flag; the chat becomes private again at once. Sharing a chat that never ran `on` is
-allowed but pointless until it is indexed, and the card says so.
+clears the flag; the chat becomes private again at once. A chat shared
+before its first index has nothing to offer yet; it fills in every 4 turns or with `build`.
 
 Card: `Shared with the workspace · 7 topics`
 
@@ -162,7 +169,7 @@ instead, so "what did we do yesterday?" still gets a useful answer.
 | Moment | Added to the request |
 |---|---|
 | Chats without `on` | nothing |
-| First message after `on` | about 15 tokens per shared chat, 20 chats at most |
+| First message of a chat | about 15 tokens per shared chat, 20 chats at most |
 | Every later message | nothing when no topic matches; under about 150 tokens when some do |
 | Indexing | one auxiliary call every 4 turns, off the critical path; roughly the new text in, under 1k tokens out |
 | `recall` | one tool round trip with the exact text |
@@ -183,7 +190,7 @@ so restate every key you keep.
 | `buildMinChars` | `400` | ...and at least this much new text |
 | `maxHits` | `5` | Topics shown per human turn |
 | `inlineMaxChars` | `1200` | A single dominant hit this short is shown verbatim |
-| `surfaceMaxChats` | `20` | Chats listed right after `on` |
+| `surfaceMaxChats` | `20` | Shared chats listed on the first message of each chat |
 | `builderMaxTokens` | `8192` | Output cap for the indexing call; thinking models spend part of it reasoning |
 | `provider`, `model` | `''` | Empty: reuse the conversation's routed provider and model. Set both to index with a cheaper or faster model |
 

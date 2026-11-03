@@ -1,12 +1,13 @@
 /**
- * dsh-context-graph: memory of past chats as small per-chat graphs, switched on per chat.
+ * dsh-context-graph: memory of past chats as small per-chat graphs.
  *
- * Nothing happens in a chat until `/context-graph on`. Then:
+ * On in every chat by default. `/context-graph off` stops one chat; switching the plugin off on
+ * dsh's Plugins page stops all of them. While on:
  * - `agent/turn-stopping`: every few human turns, one auxiliary model call indexes the new span
  *   into `<workspace>/.context-graph/chats/<session>/graph.json` and stores the cited text verbatim.
  * - `agent/pre-step`: on a human turn, match the prompt against the other shared chats of this
  *   workspace (a named day is searched first) and append one short `[context-graph]` block at the
- *   end of the request, so the provider's prefix cache survives. Right after `on`, one block lists
+ *   end of the request, so the provider's prefix cache survives. On a chat's first message, one block lists
  *   the shared chats, newest first.
  * - Tool `recall`: a topic (c3n12), a chat (c3), a day (2026-11-01) or a turn of this chat (t7).
  * - `llm/stream`: meters main vs builder tokens and cache reads for `/context-graph stats`.
@@ -21,7 +22,7 @@ import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
 import {
-  builderInstruction, collectSpan, estimateTokens, matchAcross, mergeDelta, neighbors, parseBuilderOutput, parseTimeRange,
+  builderInstruction, collectSpan, estimateTokens, matchAcross, memoryOn, mergeDelta, neighbors, parseBuilderOutput, parseTimeRange,
   renderChatIndex, renderChats, renderHits, renderMap, renderRange, SOURCE_KIND, titleOf, transcriptForBuilder, turnTranscript
 } from './graph.js'
 import { appendSource, chatDir, ensureMeta, listChats, loadGraph, loadMeta, readSource, saveGraph, saveMeta } from './store.js'
@@ -66,7 +67,7 @@ export function apply(ctx, config = {}) {
 
   const state = (sid) => {
     let st = sessions.get(sid)
-    if (!st) { st = { lastBuiltSeq: -1, building: false, announce: false }; sessions.set(sid, st) }
+    if (!st) { st = { lastBuiltSeq: -1, building: false, announce: true }; sessions.set(sid, st) }
     return st
   }
 
@@ -122,7 +123,9 @@ export function apply(ctx, config = {}) {
     st.building = true
     try {
       const meta = await metaFor(agent)
-      if (!meta?.memory) return { status: 'off', reason: 'memory is off for this chat; run /context-graph on' }
+      if (!memoryOn(meta)) return { status: 'off', reason: 'memory is off for this chat; /context-graph on resumes it' }
+      // A chat that never ran a command has no folder yet; give it one so it gets a chat number.
+      if (!meta) await setFlags(agent, {})
       const span = collectSpan(session.surface.nodes, (seq) => session.eventAt(seq), st.lastBuiltSeq)
       const chars = span.messages.reduce((n, m) => n + m.text.length, 0)
       if (span.messages.length === 0) return { status: 'nothing', reason: 'no new messages since the last build' }
@@ -212,7 +215,7 @@ export function apply(ctx, config = {}) {
   async function addMemory(agent, prompt, decision) {
     try {
       if (isSubagent(agent) || !prompt) return decision
-      if (!(await metaFor(agent))?.memory) return decision
+      if (!memoryOn(await metaFor(agent))) return decision
       const st = state(sidOf(agent))
       const views = await loadViews(agent)
       const parts = []
@@ -348,7 +351,7 @@ export function apply(ctx, config = {}) {
             const agent = invocation.agent
             const sid = sidOf(agent)
             if (sub === 'on') {
-              await setFlags(agent, { memory: true })
+              await setFlags(agent, { memoryOff: false })
               state(sid).announce = true
               const result = await agent.runMaintenance(() => build(agent, { force: true }))
               const shared = (await loadViews(agent)).filter((v) => !v.own).length
@@ -356,13 +359,13 @@ export function apply(ctx, config = {}) {
               return { kind: 'success', text: `Memory on · ${indexed} · ${shared} shared ${shared === 1 ? 'chat' : 'chats'} to draw on\nThis chat indexes itself every ${cfg.buildEveryTurns} turns. /context-graph share lets other chats use it; /context-graph off stops it.` }
             }
             if (sub === 'off') {
-              await setFlags(agent, { memory: false })
-              return { kind: 'success', text: 'Memory off · nothing is added to requests\nThe graph file stays; /context-graph on resumes.' }
+              await setFlags(agent, { memoryOff: true })
+              return { kind: 'success', text: 'Memory off for this chat · nothing is added to its requests\nThe graph stays; /context-graph on resumes. To turn memory off in every chat, switch dsh-context-graph off on the Plugins page.' }
             }
             if (sub === 'share' || sub === 'unshare') {
               const meta = await setFlags(agent, { shared: sub === 'share' })
               const topics = Object.keys((await loadGraph(chatDir(dirFor(agent), sid))).nodes).length
-              const hint = meta.memory ? '' : '\nMemory is off for this chat, so it has nothing new to share until /context-graph on.'
+              const hint = memoryOn(meta) ? '' : '\nMemory is off for this chat, so it has nothing new to share until /context-graph on.'
               return { kind: 'success', text: sub === 'share' ? `Shared with the workspace · ${topics} topics\nOther chats with memory on can now match and recall this chat.${hint}` : `No longer shared · ${topics} topics stay private to this chat` }
             }
             if (sub === 'build') {
@@ -393,7 +396,7 @@ export function apply(ctx, config = {}) {
             return {
               kind: 'success',
               text: [
-                `Memory ${own?.meta.memory ? 'on' : 'off'} · ${Object.keys(own?.graph.nodes ?? {}).length} topics in this chat · ${own?.meta.shared ? 'shared' : 'private'} · ${shared} shared ${shared === 1 ? 'chat' : 'chats'} · ${pending} turns waiting to be indexed${updates.current() ? ' · update available' : ''}`,
+                `Memory ${memoryOn(own?.meta) ? 'on' : 'off'} · ${Object.keys(own?.graph.nodes ?? {}).length} topics in this chat · ${own?.meta.shared ? 'shared' : 'private'} · ${shared} shared ${shared === 1 ? 'chat' : 'chats'} · ${pending} turns waiting to be indexed${updates.current() ? ' · update available' : ''}`,
                 `Version ${version}: ${updates.current() ?? 'no newer version found'}`,
                 `Graph folder: ${dirFor(agent)}`,
                 'Counters below are since the app started:',

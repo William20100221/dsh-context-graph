@@ -9,7 +9,7 @@
         buildMinChars: 400         # ...and at least this much new text
         maxHits: 5                 # topics shown per human turn
         inlineMaxChars: 1200       # one dominant hit this short is shown verbatim, no recall needed
-        surfaceMaxChats: 20        # chats listed right after /context-graph on
+        surfaceMaxChats: 20        # shared chats listed on the first message of each chat
         builderMaxTokens: 8192     # thinking models spend part of this on reasoning
         provider: ''               # empty: reuse the conversation's routed provider/model
         model: ''

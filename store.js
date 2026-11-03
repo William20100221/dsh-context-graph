@@ -59,7 +59,7 @@ export async function ensureMeta(dir, sid, { title, workspace, now }) {
   const existing = await loadMeta(dir, sid)
   if (existing) return existing
   const cid = (await listChats(dir)).reduce((max, c) => Math.max(max, c.meta.cid ?? 0), 0) + 1
-  const meta = { cid, title, workspace, startedAt: now, lastActiveAt: now, turns: 0, memory: false, shared: false }
+  const meta = { cid, title, workspace, startedAt: now, lastActiveAt: now, turns: 0, shared: false }
   await saveMeta(dir, sid, meta)
   return meta
 }

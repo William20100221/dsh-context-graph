@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "上下文图谱",
-    "description": "按对话开启的记忆：/context-graph on。工作区里的其他对话可按主题、对话或日期取回过往原文，而不是把旧消息重复发送，从而减少输入 token。",
+    "description": "每个对话默认开启记忆；在这里关闭本插件即可全部停用，或在某个对话里运行 /context-graph off 只停用该对话。工作区里的其他对话可按主题、对话或日期取回过往原文，而不是把旧消息重复发送，从而减少输入 token。",
     "detail": "README.zh.md"
   }
 }

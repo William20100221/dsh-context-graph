@@ -223,3 +223,11 @@ test('parseBuilderOutput survives thinking text and output cut off mid-way', () 
   const withEdges = '{"nodes":[{"label":"x","msgs":[0]}],"edges":[["x","n1","uses"],["bad"],["y", "x", "relates-to"]]}'
   assert.deepEqual(parseBuilderOutput(withEdges).edges, [['x', 'n1', 'uses'], ['y', 'x', 'relates-to']])
 })
+
+test('day() is the local calendar day, matching recall("YYYY-MM-DD")', async () => {
+  const { day } = await import('../graph.js')
+  const local = new Date(2026, 10, 4, 8, 30)
+  assert.equal(day(local.toISOString()), '2026-11-04')
+  assert.equal(day(undefined), '')
+  assert.equal(day('not a date'), '')
+})

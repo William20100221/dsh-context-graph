@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Context Graph",
-    "description": "Per-chat memory you switch on with /context-graph on. Other chats in the workspace recall exact past text by topic, chat or day instead of re-sending it, so fewer input tokens go out."
+    "description": "Memory for every chat, on by default; switch this plugin off here to stop it everywhere, or run /context-graph off in one chat. Other chats in the workspace recall exact past text by topic, chat or day instead of re-sending it, so fewer input tokens go out."
   }
 }
