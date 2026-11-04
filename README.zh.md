@@ -70,7 +70,7 @@ DeepSeek Harness 插件：给每个对话一张小型记忆图谱，安装后默
 ## 文件
 
 ```
-.context-graph/chats/<对话>/meta.json    编号、标题、开始/最近时间、轮数；执行 off / unshare 后才有 memoryOff / private
+.context-graph/chats/<对话>/meta.json    编号、标题、开始/最近时间、轮数、builtSeq（已索引到哪里）；执行 off / unshare 后才有 memoryOff / private
 .context-graph/chats/<对话>/graph.json   主题与链接，每个主题带时间
 .context-graph/chats/<对话>/src/<id>.md  每个主题背后的原始消息
 ```

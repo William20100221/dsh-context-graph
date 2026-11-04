@@ -180,11 +180,11 @@ export const globalId = (view, id) => `c${view.cid}${id}`
  * try chats active in that range first, then topics updated in it, then everything.
  * @returns { hits: [{ id, node, score, via, view }], slice }
  */
-export function matchAcross(views, query, { max = 5, range } = {}) {
+export function matchAcross(views, query, { max = 5, range, skip } = {}) {
   const others = views.filter((v) => !v.own)
   const run = (vs, keep = () => true) => vs
-    .flatMap((view) => matchNodes(view.graph, query, { max }).map((h) => ({ ...h, id: globalId(view, h.id), via: h.via && globalId(view, h.via), view })))
-    .filter(keep)
+    .flatMap((view) => matchNodes(view.graph, query, { max: max + (skip?.size ?? 0) }).map((h) => ({ ...h, id: globalId(view, h.id), via: h.via && globalId(view, h.via), view })))
+    .filter((h) => keep(h) && !skip?.has(h.id))
     .sort((a, b) => b.score - a.score)
     .slice(0, max)
   if (range) {
@@ -415,6 +415,37 @@ export function collectSpan(nodes, eventAt, afterSeq = -1) {
     }
   }
   return { messages, lastSeq, userTurns }
+}
+
+/**
+ * What this chat has already been sent by the plugin and still holds in context: topic ids
+ * (c3n12) and whole block texts. Read from the surface, so after compaction drops a block its
+ * topics can be sent again.
+ */
+export function shownContext(nodes, eventAt) {
+  const ids = new Set()
+  const texts = new Set()
+  for (const seq of nodes) {
+    const event = eventAt(seq)
+    if (event?.type !== 'user/message' || event.data?.source?.kind !== SOURCE_KIND) continue
+    const text = textOf(event.data.content)
+    texts.add(text)
+    for (const m of text.matchAll(/\bc\d+n\d+\b/g)) ids.add(m[0])
+  }
+  return { ids, texts }
+}
+
+/** The newest messages whose builder transcript fits in `maxChars` (each message counts at most `perMessage`). */
+export function tailWithin(messages, maxChars, perMessage = 2000) {
+  let used = 0
+  let start = messages.length
+  while (start > 0) {
+    const cost = Math.min(messages[start - 1].text.length, perMessage) + 20
+    if (start < messages.length && used + cost > maxChars) break
+    used += cost
+    start--
+  }
+  return messages.slice(start)
 }
 
 /** First human prompt of the log, shortened: the chat's title until dsh gives us a better one. */

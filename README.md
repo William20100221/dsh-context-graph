@@ -193,6 +193,7 @@ so restate every key you keep.
 | `inlineMaxChars` | `1200` | A single dominant hit this short is shown verbatim |
 | `surfaceMaxChats` | `20` | Shared chats listed on the first message of each chat |
 | `builderMaxTokens` | `8192` | Output cap for the indexing call; thinking models spend part of it reasoning |
+| `builderMaxInputChars` | `60000` | Most text one indexing call reads; a long chat indexed for the first time keeps only its newest messages |
 | `provider`, `model` | `''` | Empty: reuse the conversation's routed provider and model. Set both to index with a cheaper or faster model |
 
 ## Updating
@@ -209,7 +210,7 @@ Remove with `dsh plugin --profile desktop remove dsh-context-graph`.
 ## On disk
 
 ```
-.context-graph/chats/<sessionId>/meta.json    cid, title, startedAt, lastActiveAt, turns; memoryOff / private only after off / unshare
+.context-graph/chats/<sessionId>/meta.json    cid, title, startedAt, lastActiveAt, turns, builtSeq (how far the chat is indexed); memoryOff / private only after off / unshare
 .context-graph/chats/<sessionId>/graph.json   topics and links; every topic has its time
 .context-graph/chats/<sessionId>/src/<id>.md  verbatim messages behind each topic
 ```

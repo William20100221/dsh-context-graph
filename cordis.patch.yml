@@ -11,5 +11,6 @@
         inlineMaxChars: 1200       # one dominant hit this short is shown verbatim, no recall needed
         surfaceMaxChats: 20        # shared chats listed on the first message of each chat
         builderMaxTokens: 8192     # thinking models spend part of this on reasoning
+        builderMaxInputChars: 60000  # newest messages the indexing call reads; older ones are skipped
         provider: ''               # empty: reuse the conversation's routed provider/model
         model: ''

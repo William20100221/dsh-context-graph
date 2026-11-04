@@ -23,7 +23,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 
 import {
   builderInstruction, collectSpan, estimateTokens, matchAcross, memoryOn, mergeDelta, sharedOn, neighbors, parseBuilderOutput, parseTimeRange,
-  renderChatIndex, renderChats, renderHits, renderMap, renderRange, SOURCE_KIND, titleOf, transcriptForBuilder, turnTranscript
+  renderChatIndex, renderChats, renderHits, renderMap, renderRange, shownContext, SOURCE_KIND, tailWithin, titleOf, transcriptForBuilder, turnTranscript
 } from './graph.js'
 import { appendSource, chatDir, ensureMeta, listChats, loadGraph, loadMeta, readSource, saveGraph, saveMeta } from './store.js'
 import { startUpdateCheck } from './update.js'
@@ -43,6 +43,7 @@ const DEFAULTS = {
   inlineMaxChars: 1200,
   surfaceMaxChats: 20,
   builderMaxTokens: 8192,
+  builderMaxInputChars: 60000,
   provider: '',
   model: ''
 }
@@ -67,7 +68,8 @@ export function apply(ctx, config = {}) {
 
   const state = (sid) => {
     let st = sessions.get(sid)
-    if (!st) { st = { lastBuiltSeq: -1, building: false, announce: true }; sessions.set(sid, st) }
+    // retryAt: after a failed build, wait for this many new human turns before trying again (#3).
+    if (!st) { st = { building: false, announce: true, retryAt: 0 }; sessions.set(sid, st) }
     return st
   }
 
@@ -121,24 +123,33 @@ export function apply(ctx, config = {}) {
     // ponytail: subagent chatter stays out of the graph; revisit if delegated work holds decisions worth keeping.
     if (isSubagent(agent)) return { status: 'skipped', reason: 'subagent session' }
     st.building = true
+    let span
+    const failed = (reason) => {
+      if (span) st.retryAt = span.userTurns + cfg.buildEveryTurns
+      return { status: 'failed', reason }
+    }
     try {
-      const meta = await metaFor(agent)
+      let meta = await metaFor(agent)
       if (!memoryOn(meta)) return { status: 'off', reason: 'memory is off for this chat; /context-graph on resumes it' }
-      // A chat that never ran a command has no folder yet; give it one so it gets a chat number.
-      if (!meta) await setFlags(agent, {})
-      const span = collectSpan(session.surface.nodes, (seq) => session.eventAt(seq), st.lastBuiltSeq)
+      // A chat that never ran a command has no folder yet; give it one so it gets a chat number (#1).
+      if (!meta) meta = await setFlags(agent, {})
+      // The index position is kept in meta.json so an app restart does not index the chat again (#2).
+      span = collectSpan(session.surface.nodes, (seq) => session.eventAt(seq), meta.builtSeq ?? -1)
       const chars = span.messages.reduce((n, m) => n + m.text.length, 0)
       if (span.messages.length === 0) return { status: 'nothing', reason: 'no new messages since the last build' }
-      if (!force && (span.userTurns < cfg.buildEveryTurns || chars < cfg.buildMinChars)) {
-        return { status: 'skipped', reason: `${span.userTurns}/${cfg.buildEveryTurns} human turns, ${chars}/${cfg.buildMinChars} chars` }
+      const needTurns = Math.max(cfg.buildEveryTurns, st.retryAt)
+      if (!force && (span.userTurns < needTurns || chars < cfg.buildMinChars)) {
+        return { status: 'skipped', reason: `${span.userTurns}/${needTurns} human turns, ${chars}/${cfg.buildMinChars} chars` }
       }
+      // A long chat indexed for the first time keeps the call small: only its newest messages are read (#4).
+      const messages = tailWithin(span.messages, cfg.builderMaxInputChars)
       const llm = ctx.get('llm')
       if (!llm) return { status: 'unavailable', reason: 'no llm service in this composition' }
       const target = resolveTarget(agent)
       if (!target) return { status: 'unavailable', reason: 'no provider/model routed yet' }
       const chat = chatDir(dirFor(agent), sid)
       const graph = await loadGraph(chat)
-      const prompt = `${transcriptForBuilder(span.messages)}\n\n${builderInstruction(graph)}`
+      const prompt = `${transcriptForBuilder(messages)}\n\n${builderInstruction(graph)}`
       const assembler = new BlockAssembler()
       for await (const chunk of llm.stream({
         provider: target.provider,
@@ -162,24 +173,26 @@ export function apply(ctx, config = {}) {
         const why = finish?.kind === 'max-tokens'
           ? `the model ran out of output tokens (builderMaxTokens ${cfg.builderMaxTokens}) before finishing`
           : 'builder output was not the expected JSON'
-        return { status: 'failed', reason: `${why}; raw output saved to ${saved}` }
+        return failed(`${why}; raw output saved to ${saved}`)
       }
       // Reversibility rule: a node is written only when it cites text we can store verbatim.
-      delta.nodes = delta.nodes.filter((n) => n.msgs.some((i) => span.messages[i]))
+      delta.nodes = delta.nodes.filter((n) => n.msgs.some((i) => messages[i]))
       const now = new Date().toISOString()
       const touched = mergeDelta(graph, delta, { session: sid, turn, now })
       for (const { id, msgs } of touched) {
-        const cited = msgs.map((i) => span.messages[i]).filter(Boolean)
+        const cited = msgs.map((i) => messages[i]).filter(Boolean)
         if (cited.length > 0) await appendSource(chat, id, { session: sid, turn, at: now, messages: cited })
       }
       await saveGraph(chat, graph)
-      await saveMeta(dirFor(agent), sid, { ...meta, title: meta.title ?? titleOf((seq) => session.eventAt(seq)), lastActiveAt: now, turns: (meta.turns ?? 0) + span.userTurns })
-      st.lastBuiltSeq = span.lastSeq
+      // Re-read: a share/off command may have changed the flags while the model was answering.
+      const latest = (await metaFor(agent)) ?? meta
+      await saveMeta(dirFor(agent), sid, { ...latest, title: latest.title ?? titleOf((seq) => session.eventAt(seq)), lastActiveAt: now, turns: (latest.turns ?? 0) + span.userTurns, builtSeq: span.lastSeq })
+      st.retryAt = 0
       meter.builds++
       return { status: 'built', nodes: touched.length, newNodes: touched.filter((t) => t.isNew).length, totalNodes: Object.keys(graph.nodes).length, edges: graph.edges.length, dir: chat }
     } catch (error) {
       console.error('context-graph: build failed (non-fatal)', error)
-      return { status: 'failed', reason: String(error?.message ?? error) }
+      return failed(String(error?.message ?? error))
     } finally {
       st.building = false
     }
@@ -226,9 +239,14 @@ export function apply(ctx, config = {}) {
         if (list) { parts.push(list); layer = 'surface' }
       }
       const range = parseTimeRange(prompt)
-      const { hits, slice } = matchAcross(views, prompt, { max: cfg.maxHits, range })
+      // Topics already sent in this chat are still in its context; do not send them again (#5).
+      const shown = shownContext(agent.session.surface.nodes, (seq) => agent.session.eventAt(seq))
+      const { hits, slice } = matchAcross(views, prompt, { max: cfg.maxHits, range, skip: shown.ids })
       if (hits.length === 0 && range) {
-        parts.push(renderRange(views.filter((v) => !v.own), range))
+        const block = renderRange(views.filter((v) => !v.own), range)
+        const ids = block.match(/\bc\d+n\d+\b/g) ?? []
+        const seen = shown.texts.has(block) || (ids.length > 0 && ids.every((id) => shown.ids.has(id)))
+        if (!seen) parts.push(block)
       } else {
         let inline
         if (hits.length === 1 || (hits.length > 1 && hits[0].score >= 2 * hits[1].score)) {
@@ -311,7 +329,7 @@ export function apply(ctx, config = {}) {
       const m = /^(?:c(\d+))?(n\d+)?$/.exec(id)
       if (!m || (!m[1] && !m[2])) return { status: 'unknown', text: `"${id}" is not an id. Use c3n12, c3, 2026-11-01 or t7, and only ids you were shown.` }
       const view = m[1] ? views.find((v) => String(v.cid) === m[1]) : views.find((v) => v.own)
-      if (!view) return { status: 'unknown', text: `No chat c${m[1]} shared in this workspace.` }
+      if (!view) return { status: 'unknown', text: m[1] ? `No chat c${m[1]} shared in this workspace.` : 'This chat has no indexed topics yet. Use a full id such as c3n12 from a [context-graph] block.' }
       if (!m[2]) return ok(renderChatIndex(view))
       const node = view.graph.nodes[m[2]]
       if (!node) return { status: 'unknown', text: `No topic ${id}. Only use ids shown in a [context-graph] block.` }
@@ -356,7 +374,7 @@ export function apply(ctx, config = {}) {
               const result = await agent.runMaintenance(() => build(agent, { force: true }))
               const shared = (await loadViews(agent)).filter((v) => !v.own).length
               const indexed = result.status === 'built' ? `${result.totalNodes} topics in this chat` : `nothing indexed yet (${result.reason ?? result.status})`
-              return { kind: 'success', text: `Memory on · ${indexed} · ${shared} shared ${shared === 1 ? 'chat' : 'chats'} to draw on\nThis chat indexes itself every ${cfg.buildEveryTurns} turns. /context-graph share lets other chats use it; /context-graph off stops it.` }
+              return { kind: 'success', text: `Memory on · ${indexed} · ${shared} shared ${shared === 1 ? 'chat' : 'chats'} to draw on\nThis chat indexes itself every ${cfg.buildEveryTurns} turns and other chats in this workspace can use it. /context-graph unshare keeps it private; /context-graph off stops it.` }
             }
             if (sub === 'off') {
               await setFlags(agent, { memoryOff: true })
@@ -391,7 +409,7 @@ export function apply(ctx, config = {}) {
             const cached = m.cacheRead + m.cacheWrite
             const hitRate = m.input + cached > 0 ? Math.round((m.cacheRead / (m.input + cached)) * 100) : 0
             const session = agent.session
-            const pending = collectSpan(session.surface.nodes, (seq) => session.eventAt(seq), state(sid).lastBuiltSeq).userTurns
+            const pending = collectSpan(session.surface.nodes, (seq) => session.eventAt(seq), own?.meta.builtSeq ?? -1).userTurns
             const shared = views.filter((v) => !v.own).length
             return {
               kind: 'success',
