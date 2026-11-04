@@ -12,5 +12,7 @@
         surfaceMaxChats: 20        # shared chats listed on the first message of each chat
         builderMaxTokens: 8192     # thinking models spend part of this on reasoning
         builderMaxInputChars: 60000  # newest messages the indexing call reads; older ones are skipped
+        rangeMaxChats: 3           # a message naming a time with no topic match lists at most this many chats...
+        rangeMaxTopics: 3          # ...with this many topics each; recall("YYYY-MM-DD") shows the full day
         provider: ''               # empty: reuse the conversation's routed provider/model
         model: ''

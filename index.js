@@ -44,6 +44,8 @@ const DEFAULTS = {
   surfaceMaxChats: 20,
   builderMaxTokens: 8192,
   builderMaxInputChars: 60000,
+  rangeMaxChats: 3,
+  rangeMaxTopics: 3,
   provider: '',
   model: ''
 }
@@ -243,7 +245,8 @@ export function apply(ctx, config = {}) {
       const shown = shownContext(agent.session.surface.nodes, (seq) => agent.session.eventAt(seq))
       const { hits, slice } = matchAcross(views, prompt, { max: cfg.maxHits, range, skip: shown.ids })
       if (hits.length === 0 && range) {
-        const block = renderRange(views.filter((v) => !v.own), range)
+        // Sent with every message that names a time, so kept small; recall("YYYY-MM-DD") gives the full day.
+        const block = renderRange(views.filter((v) => !v.own), range, { maxChats: cfg.rangeMaxChats, maxTopics: cfg.rangeMaxTopics })
         const ids = block.match(/\bc\d+n\d+\b/g) ?? []
         const seen = shown.texts.has(block) || (ids.length > 0 && ids.every((id) => shown.ids.has(id)))
         if (!seen) parts.push(block)

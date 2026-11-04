@@ -194,6 +194,8 @@ so restate every key you keep.
 | `surfaceMaxChats` | `20` | Shared chats listed on the first message of each chat |
 | `builderMaxTokens` | `8192` | Output cap for the indexing call; thinking models spend part of it reasoning |
 | `builderMaxInputChars` | `60000` | Most text one indexing call reads; a long chat indexed for the first time keeps only its newest messages |
+| `rangeMaxChats` | `3` | When a message names a time and no topic matches, at most this many chats from that time are listed |
+| `rangeMaxTopics` | `3` | ...with this many topics each. The list names what it left out; `recall("2026-11-01")` shows the full day |
 | `provider`, `model` | `''` | Empty: reuse the conversation's routed provider and model. Set both to index with a cheaper or faster model |
 
 ## Updating

@@ -238,7 +238,10 @@ export function renderChatIndex(view, { max = 40 } = {}) {
   return lines.join('\n')
 }
 
-/** Everything that happened in a time range: each chat active then, with its topics from that range first. */
+/**
+ * Everything that happened in a time range: each chat active then, with its topics from that range
+ * first. Whatever the caps cut is named, with the recall id that shows it, so nothing is hidden.
+ */
 export function renderRange(views, range, { maxChats = 10, maxTopics = 10 } = {}) {
   const chats = newestFirst(views.filter((v) => chatInRange(v.meta, range)))
   if (chats.length === 0) return `[${SOURCE_KIND}] No chats from ${range.label}.`
@@ -247,6 +250,11 @@ export function renderRange(views, range, { maxChats = 10, maxTopics = 10 } = {}
     lines.push(chatLine(view))
     const ids = Object.keys(view.graph.nodes).sort((a, b) => Number(inRange(view.graph.nodes[b].updated, range)) - Number(inRange(view.graph.nodes[a].updated, range)))
     for (const id of ids.slice(0, maxTopics)) lines.push('  ' + topicLine(globalId(view, id), view.graph.nodes[id]))
+    if (ids.length > maxTopics) lines.push(`  - ... ${ids.length - maxTopics} more topics: recall("c${view.cid}")`)
+  }
+  if (chats.length > maxChats) {
+    const rest = chats.slice(maxChats).map((v) => `c${v.cid}`)
+    lines.push(`- ... ${rest.length} more chats (${rest.slice(0, 10).join(', ')}${rest.length > 10 ? ', ...' : ''}): recall a chat id or a day (YYYY-MM-DD)`)
   }
   return lines.join('\n')
 }

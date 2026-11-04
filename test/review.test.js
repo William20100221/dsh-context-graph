@@ -203,3 +203,37 @@ test('tailWithin keeps the newest messages that fit, and always the last one', (
   assert.equal(tailWithin([m(5000), m(5000)], 3000).length, 1, 'each message counts at most 2000')
   assert.deepEqual(tailWithin([], 100), [])
 })
+
+test('a time word with no topic match sends a small capped day list; recall gives the full day', { skip }, async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'cg-review-'))
+  try {
+    const { saveMeta, saveGraph, chatDir } = await import('../store.js')
+    const { estimateTokens, renderRange, parseTimeRange, day } = await import('../graph.js')
+    const dir = join(cwd, '.context-graph')
+    const now = new Date().toISOString()
+    for (let c = 1; c <= 10; c++) {
+      const nodes = {}
+      for (let n = 1; n <= 10; n++) nodes[`n${n}`] = { label: `topic ${c}-${n} deploy pipeline`, gist: `chat ${c} decided step ${n} of the release checklist`, aliases: [], kind: 'fact', src: [], updated: now }
+      await saveMeta(dir, `s${c}`, { cid: c, title: `chat number ${c}`, startedAt: now, lastActiveAt: now, turns: 4 })
+      await saveGraph(chatDir(dir, `s${c}`), { version: 1, nextId: 11, nodes, edges: [] })
+    }
+    const h = await setup()
+    const agent = agentOf('sNew', cwd, [{ type: 'system/message', data: {} }])
+    await h.step(agent, ask('hello'))
+    const out = await h.step(agent, ask('please fix this typo today'))
+    const block = out.messages.at(-1).content[0].text
+    assert.match(block, /^\[context-graph\] Chats from today:/)
+    assert.equal((block.match(/^- c\d+ /gm) ?? []).length, 3, 'three chats')
+    assert.equal((block.match(/^ {2}- c\d+n\d+ /gm) ?? []).length, 9, 'three topics each')
+    assert.equal((block.match(/- \.\.\. 7 more topics: recall\("c\d+"\)/g) ?? []).length, 3)
+    assert.match(block, /- \.\.\. 7 more chats \(c\d+(, c\d+){6}\): recall a chat id or a day/)
+    const views = []
+    for (let c = 1; c <= 10; c++) views.push({ sid: `s${c}`, cid: c, own: false, meta: { cid: c, title: `chat number ${c}`, startedAt: now, lastActiveAt: now }, graph: { nodes: Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`n${i + 1}`, { label: `topic ${c}-${i + 1} deploy pipeline`, gist: `chat ${c} decided step ${i + 1} of the release checklist`, updated: now }])), edges: [] } })
+    const before = estimateTokens(renderRange(views, parseTimeRange('today')))
+    const after = estimateTokens(block)
+    console.log(`day list: ~${before} tokens uncapped, ~${after} tokens capped`)
+    assert.ok(after * 4 < before, `capped ${after} vs uncapped ${before}`)
+    const full = await h.tools[0].execute({ id: day(now) }, { agent })
+    assert.equal((full.text.match(/^- c\d+ /gm) ?? []).length, 10, 'recall by day lists every chat')
+  } finally { await rm(cwd, { recursive: true, force: true }) }
+})
