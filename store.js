@@ -1,6 +1,6 @@
 /**
  * On-disk layout under `<dir>` (default `<workspace>/.context-graph`), one folder per chat:
- *   chats/<sessionId>/meta.json    { cid, title, workspace, startedAt, lastActiveAt, turns, memory, shared }
+ *   chats/<sessionId>/meta.json    { cid, title, workspace, startedAt, lastActiveAt, turns, memoryOff?, private? }
  *   chats/<sessionId>/graph.json   the chat's graph (see graph.js)
  *   chats/<sessionId>/src/<id>.md  verbatim source text of one node, one section appended per build
  * Nothing is merged or copied between chats; the list of chats is the list of folders.
@@ -59,7 +59,7 @@ export async function ensureMeta(dir, sid, { title, workspace, now }) {
   const existing = await loadMeta(dir, sid)
   if (existing) return existing
   const cid = (await listChats(dir)).reduce((max, c) => Math.max(max, c.meta.cid ?? 0), 0) + 1
-  const meta = { cid, title, workspace, startedAt: now, lastActiveAt: now, turns: 0, shared: false }
+  const meta = { cid, title, workspace, startedAt: now, lastActiveAt: now, turns: 0 }
   await saveMeta(dir, sid, meta)
   return meta
 }

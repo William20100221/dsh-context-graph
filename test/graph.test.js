@@ -25,7 +25,7 @@ function sampleGraph() {
 }
 
 const NOW = new Date(2026, 10, 2, 15, 0, 0) // Monday 2026-11-02 15:00 local
-const meta = (cid, startedAt, lastActiveAt, extra = {}) => ({ cid, title: `chat ${cid}`, startedAt, lastActiveAt, memory: true, shared: true, ...extra })
+const meta = (cid, startedAt, lastActiveAt, extra = {}) => ({ cid, title: `chat ${cid}`, startedAt, lastActiveAt, ...extra })
 
 /** Two shared chats (c1 yesterday, c2 last week) and the own chat c3. */
 function sampleViews() {
@@ -38,7 +38,7 @@ function sampleViews() {
   return [
     { sid: 'sA', cid: 1, meta: meta(1, '2026-11-01T09:00:00', '2026-11-01T12:00:00'), graph: sampleGraph(), own: false },
     { sid: 'sOld', cid: 2, meta: meta(2, '2026-10-27T08:00:00', '2026-10-27T10:00:00'), graph: old, own: false },
-    { sid: 'sOwn', cid: 3, meta: meta(3, '2026-11-02T14:00:00', '2026-11-02T15:00:00', { shared: false }), graph: own, own: true }
+    { sid: 'sOwn', cid: 3, meta: meta(3, '2026-11-02T14:00:00', '2026-11-02T15:00:00', { private: true }), graph: own, own: true }
   ]
 }
 
@@ -195,8 +195,8 @@ test('store: one folder per chat, meta with chat numbers, graph and source round
     assert.equal(a.cid, 1)
     assert.equal(b.cid, 2)
     assert.deepEqual(await ensureMeta(dir, 'sA', { now: 'later' }), a, 'existing meta is kept')
-    await saveMeta(dir, 'sA', { ...a, shared: true })
-    assert.equal((await loadMeta(dir, 'sA')).shared, true)
+    await saveMeta(dir, 'sA', { ...a, private: true })
+    assert.equal((await loadMeta(dir, 'sA')).private, true)
     assert.deepEqual((await listChats(dir)).map((c) => c.sid), ['sB', 'sA'], 'newest activity first')
     const chat = chatDir(dir, 'sA')
     assert.equal(Object.keys((await loadGraph(chat)).nodes).length, 0, 'missing file is an empty graph')

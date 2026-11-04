@@ -1,6 +1,6 @@
 {
   "name": "dsh-context-graph",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "DeepSeek Harness plugin: memory graphs for every chat, on by default (switch the plugin off on the Plugins page to stop); other chats in the workspace recall exact past text by topic, chat or day, so fewer input tokens are re-sent",
   "icon": "./icon.svg",
   "type": "module",

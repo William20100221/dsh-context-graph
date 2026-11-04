@@ -254,13 +254,16 @@ export function renderRange(views, range, { maxChats = 10, maxTopics = 10 } = {}
 /** Memory is on in every chat unless `/context-graph off` was run there; the Plugins page switch turns the whole plugin off. */
 export const memoryOn = (meta) => meta?.memoryOff !== true
 
+/** Chats are shared with the rest of the workspace unless `/context-graph unshare` was run there. */
+export const sharedOn = (meta) => meta?.private !== true
+
 /** The /context-graph map: workspace → chats (newest first) → topics. */
 export function renderMap(views, { maxTopics = 8 } = {}) {
   if (views.length === 0) return 'No chats indexed in this workspace yet. Chats index themselves every few turns; /context-graph build indexes this one now.'
   const lines = []
   for (const view of newestFirst(views)) {
     const meta = view.meta
-    const flags = [view.own ? 'this chat' : undefined, memoryOn(meta) ? 'memory on' : 'memory off', meta.shared ? 'shared' : 'private'].filter(Boolean).join(', ')
+    const flags = [view.own ? 'this chat' : undefined, memoryOn(meta) ? 'memory on' : 'memory off', sharedOn(meta) ? 'shared' : 'private'].filter(Boolean).join(', ')
     lines.push(`c${view.cid} ${day(meta.startedAt)} ${meta.title ?? '(untitled)'} · ${Object.keys(view.graph.nodes).length} topics · ${flags}`)
     for (const id of surfaceNodes(view.graph, maxTopics)) lines.push('  ' + topicLine(globalId(view, id), view.graph.nodes[id]))
   }

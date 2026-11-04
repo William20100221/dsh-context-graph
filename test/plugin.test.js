@@ -87,7 +87,7 @@ test('plugin: on by default; off/on + share; a second chat gets the list, hits, 
       assistant('Noted: commit signing uses that SSH key.')
     ])
     const agentA = { options: { cwd }, session: sessionA, runMaintenance: (fn) => fn() }
-    assert.match((await run(agentA, '')).text, /^Memory on · 0 topics in this chat · private · 0 shared chats · 1 turns waiting/)
+    assert.match((await run(agentA, '')).text, /^Memory on · 0 topics in this chat · shared · 0 shared chats · 1 turns waiting/)
     assert.equal((await step(agentA, ask('how do we sign commits?'))).messages.length, 1, 'empty graph injects nothing')
     assert.match((await run(agentA, 'off')).text, /^Memory off for this chat[\s\S]*Plugins page/)
     assert.equal((await run(agentA, 'build')).kind, 'error', 'off chats do not build')
@@ -110,9 +110,9 @@ test('plugin: on by default; off/on + share; a second chat gets the list, hits, 
     assert.equal(metaA.title, 'We decided to sign commits with the SSH key id_ed25519_sign…', 'title is the first message, shortened')
     // Its own topics are still in its context: nothing injected, no chats to announce.
     assert.equal((await step(agentA, ask('how do we sign commits?'))).messages.length, 1)
-    assert.match((await run(agentA, 'share')).text, /^Shared with the workspace · 1 topics/)
+    assert.equal(metaA.private, undefined, 'nobody ran share: the chat is shared by default')
 
-    // Chat B: on by default, so its very first turn already gets chat A's memory.
+    // Chat B: on and shared by default, so its very first turn already gets chat A's memory.
     const sessionB = fakeSession('sB', cwd, [{ type: 'system/message', data: {} }])
     const agentB = { options: { cwd }, session: sessionB, runMaintenance: (fn) => fn() }
     const untouched = await step(agentB, ask('how do we sign commits?'))
@@ -159,13 +159,15 @@ test('plugin: on by default; off/on + share; a second chat gets the list, hits, 
     for await (const c of ctx.listeners['llm/stream']({ purpose: undefined }, () => (async function* () { yield* chunks })())) out.push(c)
     assert.deepEqual(out, chunks)
     const stats = await run(agentB, '')
-    assert.match(stats.text, /^Memory on · 0 topics in this chat · private · 1 shared chat · 0 turns waiting to be indexed/)
+    assert.match(stats.text, /^Memory on · 0 topics in this chat · shared · 1 shared chat · 0 turns waiting to be indexed/)
     assert.match(stats.text, /Main requests: 1; input 10 uncached \+ 90 cache-read \+ 0 cache-write; cache-hit 90%/)
     assert.match(stats.text, /recalls: 4/)
     assert.match((await run(agentB, 'find gpg')).text, /^1 matching topic\nc1n1 commit signing: /)
-    assert.match((await run(agentB, 'map')).text, /^2 chats in [\s\S]*c2 .*· 0 topics · this chat, memory on, private\nc1 .*· 1 topics · memory on, shared\n  - c1n1 /)
+    assert.match((await run(agentB, 'map')).text, /^2 chats in [\s\S]*c2 .*· 0 topics · this chat, memory on, shared\nc1 .*· 1 topics · memory on, shared\n  - c1n1 /)
     assert.match((await run(agentA, 'unshare')).text, /^No longer shared · 1 topics/)
-    assert.equal((await step(agentB, ask('how do we sign commits?'))).messages.length, 1, 'unshared chat is invisible again')
+    assert.equal((await step(agentB, ask('how do we sign commits?'))).messages.length, 1, 'unshared chat is invisible')
+    assert.match((await run(agentA, 'share')).text, /^Shared with the workspace · 1 topics/)
+    assert.equal((await step(agentB, ask('how do we sign commits?'))).messages.length, 2, 'share makes it visible again')
     assert.match((await run(agentA, 'off')).text, /^Memory off/)
     assert.equal(ctx.listeners['agent/turn-stopping']({ agent: agentA, turn: 2 }), undefined)
   } finally {

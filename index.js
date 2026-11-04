@@ -5,7 +5,7 @@
  * dsh's Plugins page stops all of them. While on:
  * - `agent/turn-stopping`: every few human turns, one auxiliary model call indexes the new span
  *   into `<workspace>/.context-graph/chats/<session>/graph.json` and stores the cited text verbatim.
- * - `agent/pre-step`: on a human turn, match the prompt against the other shared chats of this
+ * - `agent/pre-step`: on a human turn, match the prompt against the other shared chats (all chats unless unshared) of this
  *   workspace (a named day is searched first) and append one short `[context-graph]` block at the
  *   end of the request, so the provider's prefix cache survives. On a chat's first message, one block lists
  *   the shared chats, newest first.
@@ -22,7 +22,7 @@ import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
 import {
-  builderInstruction, collectSpan, estimateTokens, matchAcross, memoryOn, mergeDelta, neighbors, parseBuilderOutput, parseTimeRange,
+  builderInstruction, collectSpan, estimateTokens, matchAcross, memoryOn, mergeDelta, sharedOn, neighbors, parseBuilderOutput, parseTimeRange,
   renderChatIndex, renderChats, renderHits, renderMap, renderRange, SOURCE_KIND, titleOf, transcriptForBuilder, turnTranscript
 } from './graph.js'
 import { appendSource, chatDir, ensureMeta, listChats, loadGraph, loadMeta, readSource, saveGraph, saveMeta } from './store.js'
@@ -98,7 +98,7 @@ export function apply(ctx, config = {}) {
     const views = []
     for (const { sid: other, meta } of await listChats(dir)) {
       const own = other === sid
-      if (!own && !meta.shared) continue
+      if (!own && !sharedOn(meta)) continue
       views.push({ sid: other, cid: meta.cid, meta, own, graph: await loadGraph(chatDir(dir, other)) })
     }
     return views
@@ -363,7 +363,7 @@ export function apply(ctx, config = {}) {
               return { kind: 'success', text: 'Memory off for this chat · nothing is added to its requests\nThe graph stays; /context-graph on resumes. To turn memory off in every chat, switch dsh-context-graph off on the Plugins page.' }
             }
             if (sub === 'share' || sub === 'unshare') {
-              const meta = await setFlags(agent, { shared: sub === 'share' })
+              const meta = await setFlags(agent, { private: sub === 'unshare' })
               const topics = Object.keys((await loadGraph(chatDir(dirFor(agent), sid))).nodes).length
               const hint = memoryOn(meta) ? '' : '\nMemory is off for this chat, so it has nothing new to share until /context-graph on.'
               return { kind: 'success', text: sub === 'share' ? `Shared with the workspace · ${topics} topics\nOther chats with memory on can now match and recall this chat.${hint}` : `No longer shared · ${topics} topics stay private to this chat` }
@@ -396,7 +396,7 @@ export function apply(ctx, config = {}) {
             return {
               kind: 'success',
               text: [
-                `Memory ${memoryOn(own?.meta) ? 'on' : 'off'} · ${Object.keys(own?.graph.nodes ?? {}).length} topics in this chat · ${own?.meta.shared ? 'shared' : 'private'} · ${shared} shared ${shared === 1 ? 'chat' : 'chats'} · ${pending} turns waiting to be indexed${updates.current() ? ' · update available' : ''}`,
+                `Memory ${memoryOn(own?.meta) ? 'on' : 'off'} · ${Object.keys(own?.graph.nodes ?? {}).length} topics in this chat · ${sharedOn(own?.meta) ? 'shared' : 'private'} · ${shared} shared ${shared === 1 ? 'chat' : 'chats'} · ${pending} turns waiting to be indexed${updates.current() ? ' · update available' : ''}`,
                 `Version ${version}: ${updates.current() ?? 'no newer version found'}`,
                 `Graph folder: ${dirFor(agent)}`,
                 'Counters below are since the app started:',

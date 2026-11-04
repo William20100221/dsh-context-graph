@@ -44,9 +44,10 @@ word for word. Nothing is summarised away, and nothing is sent that you did not 
 
 1. **Plugins → Add plugin**, official npm registry, type `dsh-context-graph`, install, then fully
    restart the app (new slash commands need a restart).
-2. In a chat you want to remember, type `/context-graph`, pick it from the menu, then type `on`.
-3. Type `share` the same way so other chats can use it.
-4. Open a new chat in the same workspace, run `on` there too, and ask about something from the first.
+2. Chat as usual. Every chat indexes itself every 4 turns and is shared with the other chats of
+   its workspace. Type `/context-graph`, pick it from the menu, then `build` to index one right away.
+3. Open a new chat in the same workspace and ask about something from the first.
+4. To keep one chat out of the others, run `/context-graph unshare` in it.
 
 Command line instead of the Plugins page (the desktop app uses the `desktop` profile):
 
@@ -80,12 +81,12 @@ To stop it in every chat, switch the plugin off on the Plugins page instead.
 Stops indexing and stops adding anything to your requests. The graph folder stays on disk, so
 `on` later resumes where it left off. Other chats keep seeing this chat if it is shared.
 
-### `share` / `unshare` — let other chats use this chat
+### `share` / `unshare` — keep a chat private, or share it again
 
-`share` sets a flag on the chat; from then on other chats with memory on can match and recall its
-topics. Nothing is copied or merged: the graph stays in its own folder with its own dates, and its
-ids carry the chat number (`c3n12`) so every hit traces back to where it came from. `unshare`
-clears the flag; the chat becomes private again at once. A chat shared
+Every chat is shared by default: other chats with memory on can match and recall its topics.
+`unshare` makes this chat private; `share` undoes that. Nothing is copied or merged: the graph stays in its own folder with its own dates, and its
+ids carry the chat number (`c3n12`) so every hit traces back to where it came from. Both take
+effect at once. A chat shared
 before its first index has nothing to offer yet; it fills in every 4 turns or with `build`.
 
 Card: `Shared with the workspace · 7 topics`
@@ -208,7 +209,7 @@ Remove with `dsh plugin --profile desktop remove dsh-context-graph`.
 ## On disk
 
 ```
-.context-graph/chats/<sessionId>/meta.json    cid, title, startedAt, lastActiveAt, turns, memory, shared
+.context-graph/chats/<sessionId>/meta.json    cid, title, startedAt, lastActiveAt, turns; memoryOff / private only after off / unshare
 .context-graph/chats/<sessionId>/graph.json   topics and links; every topic has its time
 .context-graph/chats/<sessionId>/src/<id>.md  verbatim messages behind each topic
 ```
