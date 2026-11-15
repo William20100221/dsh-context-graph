@@ -1,0 +1,211 @@
+[
+  {
+    "key": "C2-1",
+    "milestone": "v0.8.0",
+    "labels": [
+      "bug",
+      "tokens"
+    ],
+    "title": "Chats with no topics fill the chat list and the day blocks, pushing real chats out",
+    "body": "**Problem**\nA chat gets its folder and chat number at its first turn end, before it has any topic. Quick chats (one question, one answer) are the most common and the newest, so they take the top slots of the first-message list (capped at 20) and of a day block (capped at 3). In a test with 12 indexed and 10 quick chats, the new chat's list opened with ten lines like `- c22 2026-11-15 thanks (0 topics)`; the chat holding the turn's actual hit was pushed into '... 2 older chats'. `recall(\"c13\")` on such a line returns nothing.\n\n**Fix**\nList and digest only chats that have topics; keep the folder (it holds the chat number and index position).\n\n_Found in the cycle-2 audit of v0.7.0 (lens: new chat) and confirmed._",
+    "number": 38
+  },
+  {
+    "key": "C2-2",
+    "milestone": "v0.8.0",
+    "labels": [
+      "bug",
+      "tokens"
+    ],
+    "title": "Exact source is inlined for any lone hit, and the cap counts characters (Chinese costs 3.5x)",
+    "body": "**Problem**\nThe verbatim source of a hit is inlined whenever the hit is alone, however weak (one shared word). Inlines were 65% of all injected tokens in a 40-prompt test (5,329 of 8,235), including 505 tokens of React routing source for '家里的路由器信号不好怎么办'. The size limit is 1,200 characters, which is about 343 tokens in English but up to 1,200 tokens in Chinese.\n\n**Fix**\nInline only a strong hit (three label/alias words) that clearly leads, under a token budget (`inlineMaxTokens`, about 300) measured with the same estimator as everything else.\n\n_Found in the cycle-2 audit (lenses: new chat, relevance) and confirmed._",
+    "number": 39
+  },
+  {
+    "key": "C2-3",
+    "milestone": "v0.8.0",
+    "labels": [
+      "bug",
+      "quality"
+    ],
+    "title": "A chat's last-active time only moves when it is indexed",
+    "body": "**Problem**\n`lastActiveAt` changes only on a build (every 4 human turns). A chat resumed today for 1-3 turns keeps its old date, so it ranks as old and is missing from 'what did we do today'.\n\n**Fix**\nOn a turn end that does not build, refresh `lastActiveAt` when it is more than an hour old (at most one small write per chat per hour, off the critical path).\n\n_Found in the cycle-2 audit (lens: new chat) and confirmed._",
+    "number": 40
+  },
+  {
+    "key": "C2-4",
+    "milestone": "v0.8.0",
+    "labels": [
+      "enhancement",
+      "quality"
+    ],
+    "title": "Use dsh's own chat title (model-made or renamed by the user)",
+    "body": "**Problem**\ndsh writes a `session/title` event into every chat's log: a short model-made title, or the user's own rename. The plugin keeps the first prompt cut to 60 characters instead ('hi', '继续'), which says little and costs about twice the tokens in Chinese. A rename in the sidebar never reaches memory.\n\n**Fix**\nOn each build, read the latest `session/title` event and store it; show it instead of the first prompt. Keep the first prompt separately (fork matching uses it).\n\n_Found in the cycle-2 audit (lens: new chat) and confirmed._",
+    "number": 41
+  },
+  {
+    "key": "C2-5",
+    "milestone": "v0.10.0",
+    "labels": [
+      "enhancement",
+      "quality"
+    ],
+    "title": "Chats shorter than 4 human turns are never indexed",
+    "body": "**Problem**\nA chat is indexed every 4 human turns. A short question-and-answer chat (1-3 turns) never reaches that, and nothing indexes it later, so it never becomes shared memory. The trailing 1-3 turns of every chat are also never indexed until the chat continues.\n\n**Plan**\nIndex a chat's unindexed tail once it goes quiet. This needs a builder that can read a chat that is no longer active (through dsh's session query) rather than a live agent, so it is planned for cycle 4.\n\n_Found in the cycle-2 audit (lens: new chat) and confirmed._",
+    "number": 42
+  },
+  {
+    "key": "C2-6",
+    "milestone": "v0.8.0",
+    "labels": [
+      "enhancement",
+      "tokens"
+    ],
+    "title": "A subject that recurs across chats injects every copy",
+    "body": "**Problem**\nA user who returns to the same project in new chats builds near-identical topics in each. A matching prompt then injects every copy: in a test, '给 recall 工具传什么 id' got the same topic from five chats, filling all five slots.\n\n**Fix**\nCollapse hits with the same normalized label before the cut, keeping the newest, so the freed slots go to different topics.\n\n_Found in the cycle-2 audit (lens: relevance) and confirmed._",
+    "number": 43
+  },
+  {
+    "key": "C2-7",
+    "milestone": "v0.8.0",
+    "labels": [
+      "enhancement",
+      "tokens",
+      "speed"
+    ],
+    "title": "Indexing calls run at the model's default reasoning effort",
+    "body": "**Problem**\nThe indexing call does not set a reasoning effort, so dsh applies the route's default: for DeepSeek that is 'high' thinking (or 'max' if the user set that). Extracting topics from a transcript does not need it; the thinking tokens are paid output and add seconds to every build.\n\n**Fix**\nAsk dsh for the route's efforts (`llm.resolveModelInfo`) and use the lowest one, exactly as dsh's own title generator does; send none for routes without efforts (always safe).\n\n_Found in the cycle-2 audit (lens: indexing call) and confirmed against dsh-llm 0.2.1-rc.5._",
+    "number": 44
+  },
+  {
+    "key": "C2-8",
+    "milestone": "v0.8.0",
+    "labels": [
+      "bug",
+      "tokens"
+    ],
+    "title": "A build cut off by the token cap is retried with a larger span each time, then skipped unindexed",
+    "body": "**Problem**\nWhen a thinking model spends the whole output budget, the build fails and is retried 4 turns later with the old span plus the new turns. In a test the prompt grew 3,219 -> 6,026 -> 8,846 tokens; after the third failure 12 turns were marked indexed with no topic stored.\n\n**Fix**\nPin a retry to the span that failed; after a cut-off answer retry the first half of it; skip only the pinned span, never the turns that arrived since.\n\n_Found in the cycle-2 audit (lens: indexing call) and confirmed._",
+    "number": 45
+  },
+  {
+    "key": "C2-9",
+    "milestone": "v0.8.0",
+    "labels": [
+      "bug",
+      "quality"
+    ],
+    "title": "A busy 4-turn span can lose its human prompts but is still marked indexed",
+    "body": "**Problem**\nThe input budget (60,000 characters) is applied to every build by keeping the newest messages. A normal agentic span (4 turns with many assistant steps) exceeds it, so the oldest messages, including human prompts, are dropped, and the index position still moves past them. In a test, 2 of 4 prompts ('the real decision is X1') were never indexed.\n\n**Fix**\nAlways keep every human prompt; shorten assistant messages (2,000 -> 800 -> 300 characters) until the span fits; drop old assistant steps only as a last resort.\n\n_Found in the cycle-2 audit (lens: indexing call) and confirmed._",
+    "number": 46
+  },
+  {
+    "key": "C2-10",
+    "milestone": "v0.8.0",
+    "labels": [
+      "bug",
+      "tokens"
+    ],
+    "title": "Turn ids are never shown, and a turn recall can return 18,000 tokens",
+    "body": "**Problem**\nNo block ever prints a turn id, yet the recall tool says to use only ids it was shown, so `t7` can only be guessed. A turn recall returns every tool result (2,000 characters each, unlimited count): on the maintainer's real dsh logs, p90 was 9,034 tokens and the maximum 18,633.\n\n**Fix**\nOne lean turn format for `t7` and `c3t7`: the prompt and the assistant's text, tools as one line, capped at about 2,000 tokens with a marker. Define t-ids in the tool description and name the turns behind each topic source.\n\n_Found in the cycle-2 audit (lens: drill-down) and confirmed on real logs._",
+    "number": 47
+  },
+  {
+    "key": "C2-11",
+    "milestone": "v0.8.0",
+    "labels": [
+      "bug",
+      "quality"
+    ],
+    "title": "recall of a chat silently stops at 40 topics",
+    "body": "**Problem**\n`recall(\"c3\")` lists the 40 best-connected topics and says nothing about the rest; the day digest points to `recall(\"c3\")` for 'more topics', which has the same cut. Topic 41 onward is listed nowhere.\n\n**Fix**\nSay how many are shown and add one line naming the rest by id and label.\n\n_Found in the cycle-2 audit (lens: drill-down) and confirmed._",
+    "number": 48
+  },
+  {
+    "key": "C2-12",
+    "milestone": "v0.8.0",
+    "labels": [
+      "speed"
+    ],
+    "title": "Redundant work: a time word matches the workspace up to 3 times; map loads it twice; recall loads every chat; a fork re-detects its parent every turn",
+    "body": "**Problem**\n- A message naming a time runs the full workspace match up to three times (302 ms vs 128 ms at 150 chats).\n- `/context-graph map` loads every chat twice; `recall(\"c3n12\")` loads every chat's topics to read one (57 ms vs 10 ms).\n- A fork whose parent dsh does not name re-detects it on every turn, reading up to five message files.\n\n**Fix**\nMemoize matches per chat within one call; load only the chat a recall names; persist a found parent.\n\n_Found in the cycle-2 audit (lens: speed) and confirmed with measurements._",
+    "number": 49
+  },
+  {
+    "key": "C2-13",
+    "milestone": "v0.8.0",
+    "labels": [
+      "bug",
+      "data-safety",
+      "security"
+    ],
+    "title": "A chat whose meta.json became unreadable runs with memory on",
+    "body": "**Problem**\nv0.7.0 fails closed (private, memory off) only when the chat's meta is next written. Every read path sees the damaged file as missing, and memory on is the default, so before that write the chat gets memory blocks, its recall reads other chats, and it is indexed, even if it had been switched off.\n\n**Fix**\nFail closed when reading: a meta that is unreadable, or missing while a set-aside copy exists, reads as private and memory off with the recovered chat number, without writing.\n\n_Found in the cycle-2 audit (lens: correctness) and confirmed._",
+    "number": 50
+  },
+  {
+    "key": "C2-14",
+    "milestone": "v0.8.0",
+    "labels": [
+      "bug",
+      "tokens"
+    ],
+    "title": "The example id in the chat list hides a real topic with that id",
+    "body": "**Problem**\nThe chat-list header shows example calls such as `recall(\"c3n12\")`. The 'already shown' check reads every id in plugin blocks, so a real topic `c3n12` is treated as shown and never injected in that chat.\n\n**Fix**\nUse placeholders that cannot be ids (`recall(\"c<chat>\")`), and read shown ids only from topic lines.\n\n_Found in the cycle-2 audit (lens: correctness) and confirmed._",
+    "number": 51
+  },
+  {
+    "key": "C2-15",
+    "milestone": "v0.8.0",
+    "labels": [
+      "bug",
+      "tokens"
+    ],
+    "title": "A fork of a fork is sent its grandparent's topics",
+    "body": "**Problem**\nOnly the direct parent's inherited topics are held back. A fork of a fork holds the grandparent's messages too (same seqs), yet gets its topics and inlined source again (231 tokens in a test).\n\n**Fix**\nDecide by content: a topic of any chat whose every cited message equals this chat's own event at that seq (below its fork point) is already in context.\n\n_Found in the cycle-2 audit (lens: correctness) and confirmed._",
+    "number": 52
+  },
+  {
+    "key": "C2-16",
+    "milestone": "v0.8.0",
+    "labels": [
+      "bug",
+      "quality"
+    ],
+    "title": "After a span is skipped for unusable answers, the next 16 turns go unindexed",
+    "body": "**Problem**\nWhen the third unusable answer skips a span, the retry wait is still computed from that span, so the next build waits 16 human turns instead of 4.\n\n**Fix**\nReset the wait when a span is skipped.\n\n_Found in the cycle-2 audit (lens: correctness) and confirmed._",
+    "number": 53
+  },
+  {
+    "key": "C2-17",
+    "milestone": "v0.8.0",
+    "labels": [
+      "bug",
+      "data-safety"
+    ],
+    "title": "Repair of a damaged file gives up after 64 closing braces of junk",
+    "body": "**Problem**\nThe repair of a file with trailing junk tries at most 64 cut points. A long tail (77 braces in a test, the shape v0.6's interleaved writes leave in msgs.json) is quarantined instead, and the next save starts an empty message store.\n\n**Fix**\nCut first at the position the JSON parser reports; keep the scan as a fallback without the cap.\n\n_Found in the cycle-2 audit (lens: correctness) and confirmed._",
+    "number": 54
+  },
+  {
+    "key": "C2-18",
+    "milestone": "v0.8.0",
+    "labels": [
+      "bug"
+    ],
+    "title": "stats in a new fork counts every inherited turn as waiting",
+    "body": "**Problem**\nBefore a fork's first build, `/context-graph stats` counts from seq 0 and reports every inherited turn as waiting (11 instead of 1 in a test).\n\n**Fix**\nStart the count where the fork's index starts.\n\n_Found in the cycle-2 audit (lens: correctness) and confirmed._",
+    "number": 55
+  },
+  {
+    "key": "C2-19",
+    "milestone": "v0.8.0",
+    "labels": [
+      "bug",
+      "data-safety"
+    ],
+    "title": "The v1 backup is removed 7 days after the first upgrade, not after 7 quiet days",
+    "body": "**Problem**\nIf an older plugin copy writes the old file again on day 6.9, the backup is still deleted on day 7.\n\n**Fix**\nCount the 7 days from the later of the upgrade and the last write to the old file.\n\n_Found in the cycle-2 audit (lens: correctness) and confirmed._",
+    "number": 56
+  }
+]
