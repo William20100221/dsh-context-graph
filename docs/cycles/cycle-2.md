@@ -50,3 +50,32 @@ the diff finds nothing it can reproduce (or what it finds is fixed), tag pushed.
 - No dependencies, no embeddings, no extra model calls (the summary rides in the existing build).
 - Do not change anything that would break the provider prefix cache of a running chat.
 - Do not ask the owner questions; choose by: fewer tokens, then speed and quality, then storage.
+
+## RESULT (2026-11-16)
+- Released as v0.8.0. Issues #23-#31, #33, #34, #38-#41, #43-#57 closed by the fix commit; #42
+  (index chats shorter than 4 turns) and #58 (legacy forks never reopened) stay for cycle 4, #35-#37
+  for cycle 3.
+- Measured on the audit corpus: precision 40% -> 100% (91% on the held-out set), 20/20 found,
+  everyday messages with a block 7/20 -> 0/20, injected tokens 8,235 -> 3,045; first-message
+  list under 200 tokens at 50 chats; recall tool about 100 tokens; a turn about 2,000 tokens at
+  most; about 19 ms per message at 150 chats / 9,000 topics (was 186 ms).
+- The independent review (4 angles, 24 findings, 22 confirmed by reproduction) found real problems
+  in the new code: one Chinese word counted as two or three label words, a shown topic hid its
+  replacement, a named time could push an exact older match out, the day-digest trigger was too
+  loose, recall caps were characters, nested subagents bypassed memory off, and several host
+  fixes had no test that failed without them. All were fixed, each with a test. A second review of
+  those fixes (2 angles, 11 findings, 9 confirmed) found that a word could still count twice inside a
+  longer word, katakana/Hangul words counted as several, a path written first weakened the
+  question, copies compared by search tokens ignored digits and "not", ties cut the exact topic, the
+  digest trigger still fired on "did we win", cuts could split emoji, and old forks leaked inherited
+  topics; all fixed except old forks never reopened (#58). Final check: 124 tests in three zones, and
+  each of the 57 fixes, broken on purpose, makes the suite fail.
+- Found in my own process: the cycle-1 "three time zones" ran in the local zone twice (Git Bash
+  drops TZ with a slash), filed as #57 and fixed with `npm run test:zones`.
+- Design changes made because of the reviews: evidence is counted per word of the message (only
+  new characters count, katakana/Hangul runs are one word, code after plain words); time orders the
+  chosen hits instead of choosing them; the chat list is sent once per chat (first turn or after
+  `on`); subjects and gists are compared as text; forks hold back everything before their fork
+  point, which a 0.4-0.6 fork learns from dsh.
+- Carried forward: #42 (cycle 4), #35-#37 (cycle 3); long pasted logs can still bring one loosely
+  related topic (lexical matching), noted in the README's known limits.
