@@ -31,7 +31,7 @@ export function apply(ctx, config = {}) {
   const updates = _updates ?? startUpdateCheck(version)
   const meter = createMeter()
   const build = registerBuilder(ctx, rt, meter)
-  registerMemory(ctx, rt, meter, updates)
+  registerMemory(ctx, rt, meter)
   registerMeter(ctx, meter)
   registerRecall(ctx, rt, meter)
   registerCommand(ctx, rt, { build, meter, updates })

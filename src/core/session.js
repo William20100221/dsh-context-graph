@@ -9,28 +9,43 @@ import { textOf } from './text.js'
 export const isHuman = (event) => event?.type === 'user/message' && event.data?.source?.kind === 'user'
 
 /**
- * Pull the human/assistant exchange out of dsh session events in surface order.
- * @param nodes surface seqs; @param eventAt session lookup; @param afterSeq only events past this seq.
- * @returns { messages: [{ seq, role, text }], lastSeq, userTurns }
+ * The human/assistant exchange after `afterSeq`, read from the durable session log (seq 0, 1, 2 ...
+ * until `eventAt` returns nothing). Not from the surface: dsh compaction replaces old turns on the
+ * surface with one checkpoint, and turns that were still waiting to be indexed would be lost (#13).
+ * Within one session the log is never edited, so nothing outside the conversation is read.
+ * Each message carries its turn number (t1 is the first human prompt of the log) and its time.
+ * `completeOnly`: stop before a turn that is still running (a `turn/start` with no `turn/end` after
+ * it), so a build started by a command mid-turn never splits that turn's question from its answer.
+ * @returns { messages: [{ seq, role, text, turn, time }], lastSeq, userTurns, turns }
  */
-export function collectSpan(nodes, eventAt, afterSeq = -1) {
-  const messages = []
-  let lastSeq = afterSeq
-  let userTurns = 0
-  for (const seq of nodes) {
-    if (seq <= afterSeq) continue
+export function collectSpan(eventAt, afterSeq = -1, { completeOnly = false } = {}) {
+  const all = []
+  const humans = []
+  let end = -1
+  let openTurn = -1
+  for (let seq = 0; ; seq++) {
     const event = eventAt(seq)
-    if (!event) continue
-    lastSeq = Math.max(lastSeq, seq)
+    if (!event) break
+    end = seq
+    if (event.type === 'turn/start') openTurn = seq
+    else if (event.type === 'turn/end') openTurn = -1
     if (isHuman(event)) {
+      humans.push(seq)
       const text = textOf(event.data.content)
-      if (text) { messages.push({ seq, role: 'user', text }); userTurns++ }
-    } else if (event.type === 'assistant/message') {
+      if (text && seq > afterSeq) all.push({ seq, role: 'user', text, turn: humans.length, time: event.time })
+    } else if (seq > afterSeq && event.type === 'assistant/message') {
       const text = textOf(event.data?.message?.content)
-      if (text) messages.push({ seq, role: 'assistant', text })
+      if (text) all.push({ seq, role: 'assistant', text, turn: humans.length || undefined, time: event.time })
     }
   }
-  return { messages, lastSeq, userTurns }
+  const limit = completeOnly && openTurn >= 0 ? openTurn - 1 : end
+  const messages = all.filter((m) => m.seq <= limit)
+  return {
+    messages,
+    lastSeq: Math.max(afterSeq, limit),
+    userTurns: messages.filter((m) => m.role === 'user').length,
+    turns: humans.filter((seq) => seq <= limit).length
+  }
 }
 
 /**

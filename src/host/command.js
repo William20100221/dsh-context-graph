@@ -1,6 +1,10 @@
 /**
  * The `/context-graph` command. Nested plugin: it starts only where a human-command surface exists
  * (the Web and desktop apps), not in headless or ACP runs.
+ *
+ * No subcommand takes the agent's maintenance slot: that held the user's next message for the whole
+ * indexing call and failed outright while a turn was running (#19). Builds read the session and
+ * write only this plugin's files, and the per-chat `building` flag already prevents overlap.
  */
 
 import { memoryOn, sharedOn } from '../core/chat.js'
@@ -10,6 +14,8 @@ import { collectSpan } from '../core/session.js'
 import { parseTimeRange } from '../core/time.js'
 import { chatDir, listChats, loadGraph } from '../store/chats.js'
 import { USAGE, version } from './config.js'
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 export function registerCommand(ctx, rt, { build, meter, updates }) {
   const { cfg } = rt
@@ -30,31 +36,32 @@ export function registerCommand(ctx, rt, { build, meter, updates }) {
             if (sub === 'on') {
               await rt.setFlags(agent, { memoryOff: false })
               rt.state(sid).announce = true
-              const result = await agent.runMaintenance(() => build(agent, { force: true }))
+              // The flag is the real effect; indexing continues in the background, up to the last
+              // finished turn (a running turn is indexed when it ends).
+              void build(agent, { force: true, completeOnly: true })
               const shared = (await rt.loadViews(agent)).filter((v) => !v.own).length
-              const indexed = result.status === 'built' ? `${result.totalNodes} topics in this chat` : `nothing indexed yet (${result.reason ?? result.status})`
-              return { kind: 'success', text: `Memory on · ${indexed} · ${shared} shared ${shared === 1 ? 'chat' : 'chats'} to draw on\nThis chat indexes itself every ${cfg.buildEveryTurns} turns and other chats in this workspace can use it. /context-graph unshare keeps it private; /context-graph off stops it.` }
+              return { kind: 'success', text: `Memory on · indexing this chat now · ${plural(shared, 'shared chat')} to draw on\nThis chat indexes itself every ${cfg.buildEveryTurns} turns and other chats in this workspace can use it. /context-graph stats shows progress; /context-graph unshare keeps it private; /context-graph off stops it.` }
             }
             if (sub === 'off') {
               await rt.setFlags(agent, { memoryOff: true })
-              return { kind: 'success', text: 'Memory off for this chat · nothing is added to its requests\nThe graph stays; /context-graph on resumes. To turn memory off in every chat, switch dsh-context-graph off on the Plugins page.' }
+              return { kind: 'success', text: 'Memory off for this chat · no memory blocks are added and recall cannot read other chats\nThe graph stays; /context-graph on resumes. To turn memory off in every chat, switch dsh-context-graph off on the Plugins page.' }
             }
             if (sub === 'share' || sub === 'unshare') {
               const meta = await rt.setFlags(agent, { private: sub === 'unshare' })
               const topics = Object.keys((await loadGraph(chatDir(rt.dirFor(agent), sid))).nodes).length
               const hint = memoryOn(meta) ? '' : '\nMemory is off for this chat, so it has nothing new to share until /context-graph on.'
-              return { kind: 'success', text: sub === 'share' ? `Shared with the workspace · ${topics} topics\nOther chats with memory on can now match and recall this chat.${hint}` : `No longer shared · ${topics} topics stay private to this chat` }
+              return { kind: 'success', text: sub === 'share' ? `Shared with the workspace · ${plural(topics, 'topic')}\nOther chats with memory on can now match and recall this chat.${hint}` : `No longer shared · ${plural(topics, 'topic')} stay private to this chat` }
             }
             if (sub === 'build') {
-              const result = await agent.runMaintenance(() => build(agent, { force: true }))
+              const result = await build(agent, { force: true, signal: invocation.signal, completeOnly: true })
               if (result.status !== 'built') return { kind: 'error', text: `Build ${result.status}: ${result.reason ?? ''}`.trim() }
-              return { kind: 'success', text: `${result.nodes} topics indexed (${result.newNodes} new) · this chat has ${result.totalNodes} topics\nLinks: ${result.edges}\nFolder: ${result.dir}` }
+              return { kind: 'success', text: `${plural(result.nodes, 'topic')} indexed (${result.newNodes} new) · this chat has ${plural(result.totalNodes, 'topic')}\nLinks: ${result.edges}\nFolder: ${result.dir}` }
             }
             const views = await rt.loadViews(agent)
             if (sub === 'map') {
-              const all = []
-              for (const { sid: other, meta } of await listChats(rt.dirFor(agent))) all.push({ sid: other, cid: meta.cid, meta, own: other === sid, graph: await loadGraph(chatDir(rt.dirFor(agent), other)) })
-              return { kind: 'success', text: `${all.length} ${all.length === 1 ? 'chat' : 'chats'} in ${rt.dirFor(agent)}\n${renderMap(all)}` }
+              const dir = rt.dirFor(agent)
+              const all = await Promise.all((await listChats(dir)).map(async ({ sid: other, meta }) => ({ sid: other, cid: meta.cid, meta, own: other === sid, graph: await loadGraph(chatDir(dir, other)) })))
+              return { kind: 'success', text: `${plural(all.length, 'chat')} in ${dir}\n${renderMap(all)}` }
             }
             if (sub === 'find') {
               const query = rest.join(' ')
@@ -68,18 +75,25 @@ export function registerCommand(ctx, rt, { build, meter, updates }) {
             const cached = m.cacheRead + m.cacheWrite
             const hitRate = m.input + cached > 0 ? Math.round((m.cacheRead / (m.input + cached)) * 100) : 0
             const session = agent.session
-            const pending = collectSpan(session.surface.nodes, (seq) => session.eventAt(seq), own?.meta.builtSeq ?? -1).userTurns
+            const pending = collectSpan((seq) => session.eventAt(seq), own?.meta.builtSeq ?? -1).userTurns
             const shared = views.filter((v) => !v.own).length
+            const o = meter.other
+            const last = rt.state(sid).lastBuild
+            const lastLine = !last ? 'Last index: none since the app started'
+              : last.status === 'built' ? `Last index: ${plural(last.nodes, 'topic')} (${last.newNodes} new) at ${last.at.slice(11, 16)} UTC`
+                : `Last index ${last.status} at ${last.at.slice(11, 16)} UTC: ${last.reason}`
             return {
               kind: 'success',
               text: [
-                `Memory ${memoryOn(own?.meta) ? 'on' : 'off'} · ${Object.keys(own?.graph.nodes ?? {}).length} topics in this chat · ${sharedOn(own?.meta) ? 'shared' : 'private'} · ${shared} shared ${shared === 1 ? 'chat' : 'chats'} · ${pending} turns waiting to be indexed${updates.current() ? ' · update available' : ''}`,
+                `Memory ${memoryOn(own?.meta) ? 'on' : 'off'} · ${plural(Object.keys(own?.graph.nodes ?? {}).length, 'topic')} in this chat · ${sharedOn(own?.meta) ? 'shared' : 'private'} · ${plural(shared, 'shared chat')} · ${plural(pending, 'turn')} waiting to be indexed${updates.current() ? ' · update available' : ''}`,
+                lastLine,
                 `Version ${version}: ${updates.current() ?? 'no newer version found'}`,
                 `Graph folder: ${rt.dirFor(agent)}`,
                 'Counters below are since the app started:',
                 `Builds: ${meter.builds}; builder tokens in/out: ${meter.builder.input + meter.builder.cacheRead + meter.builder.cacheWrite}/${meter.builder.output}`,
                 `Injected blocks: ${meter.injected} (~${meter.injectedTokens} tokens); recalls: ${meter.recalls}`,
-                `Main requests: ${m.requests}; input ${m.input} uncached + ${m.cacheRead} cache-read + ${m.cacheWrite} cache-write; cache-hit ${hitRate}%`
+                `Conversation requests: ${m.requests}; input ${m.input} uncached + ${m.cacheRead} cache-read + ${m.cacheWrite} cache-write; cache-hit ${hitRate}%`,
+                `Other model calls (compaction, titles): ${o.requests}; input ${o.input + o.cacheRead + o.cacheWrite}, output ${o.output}`
               ].join('\n')
             }
           }
