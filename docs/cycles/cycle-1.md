@@ -53,3 +53,15 @@ of the diff finds nothing it can reproduce, CHANGELOG written, tag pushed.
 - Do not add dependencies.
 - Do not ask the owner questions; choose the option that best serves: fewer tokens, then speed and
   quality, then less storage.
+
+## RESULT (2026-11-15)
+- Released as v0.7.0 (tag `v0.7.0`, commits 198221a, 6e15be0, 60b7f2e). Issues #9-#22 and #32 closed.
+- The independent review of the change (4 angles, 27 findings, 23 confirmed) found real problems in
+  the new code: the v0.1 migration could mix two sessions' text, an interrupted migration could hide
+  old memory, unreadable files were overwritten blind, the fork filter used clocks instead of seqs,
+  and an honest empty answer would be re-sent forever. All were fixed before the release, each with
+  a test (62 tests, three time zones).
+- Design changes made because of the review: upgrades write new files (`topics.json`, `msgs.json`) and
+  keep the old ones as a 7-day backup; damaged files are repaired or set aside, never overwritten;
+  forks are detected from `inheritedEventCount` and filtered by seq.
+- Carried to cycle 2: #23-#31, #33, #34 (tokens, relevance, speed, the memory tree).
