@@ -5,16 +5,35 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
-/** Longest prefix of `raw` that parses: repairs a file with trailing bytes from an interleaved write. */
-function salvage(raw) {
-  let end = raw.length
-  for (let tries = 0; tries < 64; tries++) {
-    end = raw.lastIndexOf('}', end - 1)
-    if (end < 0) return undefined
-    try { return JSON.parse(raw.slice(0, end + 1)) } catch { /* keep looking */ }
+/** Index just past the first complete top-level JSON value in `raw` (string-aware), or 0. */
+function firstValueEnd(raw) {
+  let depth = 0
+  let inString = false
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]
+    if (inString) {
+      if (ch === '\\') i++
+      else if (ch === '"') inString = false
+    } else if (ch === '"') inString = true
+    else if (ch === '{' || ch === '[') depth++
+    else if ((ch === '}' || ch === ']') && --depth === 0) return i + 1
+  }
+  return 0
+}
+
+/**
+ * The JSON value at the start of `raw` when only junk follows it: what v0.6's interleaved writes
+ * left behind. Cut where the parser says the junk starts, else after the first complete value; both
+ * are one pass, however long the junk (#54).
+ */
+function salvage(raw, error) {
+  const at = /at position (\d+)/.exec(String(error?.message))
+  for (const end of [at ? Number(at[1]) : 0, firstValueEnd(raw)]) {
+    if (end <= 0) continue
+    try { return JSON.parse(raw.slice(0, end)) } catch { /* try the next cut */ }
   }
   return undefined
 }
@@ -38,7 +57,7 @@ export async function readJsonDetailed(path) {
   try {
     return { state: 'ok', value: JSON.parse(raw) }
   } catch (error) {
-    const repaired = salvage(raw)
+    const repaired = salvage(raw, error)
     if (repaired !== undefined) {
       console.error(`context-graph: repaired ${path} (${error.message}); it is rewritten on the next save`)
       return { state: 'salvaged', value: repaired }
@@ -53,6 +72,51 @@ export async function readJsonDetailed(path) {
 /** Parsed JSON, or undefined when the file is missing or unreadable (see readJsonDetailed). */
 export async function readJson(path) {
   return (await readJsonDetailed(path)).value
+}
+
+const cache = new Map()
+const CACHE_MAX = 2000
+
+function deepFreeze(value) {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value)
+    for (const v of Object.values(value)) deepFreeze(v)
+  }
+  return value
+}
+
+/**
+ * Parsed JSON for READ-ONLY use, cached by the file's stat (#33): while a file is unchanged it is
+ * not read or parsed again, which took the per-message cost at 150 chats from 37 ms of reads to a
+ * few stats. `prepare(value)` runs once per change (to normalize a graph). The result is frozen and
+ * shared, so code that tries to change it fails loudly instead of corrupting every later read.
+ * Writers use readJson / readJsonDetailed.
+ */
+export async function readJsonCached(path, prepare = (value) => value) {
+  let st
+  try {
+    st = await stat(path)
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+    cache.delete(path)
+    return undefined
+  }
+  const key = `${st.mtimeMs}:${st.size}:${st.ino}`
+  const hit = cache.get(path)
+  if (hit?.key === key) {
+    cache.delete(path)
+    cache.set(path, hit)
+    return hit.value
+  }
+  const read = await readJsonDetailed(path)
+  const value = read.value === undefined ? undefined : deepFreeze(prepare(read.value))
+  // A repaired value is cached too, so the repair (and its log line) happens once per change of the
+  // file, not on every message until the next save rewrites it.
+  if (read.state === 'ok' || read.state === 'salvaged') {
+    cache.set(path, { key, value })
+    if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value)
+  }
+  return value
 }
 
 /** Rename with a short retry: on Windows a rename fails for a moment while another process has the file open. */

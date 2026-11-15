@@ -14,23 +14,62 @@ import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promi
 import { join } from 'node:path'
 
 import { GRAPH_VERSION, emptyGraph, normalizeGraph } from '../core/graph.js'
-import { locked, readJson, readJsonDetailed, writeJson } from './files.js'
+import { locked, readJson, readJsonCached, readJsonDetailed, writeJson } from './files.js'
 import { TOPICS, upgradeChat } from './migrate.js'
 
 export const chatDir = (dir, sid) => join(dir, 'chats', String(sid))
 
 const exists = (path) => stat(path).then(() => true, () => false)
 
-/** The chat's graph, upgraded from an older layout when one is present, repaired; empty when there is none. */
-export async function loadGraph(chat) {
-  if (await exists(join(chat, 'graph.json'))) await upgradeChat(chat)
-  const graph = await readJson(join(chat, TOPICS))
-  return graph?.version === GRAPH_VERSION ? normalizeGraph(graph) : emptyGraph()
+const graphOf = (value) => (value?.version === GRAPH_VERSION ? normalizeGraph(value) : undefined)
+
+const LEGACY_CHECK_MS = 60000
+const legacyChecks = new Map()
+
+/**
+ * Bring a v0.4-v0.6 `graph.json` in this folder up to date, if there is one. Readers look at most
+ * once a minute per folder: that stat (and, while the old file is kept as a backup, a re-read of
+ * the topics) was a third of the per-message cost at 150 chats (#33). A reader inside the minute
+ * waits for the check that is still running, so a folder's first upgrade is never read half-done.
+ * The builder looks on every write, so topics an older plugin copy adds to the old file are merged
+ * before anything is saved. A failed check is not remembered.
+ */
+function legacyUpgrade(chat, writable) {
+  const last = legacyChecks.get(chat)
+  if (!writable && last && Date.now() - last.at < LEGACY_CHECK_MS) return last.done
+  const entry = { at: Date.now(), done: exists(join(chat, 'graph.json')).then((found) => (found ? upgradeChat(chat) : false)) }
+  legacyChecks.set(chat, entry)
+  entry.done.catch(() => { if (legacyChecks.get(chat) === entry) legacyChecks.delete(chat) })
+  return entry.done
+}
+
+/**
+ * The chat's graph, upgraded from an older layout when one is present, repaired; empty when there
+ * is none. Read-only and shared through the read cache (#33) unless `writable` (the builder).
+ */
+export async function loadGraph(chat, { writable = false } = {}) {
+  await legacyUpgrade(chat, writable)
+  const file = join(chat, TOPICS)
+  const graph = writable ? graphOf(await readJson(file)) : await readJsonCached(file, graphOf)
+  return graph ?? emptyGraph()
 }
 
 export const saveGraph = (chat, graph) => locked(chat, () => writeJson(join(chat, TOPICS), graph))
 
-export const loadMeta = (dir, sid) => readJson(join(chatDir(dir, sid), 'meta.json'))
+/**
+ * A chat's meta (read-only). One that exists but cannot be read, or is gone while a set-aside copy
+ * of it exists, reads as private with memory off (and its chat number, when that can be recovered):
+ * the lost file may have said so, and memory on is the default (#50). Nothing is written here;
+ * updateMeta writes the same fail-closed meta on the next change.
+ */
+export async function loadMeta(dir, sid) {
+  const folder = chatDir(dir, sid)
+  const file = join(folder, 'meta.json')
+  const meta = await readJsonCached(file)
+  if (meta && typeof meta === 'object') return meta
+  const lost = await setAside(folder, 'meta.json')
+  return lost === undefined ? undefined : Object.freeze({ ...recoverMeta(lost), private: true, memoryOff: true, recovered: true })
+}
 
 /**
  * The next free chat number. Claimed with an exclusive create, so two chats starting at once (or two

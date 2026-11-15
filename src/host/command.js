@@ -8,11 +8,11 @@
  */
 
 import { memoryOn, sharedOn } from '../core/chat.js'
-import { matchAcross } from '../core/match.js'
+import { SCORE, matchAcross } from '../core/match.js'
 import { renderMap } from '../core/render.js'
 import { collectSpan } from '../core/session.js'
 import { parseTimeRange } from '../core/time.js'
-import { chatDir, listChats, loadGraph } from '../store/chats.js'
+import { chatDir, loadGraph } from '../store/chats.js'
 import { USAGE, version } from './config.js'
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
@@ -35,11 +35,12 @@ export function registerCommand(ctx, rt, { build, meter, updates }) {
             const sid = rt.sidOf(agent)
             if (sub === 'on') {
               await rt.setFlags(agent, { memoryOff: false })
-              rt.state(sid).announce = true
+              // The chat list may be sent again (memory.js), once.
+              Object.assign(rt.state(sid), { announce: true, listed: false })
               // The flag is the real effect; indexing continues in the background, up to the last
               // finished turn (a running turn is indexed when it ends).
               void build(agent, { force: true, completeOnly: true })
-              const shared = (await rt.loadViews(agent)).filter((v) => !v.own).length
+              const shared = (await rt.loadViews(agent)).filter((v) => !v.own && Object.keys(v.graph.nodes).length > 0).length
               return { kind: 'success', text: `Memory on · indexing this chat now · ${plural(shared, 'shared chat')} to draw on\nThis chat indexes itself every ${cfg.buildEveryTurns} turns and other chats in this workspace can use it. /context-graph stats shows progress; /context-graph unshare keeps it private; /context-graph off stops it.` }
             }
             if (sub === 'off') {
@@ -55,17 +56,18 @@ export function registerCommand(ctx, rt, { build, meter, updates }) {
             if (sub === 'build') {
               const result = await build(agent, { force: true, signal: invocation.signal, completeOnly: true })
               if (result.status !== 'built') return { kind: 'error', text: `Build ${result.status}: ${result.reason ?? ''}`.trim() }
-              return { kind: 'success', text: `${plural(result.nodes, 'topic')} indexed (${result.newNodes} new) · this chat has ${plural(result.totalNodes, 'topic')}\nLinks: ${result.edges}\nFolder: ${result.dir}` }
+              return { kind: 'success', text: `${plural(result.nodes, 'topic')} indexed (${result.newNodes} new) · this chat has ${plural(result.totalNodes, 'topic')}${result.more ? ' · older turns read; the rest follows at the next build' : ''}\nLinks: ${result.edges}\nFolder: ${result.dir}` }
+            }
+            if (sub === 'map') {
+              // Every chat of the workspace, private ones too: this is the user's own view. Loaded once (#49).
+              const all = await rt.loadViews(agent, { all: true })
+              return { kind: 'success', text: `${plural(all.length, 'chat')} in ${rt.dirFor(agent)}\n${renderMap(all)}` }
             }
             const views = await rt.loadViews(agent)
-            if (sub === 'map') {
-              const dir = rt.dirFor(agent)
-              const all = await Promise.all((await listChats(dir)).map(async ({ sid: other, meta }) => ({ sid: other, cid: meta.cid, meta, own: other === sid, graph: await loadGraph(chatDir(dir, other)) })))
-              return { kind: 'success', text: `${plural(all.length, 'chat')} in ${dir}\n${renderMap(all)}` }
-            }
             if (sub === 'find') {
               const query = rest.join(' ')
-              const { hits } = matchAcross(views, query, { max: cfg.maxHits, range: parseTimeRange(query) })
+              // Every match, each copy on its own line: a person searching wants to see all of them.
+              const { hits } = matchAcross(views, query, { max: 10, range: parseTimeRange(query), floor: SCORE.label, cover: false, collapse: false })
               if (hits.length === 0) return { kind: 'success', text: 'No matching topics in shared chats' }
               return { kind: 'success', text: [`${hits.length} matching ${hits.length === 1 ? 'topic' : 'topics'}`, ...hits.map(({ id, node }) => `${id} ${node.label}: ${node.gist}`)].join('\n') }
             }
@@ -75,7 +77,8 @@ export function registerCommand(ctx, rt, { build, meter, updates }) {
             const cached = m.cacheRead + m.cacheWrite
             const hitRate = m.input + cached > 0 ? Math.round((m.cacheRead / (m.input + cached)) * 100) : 0
             const session = agent.session
-            const pending = collectSpan((seq) => session.eventAt(seq), own?.meta.builtSeq ?? -1).userTurns
+            // A new fork counts from its own first turn, not from the inherited ones (#55).
+            const pending = collectSpan((seq) => session.eventAt(seq), rt.indexStart(agent, own?.meta)).userTurns
             const shared = views.filter((v) => !v.own).length
             const o = meter.other
             const last = rt.state(sid).lastBuild

@@ -20,6 +20,21 @@ export const chatEvents = (turns, reply = 'Noted, signing configured.') => [
 
 export const wait = (ms = 50) => new Promise((resolve) => setTimeout(resolve, ms))
 
+/**
+ * Poll `check` (sync or async) until it returns something truthy, and return that. For work the
+ * plugin starts in the background (a build at turn end): a fixed wait was flaky under a full,
+ * parallel test run. Fails after `timeout` ms.
+ */
+export async function until(check, { timeout = 5000, every = 10 } = {}) {
+  const end = Date.now() + timeout
+  for (;;) {
+    const value = await Promise.resolve().then(check).catch(() => undefined)
+    if (value) return value
+    if (Date.now() > end) throw new Error(`until: still not true after ${timeout} ms`)
+    await wait(every)
+  }
+}
+
 export async function quietly(fn) {
   const original = console.error
   console.error = () => {}
@@ -57,15 +72,21 @@ export function liveSession(id, cwd, events, { header = {}, inheritedEventCount 
   }
 }
 
-/** A builder model that answers `reply` (after `gate` resolves, when given) and records each call. */
-export function scriptedLlm({ reply, gate } = {}) {
+/**
+ * A builder model that answers `reply` (after `gate` resolves, when given) and records each call.
+ * `finish(options)` picks the finish kind (default 'stop'; 'max-tokens' for a cut-off answer);
+ * `efforts` makes it report reasoning efforts through resolveModelInfo, like dsh-llm does.
+ */
+export function scriptedLlm({ reply, gate, finish, efforts } = {}) {
   const llm = {
     calls: 0,
     promptChars: 0,
     options: [],
+    prompts: [],
     async *stream(options) {
       llm.calls++
       llm.options.push(options)
+      llm.prompts.push(options.messages[0].content[0].text)
       llm.promptChars = options.messages[0].content[0].text.length
       if (gate) await gate
       if (options.signal?.aborted) {
@@ -74,21 +95,25 @@ export function scriptedLlm({ reply, gate } = {}) {
       }
       yield { type: 'block-start', index: 0, blockType: 'text' }
       yield { type: 'text-delta', index: 0, text: typeof reply === 'function' ? reply(options) : reply }
-      yield { type: 'finish', reason: { kind: 'stop' } }
+      yield { type: 'finish', reason: { kind: finish ? finish(options) : 'stop' } }
     }
   }
+  if (efforts) llm.resolveModelInfo = async () => ({ reasoning: { efforts: efforts.map((id) => ({ id, name: id })) } })
   return llm
 }
 
-/** The plugin applied to a fake context; `run` calls the command, `step` runs a pre-step and commits it. */
-export async function setup(config = {}, llm = scriptedLlm({ reply: DEFAULT_REPLY })) {
+/**
+ * The plugin applied to a fake context; `run` calls the command, `step` runs a pre-step and commits
+ * it. `services` are what `ctx.get` returns besides the llm (e.g. a fake sessionQuery).
+ */
+export async function setup(config = {}, llm = scriptedLlm({ reply: DEFAULT_REPLY }), services = {}) {
   const { apply } = await import('../../index.js')
   const listeners = {}
   const tools = []
   const commands = []
   const ctx = {
     on: (event, fn) => { listeners[event] = fn },
-    get: (service) => (service === 'llm' ? llm : undefined),
+    get: (service) => (service === 'llm' ? llm : services[service]),
     tools: { register: (tool) => tools.push(tool) },
     plugin: (nested) => nested.apply({ effect: (gen) => { for (const _ of gen()); }, commands: { register: (c) => { commands.push(c); return () => {} } } })
   }

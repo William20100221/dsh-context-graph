@@ -1,35 +1,67 @@
 /**
- * The indexing call: what the model reads (transcript + rules) and how its answer is parsed. Pure.
+ * The indexing call: what the model reads (fixed rules, existing topics, the span) and how its
+ * answer is parsed. Pure.
  */
 
 import { RELATIONS } from './graph.js'
+import { sliceChars } from './text.js'
+
+/** A human prompt is read up to this many characters; assistant text is shortened further when a span is long (#46). */
+export const USER_CAP = 2000
+const ASSISTANT_CAPS = [2000, 800, 300]
 
 /** `[m0 user] ...` transcript the builder reads; each message capped so one huge paste cannot eat the call. */
-export function transcriptForBuilder(messages, maxChars = 2000) {
+export function transcriptForBuilder(messages, { userCap = USER_CAP, assistantCap = USER_CAP } = {}) {
   return messages.map((m, i) => {
-    const text = m.text.length > maxChars ? `${m.text.slice(0, maxChars)}\n…[${m.text.length - maxChars} more chars]` : m.text
+    const cap = m.role === 'user' ? userCap : assistantCap
+    const text = m.text.length > cap ? `${sliceChars(m.text, cap)}\n…[${m.text.length - cap} more chars]` : m.text
     return `[m${i} ${m.role}]\n${text}`
   }).join('\n\n')
 }
 
-export function builderInstruction(graph) {
-  const existing = Object.entries(graph.nodes).map(([id, n]) => `${id}: ${n.label}`).join('\n')
+/**
+ * The fixed part of every indexing prompt, byte for byte the same for every build of every chat, so
+ * it is the cached prefix of the call (#28). Anything that changes comes after it.
+ */
+export const BUILDER_RULES = [
+  'You index a conversation into a memory of topics that later chats search. Output ONE JSON object and nothing else:',
+  '{"summary":"...","nodes":[{"id":"n12"|null,"label":"...","gist":"...","aliases":["..."],"kind":"decision|fact|task|artifact|open-question","msgs":[0,2]}],"edges":[["n12","n3","uses"]]}',
+  '',
+  'Rules:',
+  '- summary: one line of at most 12 words saying what the whole chat is about so far; update the current summary.',
+  '- One node per decision, fact, task, artifact (file, tool, repo) or open question worth remembering later. Skip chit-chat and anything an existing topic already says, unless it changed.',
+  '- label: at most 6 words, the name someone would search for. gist: one line under 120 characters, what is true now and why.',
+  '- aliases: other words a later message might use for it, including the other language when the chat mixes languages. Matching is by word overlap.',
+  '- msgs: the numbers N of the [mN] messages the node comes from, as integers (e.g. [0, 2]). Required, never empty.',
+  '- id: reuse an existing topic\'s id when the node is the same thing (and update its gist); null for a new node.',
+  `- edges: [from, to, relation] with relation in ${RELATIONS.join(', ')}. For a changed decision add [new, old, "supersedes"]. Name new nodes by their label in place of an id.`,
+  '- Keep file paths, commands, identifiers and numbers exact.',
+  '- If nothing is worth remembering, output {"summary":"...","nodes":[],"edges":[],"skip":true}.'
+].join('\n')
+
+const idNumber = (id) => Number(/\d+/.exec(id)?.[0] ?? 0)
+
+/**
+ * The whole indexing prompt, ordered from most to least stable (#28): the fixed rules, then the
+ * chat's existing topics in id order (new topics only ever append, so the previous build's list is a
+ * prefix of this one), then the current summary and the span, which change every time.
+ */
+export function builderPrompt({ graph, summary, messages, assistantCap = USER_CAP }) {
+  const existing = Object.entries(graph.nodes)
+    .sort(([a], [b]) => idNumber(a) - idNumber(b))
+    .map(([id, n]) => `${id}: ${n.label}`)
+    .join('\n')
   return [
-    'You are indexing the conversation span above into a memory graph for later sessions. Output ONE JSON object and nothing else.',
+    BUILDER_RULES,
     '',
-    'Shape: {"nodes":[{"id":"n12"|null,"label":"...","gist":"...","aliases":["..."],"kind":"decision|fact|task|artifact|open-question","msgs":[0,2]}],"edges":[["n12","n3","uses"]],"skip":true|absent}',
+    existing ? `Existing topics:\n${existing}` : 'Existing topics: (none)',
     '',
-    'Rules:',
-    '- One node per decision, fact, task, artifact (file, tool, repo) or open question worth remembering later. Skip chit-chat and anything already obvious from the labels below unless it changed.',
-    '- label: at most 6 words, the name someone would search for. gist: one line under 120 characters, what is true now and why.',
-    '- aliases: other words a future message might use for this node, including the other language if the conversation mixes languages. Be precise; matching is by word overlap.',
-    '- msgs: the numbers N of the [mN] messages the node is drawn from, as integers (e.g. [0, 2]). Required, never empty.',
-    '- id: reuse an existing id below when the node is the same thing (update its gist); null for a new node.',
-    `- edges: [from, to, relation] with relation in ${RELATIONS.join(', ')}. For a changed decision add [new, old, "supersedes"]. Use existing ids where possible; refer to new nodes by their label in place of an id.`,
-    '- Keep file paths, commands, identifiers and numbers exact.',
-    '- If nothing in the span is worth remembering, output {"nodes":[],"edges":[],"skip":true}.',
+    `Current summary: ${summary || '(none yet)'}`,
     '',
-    existing ? `Existing nodes:\n${existing}` : 'Existing nodes: (none)'
+    'Conversation to index:',
+    transcriptForBuilder(messages, { assistantCap }),
+    '',
+    'Output the JSON object now.'
   ].join('\n')
 }
 
@@ -107,7 +139,21 @@ export function parseBuilderOutput(text) {
   const edgesAt = scope.search(/"edges"\s*:/)
   const edges = edgesAt < 0 ? [] : [...scope.slice(edgesAt).matchAll(/\[\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\]/g)].map((m) => [m[1], m[2], m[3]])
   const skip = best.nodes.length === 0 && (/"skip"\s*:\s*true/.test(after) || objects === 0)
-  return { nodes: best.nodes, edges, skip, raw: best.raw }
+  return { nodes: best.nodes, edges, skip, raw: best.raw, summary: summaryNear(clean, best.open) }
+}
+
+/**
+ * The chat summary of the chosen answer (#27): the last `"summary"` before its nodes (the shape puts
+ * it first), else the first one after them. The schema's own "..." placeholder does not count.
+ */
+function summaryNear(clean, open) {
+  const all = [...clean.matchAll(/"summary"\s*:\s*("(?:[^"\\]|\\.)*")/g)]
+  const pick = all.filter((m) => m.index < open).at(-1) ?? all.find((m) => m.index > open)
+  if (!pick) return undefined
+  let text
+  try { text = JSON.parse(pick[1]) } catch { return undefined }
+  text = String(text).replace(/\s+/g, ' ').trim()
+  return text && !/^\.+$/.test(text) ? text.slice(0, 160) : undefined
 }
 
 /** The better of two parses (answer text and reasoning text): the one with more usable nodes. */
@@ -118,15 +164,47 @@ export function betterParse(a, b) {
   return a.nodes.length === 0 && !a.skip && b.skip ? b : a
 }
 
-/** The newest messages whose builder transcript fits in `maxChars` (each message counts at most `perMessage`). */
-export function tailWithin(messages, maxChars, perMessage = 2000) {
-  let used = 0
-  let start = messages.length
-  while (start > 0) {
-    const cost = Math.min(messages[start - 1].text.length, perMessage) + 20
-    if (start < messages.length && used + cost > maxChars) break
-    used += cost
-    start--
+/**
+ * What one build reads (#46). Every human prompt is read (up to USER_CAP characters); assistant
+ * text is shortened 2,000 -> 800 -> 300 characters until the span fits `maxChars`. A span that
+ * still does not fit is read in whole turns from the oldest, and the rest waits for the next build,
+ * so nothing is skipped; only a single turn too long on its own loses its oldest assistant steps.
+ * @returns { messages, assistantCap, rest } `rest` is the first message left for a later build, if any.
+ */
+export function planSpan(messages, maxChars) {
+  const cost = (m, cap) => Math.min(m.text.length, m.role === 'user' ? USER_CAP : cap) + 20
+  const sum = (list, cap) => list.reduce((n, m) => n + cost(m, cap), 0)
+  for (const cap of ASSISTANT_CAPS) if (sum(messages, cap) <= maxChars) return { messages, assistantCap: cap, rest: undefined }
+  const cap = ASSISTANT_CAPS.at(-1)
+  const turns = []
+  for (const m of messages) {
+    if (turns.length === 0 || m.role === 'user') turns.push([])
+    turns.at(-1).push(m)
   }
-  return messages.slice(start)
+  const picked = []
+  let used = 0
+  let next = 0
+  for (; next < turns.length; next++) {
+    const turn = turns[next]
+    const c = sum(turn, cap)
+    if (picked.length > 0 && used + c > maxChars) break
+    if (picked.length === 0 && c > maxChars) {
+      // One turn alone is too long: its prompts, then its newest assistant steps that fit.
+      const prompts = turn.filter((m) => m.role === 'user')
+      let room = maxChars - sum(prompts, cap)
+      const steps = []
+      for (const m of turn.filter((x) => x.role !== 'user').reverse()) {
+        if (cost(m, cap) > room) break
+        room -= cost(m, cap)
+        steps.unshift(m)
+      }
+      const keep = new Set([...prompts, ...steps])
+      picked.push(...turn.filter((m) => keep.has(m)))
+      next++
+      break
+    }
+    picked.push(...turn)
+    used += c
+  }
+  return { messages: picked, assistantCap: cap, rest: turns[next]?.[0] }
 }

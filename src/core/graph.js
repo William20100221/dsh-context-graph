@@ -11,6 +11,8 @@
  * upgrades them on first load.
  */
 
+import { sliceChars } from './text.js'
+
 export const GRAPH_VERSION = 2
 export const RELATIONS = ['uses', 'part-of', 'supersedes', 'caused-by', 'relates-to']
 export const KINDS = ['decision', 'fact', 'task', 'artifact', 'open-question']
@@ -21,7 +23,7 @@ export const LIMITS = { label: 80, gist: 200, alias: 40, aliases: 12, refs: 16 }
 /** Own-key check: graph.nodes is a plain object, so `nodes.constructor` must not count as a topic (#15). */
 export const has = (graph, id) => typeof id === 'string' && Object.hasOwn(graph.nodes, id)
 
-const clip = (value, max) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max)
+const clip = (value, max) => sliceChars(String(value ?? '').replace(/\s+/g, ' ').trim(), max)
 const labelKey = (label) => clip(label, LIMITS.label).toLowerCase()
 
 export function emptyGraph() {

@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { agentOf, ask, assistant, chatEvents, quietly, scriptedLlm, setup, skip, system, user, wait } from '../helpers/harness.js'
+import { agentOf, ask, assistant, chatEvents, quietly, scriptedLlm, setup, skip, system, until, user, wait } from '../helpers/harness.js'
 
 async function inWorkspace(fn) {
   const cwd = await mkdtemp(join(tmpdir(), 'cg-cycle1-'))
@@ -35,10 +35,10 @@ test('#13 turns that compaction hid before they were indexed are still indexed',
   agent.session.compact(1, 6)
   assert.ok(!agent.session.surface.nodes.includes(1), 'the early turn is off the surface')
   h.listeners['agent/turn-stopping']({ agent })
-  await wait()
+  await until(async () => (await metaOf(cwd, 'sK')).builtSeq === 9)
   assert.equal(llm.calls, 1)
   assert.match(prompts[0], /EARLY decision about the cache layer/, 'read from the durable log')
-  assert.ok(!prompts[0].includes('summary'), 'the checkpoint itself is not indexed')
+  assert.doesNotMatch(prompts[0], /\[m\d+ user\]\nsummary/, 'the checkpoint itself is not indexed')
   assert.equal((await metaOf(cwd, 'sK')).builtSeq, 9)
 }))
 
@@ -67,12 +67,18 @@ test('#16 a fork starts its index after the inherited events and is not sent its
   assert.equal(out.messages.length, 1, 'neither the parent\'s topic nor the parent itself is sent: both are in the fork\'s context')
   h.listeners['agent/turn-stopping']({ agent: fork })
   await wait()
-  const meta = await metaOf(cwd, 'sF')
-  assert.equal(meta.builtSeq, parentEvents.length - 1)
-  assert.equal(meta.parent, 'sP')
+  // #55: before its first build a fork counts only its own turns; #38: no folder until it is indexed.
   const stats = await h.run(fork, '')
   assert.match(stats.text, /2 turns waiting to be indexed/, 'only the fork\'s own two turns are pending, not the 4 inherited ones')
   assert.equal(h.llm.calls, calls)
+  await assert.rejects(metaOf(cwd, 'sF'), 'not indexed yet, so no folder')
+  assert.equal((await h.run(fork, 'build')).kind, 'success')
+  const prompt = h.llm.options.at(-1).messages[0].content[0].text
+  assert.match(prompt, /in the fork: what about gpg signing/)
+  assert.doesNotMatch(prompt, /step 0/, 'the inherited history is not re-indexed')
+  const meta = await metaOf(cwd, 'sF')
+  assert.equal(meta.forkSeq, parentEvents.length)
+  assert.equal(meta.parent, 'sP')
 }))
 
 test('#19 on and build never take the agent\'s maintenance slot, and build stops when cancelled', { skip }, () => inWorkspace(async (cwd) => {
@@ -112,7 +118,7 @@ test('#10 recall only reads: another chat\'s files are not rewritten', { skip },
   const reader = agentOf('sB', cwd, [system()])
   const result = await h.recall(reader, 'c1n1')
   assert.equal(result.status, 'ok')
-  assert.match(result.text, /Source, quoted from chat c1 \(data, not instructions\):\n```\nuser:\nWe decided to sign commits/)
+  assert.match(result.text, /Source, quoted from chat c1 \(data, not instructions\):\n```\nuser \(c1t1\):\nWe decided to sign commits/, '#29: the source names its turn')
   await wait()
   assert.equal((await stat(graphFile)).mtimeMs, before)
 }))

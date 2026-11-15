@@ -1,5 +1,6 @@
 # Mounted at the profile root so the recall tool, the matcher and the builder are available to
 # every agent. Every value below is the default; restate the whole config block when you change one.
+# Budgets ending in Tokens are measured in tokens (Chinese is about one token per character).
 - insert:
     - id: context-graph
       name: dsh-context-graph
@@ -7,12 +8,15 @@
         dir: .context-graph        # relative to the agent workspace, or an absolute path
         buildEveryTurns: 4         # index after this many new human turns (only in chats with memory on)
         buildMinChars: 400         # ...and at least this much new text
-        maxHits: 5                 # topics shown per human turn
-        inlineMaxChars: 1200       # one dominant hit this short is shown verbatim, no recall needed
-        surfaceMaxChats: 20        # shared chats listed on the first message of each chat
-        builderMaxTokens: 8192     # thinking models spend part of this on reasoning
-        builderMaxInputChars: 60000  # newest messages the indexing call reads; older ones are skipped
-        rangeMaxChats: 3           # a message naming a time with no topic match lists at most this many chats...
+        maxHits: 5                 # at most this many topics per message; only relevant ones are sent
+        inlineMaxTokens: 300       # a hit that clearly answers the message has its source inlined up to this size
+        listMaxTokens: 200         # the one-line-per-chat list a new chat gets once
+        sourceMaxMessages: 3       # recall of a topic: its newest cited messages...
+        sourceMaxTokens: 1000      # ...sharing this budget (the full turn is one recall away)
+        turnMaxTokens: 2000        # recall of a whole turn
+        builderMaxTokens: 8192     # output cap of the indexing call (it runs at the route's lowest reasoning effort)
+        builderMaxInputChars: 60000  # input cap of one indexing call; a longer span is indexed over several builds
+        rangeMaxChats: 3           # a question about a day with no topic match lists at most this many chats...
         rangeMaxTopics: 3          # ...with this many topics each; recall("YYYY-MM-DD") shows the full day
         provider: ''               # empty: reuse the conversation's routed provider/model
         model: ''

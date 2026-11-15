@@ -1,20 +1,24 @@
 /**
  * Memory injection: on every human turn, match the prompt against the other shared chats of the
  * workspace and append one short `[context-graph]` block at the END of the request, so the
- * provider's prefix cache survives. The first message of a chat also gets the list of shared chats.
- * Nothing else is ever added to a chat: the update notice lives in /context-graph stats only (#20).
+ * provider's prefix cache survives. The first message of a chat also gets the top layer: one line
+ * per earlier chat. Unrelated messages get nothing (#23). Nothing else is ever added to a chat.
  */
 
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 import { SOURCE_KIND, memoryOn } from '../core/chat.js'
-import { globalId, matchAcross } from '../core/match.js'
+import { matchAcross } from '../core/match.js'
 import { formatSource, renderChats, renderHits, renderRange } from '../core/render.js'
 import { shownContext, titleOf } from '../core/session.js'
 import { estimateTokens, textOf } from '../core/text.js'
-import { parseTimeRange } from '../core/time.js'
-import { chatDir } from '../store/chats.js'
-import { capText, loadMessages, sourceOf } from '../store/messages.js'
+import { asksAboutPast, parseTimeRange } from '../core/time.js'
+import { capText, sourceOf } from '../store/messages.js'
+
+const TOPIC_LINE = /^\s*- (c\d+n\d+) /gm
+
+/** The text of a user or assistant event, as the builder stored it. */
+const eventText = (event) => textOf(event?.data?.content ?? event?.data?.message?.content)
 
 export function registerMemory(ctx, rt, meter) {
   const { cfg } = rt
@@ -28,40 +32,51 @@ export function registerMemory(ctx, rt, meter) {
   })
 
   /**
-   * A forked chat's parent and fork point (#16). The fork point is a seq, not a time: dsh copies the
-   * parent's events into the fork with the same seqs. The parent is the one dsh names in the header
-   * when it does; otherwise the shared chat with the fork's title (the fork inherited the first
-   * prompt), and among several such chats the one whose stored messages match the fork's own log at
-   * the same seqs. When nothing identifies it, the parent stays unknown rather than guessed.
+   * Whether a fork already holds a topic (#16, #52). A fork carries its ancestors' events under the
+   * same seqs, so a topic of ANY chat (parent, grandparent ...) whose every cited message is word for
+   * word this chat's own event at that seq, before its fork point, is already in its context.
+   * Decided by content, so no parent has to be identified or remembered.
    */
-  async function forkOf(agent, views) {
-    const own = views.find((v) => v.own)
-    const forkSeq = own?.meta.forkSeq ?? rt.forkSeqOf(agent.session)
-    if (!forkSeq) return undefined
-    const named = own?.meta.parent ?? agent.session.header?.parentSession
-    if (named) return { parent: String(named), forkSeq }
-    const eventAt = (seq) => agent.session.eventAt(seq)
-    const title = titleOf(eventAt)
-    const same = views.filter((v) => !v.own && v.meta.title === title)
-    if (same.length <= 1) return { parent: same[0]?.sid, forkSeq }
-    for (const view of same.slice(0, 5)) {
-      const stored = await loadMessages(chatDir(rt.dirFor(agent), view.sid))
-      const matches = Object.entries(stored).some(([seq, m]) => Number(seq) < forkSeq && m.x === capText(textOf(eventAt(Number(seq))?.data?.content ?? eventAt(Number(seq))?.data?.message?.content)))
-      if (matches) return { parent: view.sid, forkSeq }
-    }
-    return { parent: undefined, forkSeq }
+  function holds(agent, forkSeq, stored, node) {
+    const refs = node.refs ?? []
+    if (refs.length === 0 || !refs.every((seq) => seq < forkSeq)) return false
+    return refs.every((seq) => {
+      const x = stored[String(seq)]?.x
+      const own = eventText(agent.session.eventAt(seq))
+      return x !== undefined && own !== '' && (x === own || x === capText(own))
+    })
   }
 
   /**
-   * Topics a fork must not be sent: parent topics whose every cited message lies before the fork
-   * point are already in the fork's own context. A topic that also cites later messages is new to it.
+   * Every ancestor of a fork starts with the fork's own first prompt (dsh copies the log from seq 0),
+   * so only chats with that first prompt need their stored messages compared. This keeps a fork's
+   * first message from parsing every chat's msgs.json (review of #52).
    */
-  function inheritedIds(views, fork) {
-    const parent = fork?.parent && views.find((v) => v.sid === fork.parent)
-    if (!parent) return []
-    return Object.entries(parent.graph.nodes)
-      .filter(([, node]) => Array.isArray(node.refs) && node.refs.length > 0 && node.refs.every((seq) => seq < fork.forkSeq))
-      .map(([id]) => globalId(parent, id))
+  const ancestorLike = (view, first) => first !== undefined && (view.meta.firstPrompt ?? view.meta.title) === first
+
+  /** The hits a fork already holds. */
+  async function inherited(agent, forkSeq, hits) {
+    const out = new Set()
+    if (!forkSeq) return out
+    const first = titleOf((seq) => agent.session.eventAt(seq))
+    for (const hit of hits) {
+      if (ancestorLike(hit.view, first) && holds(agent, forkSeq, await rt.messagesOf(agent, hit.view), hit.node)) out.add(hit)
+    }
+    return out
+  }
+
+  /** Chats a fork holds entirely (its ancestors up to the fork point): not worth a line in its list. */
+  async function heldChats(agent, forkSeq, views) {
+    const out = new Set()
+    if (!forkSeq) return out
+    const first = titleOf((seq) => agent.session.eventAt(seq))
+    for (const view of views) {
+      const nodes = Object.values(view.graph.nodes)
+      if (view.own || nodes.length === 0 || !ancestorLike(view, first) || !nodes.every((n) => (n.refs ?? []).every((seq) => seq < forkSeq))) continue
+      const stored = await rt.messagesOf(agent, view)
+      if (nodes.every((node) => holds(agent, forkSeq, stored, node))) out.add(view)
+    }
+    return out
   }
 
   async function addMemory(agent, prompt, decision) {
@@ -70,36 +85,44 @@ export function registerMemory(ctx, rt, meter) {
       if (!memoryOn(await rt.metaFor(agent))) return decision
       const st = rt.state(rt.sidOf(agent))
       const views = await rt.loadViews(agent)
-      const fork = await forkOf(agent, views)
+      // What this chat already holds: blocks and recalls still on its surface.
+      const shown = shownContext(agent.session.surface.nodes, (seq) => agent.session.eventAt(seq))
+      const forkSeq = rt.forkSeqOf(agent.session)
       const parts = []
       let layer
-      if (st.announce) {
-        st.announce = false
-        // A fork already holds its parent's conversation, so the parent is not listed to it.
-        const list = renderChats(views.filter((v) => v.sid !== fork?.parent), { max: cfg.surfaceMaxChats })
+      // The top layer, once per chat (#26): on its first turn (no answer on the surface yet), or
+      // after /context-graph on. Never while a list is still on the surface, and an app restart or a
+      // compaction does not bring it back: the chat has its own work in context by then.
+      const firstTurn = !agent.session.surface.nodes.some((seq) => agent.session.eventAt(seq)?.type === 'assistant/message')
+      // Chats this fork holds word for word (its ancestors): listed nowhere, neither in the list nor in a day digest.
+      let heldViews
+      const held = async () => (heldViews ??= await heldChats(agent, forkSeq, views))
+      if ((firstTurn || st.announce) && !st.listed && !shown.list) {
+        const skipped = await held()
+        const list = renderChats(views.filter((v) => !skipped.has(v)), { prompt, maxTokens: cfg.listMaxTokens, maxChats: cfg.listMaxChats })
         if (list) { parts.push(list); layer = 'surface' }
       }
+      st.listed = true
+      st.announce = false
       const range = parseTimeRange(prompt)
-      // Topics already sent in this chat are still in its context; do not send them again.
-      const shown = shownContext(agent.session.surface.nodes, (seq) => agent.session.eventAt(seq))
-      const skip = new Set([...shown.ids, ...inheritedIds(views, fork)])
-      const { hits, slice } = matchAcross(views, prompt, { max: cfg.maxHits, range, skip })
-      if (hits.length === 0 && range) {
-        // Sent with every message that names a time, so kept small; recall("YYYY-MM-DD") gives the full day.
-        const block = renderRange(views.filter((v) => !v.own), range, { maxChats: cfg.rangeMaxChats, maxTopics: cfg.rangeMaxTopics })
-        const ids = block.match(/\bc\d+n\d+\b/g) ?? []
-        const seen = shown.texts.has(block) || (ids.length > 0 && ids.every((id) => skip.has(id)))
+      const { hits: found, lead, total } = matchAcross(views, prompt, { max: cfg.maxHits, range, skip: shown.ids })
+      const holds = await inherited(agent, forkSeq, found)
+      const hits = found.filter((hit) => !holds.has(hit))
+      if (total === 0 && range && asksAboutPast(prompt)) {
+        // A question about a day with no topic hit gets that day's digest, kept small; recall("YYYY-MM-DD") has the rest (#24).
+        const skipped = await held()
+        const block = renderRange(views.filter((v) => !v.own && !skipped.has(v)), range, { maxChats: cfg.rangeMaxChats, maxTopics: cfg.rangeMaxTopics })
+        const ids = [...block.matchAll(TOPIC_LINE)].map((m) => m[1])
+        const seen = shown.texts.has(block) || (ids.length > 0 && ids.every((id) => shown.ids.has(id)))
         if (!seen) parts.push(block)
-      } else {
+      } else if (hits.length > 0) {
         let inline
-        if (hits.length === 1 || (hits.length > 1 && hits[0].score >= 2 * hits[1].score)) {
-          const top = hits[0]
-          const source = sourceOf(await loadMessages(chatDir(rt.dirFor(agent), top.view.sid)), top.node)
-          const text = formatSource(source)
-          if (text && text.length <= cfg.inlineMaxChars) inline = { id: top.id, text }
+        // Only a hit that clearly answers the message has its source inlined, within a token budget (#39).
+        if (lead && hits[0] === lead) {
+          const text = formatSource(sourceOf(await rt.messagesOf(agent, lead.view), lead.node))
+          if (text && estimateTokens(text) <= cfg.inlineMaxTokens) inline = { id: lead.id, text }
         }
-        const block = renderHits(hits, { inline, slice })
-        if (block) parts.push(block)
+        parts.push(renderHits(hits, { inline }))
       }
       if (parts.length === 0) return decision
       const text = parts.join('\n\n')

@@ -7,7 +7,8 @@
 
 import { join } from 'node:path'
 
-import { locked, readJson, writeJson } from './files.js'
+import { cutAfter, cutBefore } from '../core/text.js'
+import { locked, readJson, readJsonCached, writeJson } from './files.js'
 
 const HEAD = 4500
 const TAIL = 1000
@@ -16,14 +17,16 @@ const TAIL = 1000
 export function capText(text) {
   const s = String(text ?? '')
   if (s.length <= HEAD + TAIL + 200) return s
-  return `${s.slice(0, HEAD)}\n…[${s.length - HEAD - TAIL} chars omitted; the full turn is in the chat's dsh log]…\n${s.slice(-TAIL)}`
+  const head = cutBefore(s, HEAD)
+  const tail = cutAfter(s, s.length - TAIL)
+  return `${s.slice(0, head)}\n…[${tail - head} chars omitted; the full turn is in the chat's dsh log]…\n${s.slice(tail)}`
 }
 
 const file = (chat) => join(chat, 'msgs.json')
 
-/** `{ [seq]: { r, t, a, x } }` for one chat; empty when nothing is stored yet. */
+/** `{ [seq]: { r, t, a, x } }` for one chat, read-only (cached, #33); empty when nothing is stored yet. */
 export async function loadMessages(chat) {
-  const store = await readJson(file(chat))
+  const store = await readJsonCached(file(chat))
   return store && typeof store.m === 'object' && store.m !== null ? store.m : {}
 }
 

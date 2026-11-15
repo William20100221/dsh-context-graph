@@ -33,17 +33,17 @@ test('an honest empty answer advances the index; three unusable answers in a row
   assert.match((await broken.run(agent, '')).text, /\nLast index failed at \d\d:\d\d UTC: /)
 }))
 
-test('a fork without a parent id in its header is still recognised, and only inherited topics are held back', { skip }, () => inWorkspace(async (cwd) => {
+test('#52 a fork without a parent id is handled by content: only inherited topics are held back', { skip }, () => inWorkspace(async (cwd) => {
   const h = await setup()
   const parentEvents = chatEvents(4)
   const parent = agentOf('sP', cwd, parentEvents)
   await h.run(parent, 'build')
   const fork = agentOf('sF2', cwd, [...parentEvents, user('in the fork: what about gpg signing?')], { header: { isSeeded: true }, inheritedEventCount: parentEvents.length })
   const out = await h.step(fork, ask('gpg commit signing again?'))
-  assert.equal(out.messages.length, 1, 'parent found by title; its inherited topic and the parent itself are not sent')
-  h.listeners['agent/turn-stopping']({ agent: fork })
-  await wait()
-  assert.equal((await metaOf(cwd, 'sF2')).builtSeq, parentEvents.length - 1, 'the inherited history is not re-indexed')
+  assert.equal(out.messages.length, 1, 'its inherited topic and the parent itself are not sent')
+  await h.run(fork, 'build')
+  assert.doesNotMatch(h.llm.options.at(-1).messages[0].content[0].text, /step 0/, 'the inherited history is not re-indexed')
+  assert.ok((await metaOf(cwd, 'sF2')).builtSeq > parentEvents.length)
   // The parent later indexes a turn that came after the fork point: that topic is new to the fork.
   const laterReply = JSON.stringify({ nodes: [{ label: 'gpg key rotation', gist: 'rotate the gpg key yearly', aliases: ['gpg'], kind: 'decision', msgs: [0] }], edges: [] })
   const h2 = await setup({}, scriptedLlm({ reply: laterReply }))
@@ -53,7 +53,7 @@ test('a fork without a parent id in its header is still recognised, and only inh
   const again = await h2.step(fork, ask('gpg key, anything new?'))
   const block = again.messages.at(-1).content[0].text
   assert.match(block, /gpg key rotation/, 'a topic citing post-fork messages is sent')
-  assert.doesNotMatch(block, /commit signing/, 'the inherited one still is not')
+  assert.doesNotMatch(block, /- c1n1 commit signing/, 'the inherited one still is not')
 }))
 
 test('a subagent can recall shared topics unless the chat that started it has memory off', { skip }, () => inWorkspace(async (cwd) => {

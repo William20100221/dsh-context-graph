@@ -130,9 +130,12 @@ export function upgradeChat(chat, { now = new Date() } = {}) {
   })
 }
 
-/** Remove the version-1 backup once nothing has written it for BACKUP_DAYS after the upgrade. */
+/**
+ * Remove the version-1 backup once it has been quiet for BACKUP_DAYS: counted from the later of the
+ * upgrade and the last write to it, so an older copy that wrote it on day 6 keeps it a week more (#56).
+ */
 async function dropOldBackup(chat, topics, v1Stat, now) {
-  const since = Date.parse(topics.upgradedAt ?? '')
+  const since = Math.max(Date.parse(topics.upgradedAt ?? ''), Number(topics.upgradedFrom) || 0, v1Stat.mtimeMs)
   if (!Number.isFinite(since) || now - since < BACKUP_DAYS * 86400000) return
   if (v1Stat.mtimeMs > topics.upgradedFrom) return
   await rm(join(chat, 'graph.json'), { force: true })

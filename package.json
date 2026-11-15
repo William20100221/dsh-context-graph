@@ -24,7 +24,8 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "test": "node --import ./test/helpers/resolve-dsh.mjs --test \"test/**/*.test.js\""
+    "test": "node --import ./test/helpers/resolve-dsh.mjs --test \"test/**/*.test.js\"",
+    "test:zones": "node scripts/test-zones.mjs"
   },
   "keywords": [
     "dsh-plugin",

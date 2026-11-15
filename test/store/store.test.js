@@ -78,7 +78,9 @@ test('#10 a damaged file: trailing junk is repaired; an unreadable one is kept a
   const cid = (await loadMeta(dir, 'sC')).cid
   await writeFile(join(chatDir(dir, 'sC'), 'meta.json'), `{"cid":${cid},"builtSeq":40,"private":tr`, 'utf8')
   const chats = await quietly(() => listChats(dir))
-  assert.ok(!chats.some((c) => c.sid === 'sC'), 'an unreadable meta is skipped; the workspace keeps working')
+  const read = chats.find((c) => c.sid === 'sC')
+  // #50: read as private with memory off (what the lost file may have said), keeping its number.
+  assert.deepEqual([read?.meta.cid, read?.meta.private, read?.meta.memoryOff], [cid, true, true], 'an unreadable meta fails closed on read; the workspace keeps working')
   assert.ok((await readdir(chatDir(dir, 'sC'))).some((f) => f.startsWith('meta.json.corrupt-')), 'the bytes are kept aside')
   const healed = await quietly(() => updateMeta(dir, 'sC', (m) => m, () => ({ title: 'fresh' })))
   assert.equal(healed.cid, cid, 'the chat keeps its number')
@@ -166,7 +168,8 @@ test('review: topics an older copy adds to graph.json after the upgrade are merg
   await writeFile(join(chat, 'src', 'n3.md'), v1Source([{ at: 'T', session: 'sA', turn: null, messages: [{ seq: 9, role: 'user', text: 'a later decision' }] }]))
   const future = new Date(Date.now() + 5000)
   await utimes(join(chat, 'graph.json'), future, future)
-  const graph = await loadGraph(chat)
+  // The builder's load (writable) always looks; readers look at most once a minute (#33).
+  const graph = await loadGraph(chat, { writable: true })
   assert.deepEqual(Object.values(graph.nodes).map((n) => n.label).sort(), ['late topic', 'pnpm not on PATH', 'pnpm via corepack'])
   assert.equal((await loadMessages(chat))['9'].x, 'a later decision')
 }))
