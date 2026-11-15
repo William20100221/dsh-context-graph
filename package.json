@@ -7,17 +7,14 @@
   "main": "index.js",
   "exports": {
     ".": "./index.js",
-    "./client": "./lib/client.js",
-    "./graph": "./graph.js",
+    "./client": "./src/client/client.js",
+    "./graph": "./src/core/index.js",
     "./locale/*.json": "./locale/*.json",
     "./package.json": "./package.json"
   },
   "files": [
     "index.js",
-    "graph.js",
-    "store.js",
-    "update.js",
-    "lib/client.js",
+    "src",
     "locale",
     "icon.svg",
     "cordis.patch.yml",
@@ -26,7 +23,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --import ./test/resolve-dsh.mjs --test test/graph.test.js test/update.test.js test/client.test.js test/plugin.test.js test/review.test.js"
+    "test": "node --import ./test/helpers/resolve-dsh.mjs --test \"test/**/*.test.js\""
   },
   "keywords": [
     "dsh-plugin",

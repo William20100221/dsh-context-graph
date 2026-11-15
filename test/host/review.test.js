@@ -1,7 +1,7 @@
 /**
  * Regression tests for the bugs found in the v0.6.0 review (GitHub issues #1-#7).
  * Uses a session that commits the messages a pre-step returns, like dsh's agent loop does.
- *   DSH_NODE_MODULES=<dsh install>/node_modules node --import ./test/resolve-dsh.mjs --test test/review.test.js
+ *   DSH_NODE_MODULES=<dsh install>/node_modules node --import ./test/helpers/resolve-dsh.mjs --test test/host/review.test.js
  */
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { shownContext, tailWithin } from '../graph.js'
+import { shownContext, tailWithin } from '../../src/core/index.js'
 
 const skip = !process.env.DSH_NODE_MODULES
 const NO_UPDATES = { current: () => undefined }
@@ -64,7 +64,7 @@ function harness({ reply = REPLY, gate } = {}) {
 }
 
 async function setup(config = {}, h = harness()) {
-  const { apply } = await import('../index.js')
+  const { apply } = await import('../../index.js')
   apply(h.ctx, { _updates: NO_UPDATES, ...config })
   const run = (agent, rawInput) => h.commands[0].handler({ rawInput, agent })
   const step = async (agent, decision) => {
@@ -207,8 +207,8 @@ test('tailWithin keeps the newest messages that fit, and always the last one', (
 test('a time word with no topic match sends a small capped day list; recall gives the full day', { skip }, async () => {
   const cwd = await mkdtemp(join(tmpdir(), 'cg-review-'))
   try {
-    const { saveMeta, saveGraph, chatDir } = await import('../store.js')
-    const { estimateTokens, renderRange, parseTimeRange, day } = await import('../graph.js')
+    const { saveMeta, saveGraph, chatDir } = await import('../../src/store/chats.js')
+    const { estimateTokens, renderRange, parseTimeRange, day } = await import('../../src/core/index.js')
     const dir = join(cwd, '.context-graph')
     const now = new Date().toISOString()
     for (let c = 1; c <= 10; c++) {

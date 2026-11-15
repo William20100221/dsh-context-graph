@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { fetchLatestVersion, isNewer, startUpdateCheck, updateNotice } from '../update.js'
+import { fetchLatestVersion, isNewer, startUpdateCheck, updateNotice } from '../../src/host/update.js'
 
 const reply = (body, ok = true) => async () => ({ ok, json: async () => body })
 

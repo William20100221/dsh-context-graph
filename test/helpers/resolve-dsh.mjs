@@ -1,7 +1,7 @@
 /**
  * Test-only loader: resolves `@deepseek-ai/*` from the folder named by DSH_NODE_MODULES
  * (a dsh install's node_modules) so index.js can be imported outside a running harness.
- * Usage: DSH_NODE_MODULES=/path/to/node_modules node --import ./test/resolve-dsh.mjs --test test/plugin.test.js
+ * Usage: DSH_NODE_MODULES=/path/to/node_modules node --import ./test/helpers/resolve-dsh.mjs --test test/host/plugin.test.js
  */
 import { register } from 'node:module'
 import { pathToFileURL } from 'node:url'

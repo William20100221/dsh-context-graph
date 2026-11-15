@@ -8,8 +8,8 @@ import {
   builderInstruction, chatInRange, collectSpan, emptyGraph, estimateTokens, matchAcross, matchNodes, mergeDelta, neighbors,
   parseBuilderOutput, parseTimeRange, renderChatIndex, renderChats, renderHits, renderMap, renderRange, resolveSuperseded,
   surfaceNodes, titleOf, tokenize, transcriptForBuilder
-} from '../graph.js'
-import { appendSource, chatDir, ensureMeta, listChats, loadGraph, loadMeta, readSource, saveGraph, saveMeta } from '../store.js'
+} from '../../src/core/index.js'
+import { appendSource, chatDir, ensureMeta, listChats, loadGraph, loadMeta, readSource, saveGraph, saveMeta } from '../../src/store/chats.js'
 
 function sampleGraph() {
   const g = emptyGraph()
@@ -225,7 +225,7 @@ test('parseBuilderOutput survives thinking text and output cut off mid-way', () 
 })
 
 test('day() is the local calendar day, matching recall("YYYY-MM-DD")', async () => {
-  const { day } = await import('../graph.js')
+  const { day } = await import('../../src/core/index.js')
   const local = new Date(2026, 10, 4, 8, 30)
   assert.equal(day(local.toISOString()), '2026-11-04')
   assert.equal(day(undefined), '')

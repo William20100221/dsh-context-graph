@@ -1,34 +1,19 @@
 /**
  * On-disk layout under `<dir>` (default `<workspace>/.context-graph`), one folder per chat:
  *   chats/<sessionId>/meta.json    { cid, title, workspace, startedAt, lastActiveAt, turns, memoryOff?, private? }
- *   chats/<sessionId>/graph.json   the chat's graph (see graph.js)
+ *   chats/<sessionId>/graph.json   the chat's graph (see src/core/graph.js)
  *   chats/<sessionId>/src/<id>.md  verbatim source text of one node, one section appended per build
  * Nothing is merged or copied between chats; the list of chats is the list of folders.
  * ponytail: last writer wins across concurrent sessions; add a lock file if two agents share a workspace.
  */
 
-import { mkdir, readdir, readFile, rename, writeFile, appendFile } from 'node:fs/promises'
+import { appendFile, mkdir, readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import { emptyGraph, GRAPH_VERSION } from './graph.js'
+import { emptyGraph, GRAPH_VERSION } from '../core/graph.js'
+import { readJson, writeJson } from './files.js'
 
 export const chatDir = (dir, sid) => join(dir, 'chats', String(sid))
-
-async function readJson(path) {
-  try {
-    return JSON.parse(await readFile(path, 'utf8'))
-  } catch (error) {
-    if (error?.code === 'ENOENT') return undefined
-    throw error
-  }
-}
-
-async function writeJson(path, value) {
-  await mkdir(join(path, '..'), { recursive: true })
-  const tmp = `${path}.${process.pid}.tmp`
-  await writeFile(tmp, JSON.stringify(value, null, 1), 'utf8')
-  await rename(tmp, path)
-}
 
 export async function loadGraph(chat) {
   const graph = await readJson(join(chat, 'graph.json'))

@@ -1,17 +1,17 @@
-// Loads lib/client.js the way the dsh shell does (a plain script calling window.__ModuleLoader__),
+// Loads src/client/client.js the way the dsh shell does (a plain script calling window.__ModuleLoader__),
 // with stand-ins for the shared modules; also checks the package metadata dsh reads for the Plugins page.
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { test } from 'node:test'
 import vm from 'node:vm'
 
-const root = new URL('../', import.meta.url)
+const root = new URL('../../', import.meta.url)
 const read = (path) => readFileSync(new URL(path, root), 'utf8')
 
 function loadClient({ openState = false } = {}) {
   let entry
   const window = { __ModuleLoader__: { load: (e) => { entry = e } } }
-  vm.runInNewContext(read('lib/client.js'), { window, document: undefined })
+  vm.runInNewContext(read('src/client/client.js'), { window, document: undefined })
   assert.equal(entry.id, 'dsh-context-graph', 'id must equal the package name')
   const element = (type, props) => ({ type, props })
   const shared = {
@@ -74,11 +74,11 @@ test('Plugins page metadata: icon, translated title and description, Chinese det
   assert.ok(statSync(new URL('icon.svg', root)).size < 256 * 1024)
   assert.match(read('icon.svg'), /^<svg width="36" height="36" viewBox="0 0 36 36"/)
   assert.equal(pkg.exports['./locale/*.json'], './locale/*.json')
-  assert.equal(pkg.exports['./client'], './lib/client.js')
+  assert.equal(pkg.exports['./client'], './src/client/client.js')
   for (const lang of ['en', 'zh']) {
     const { meta } = JSON.parse(read(`locale/${lang}.json`))
     assert.ok(meta.title && meta.description, `${lang} has title and description`)
     if (meta.detail) assert.ok(existsSync(new URL(meta.detail, root)), `${lang} detail file exists`)
   }
-  for (const file of ['icon.svg', 'locale', 'lib/client.js', 'README.zh.md', 'update.js']) assert.ok(pkg.files.includes(file), `${file} is published`)
+  for (const file of ['icon.svg', 'locale', 'src', 'README.zh.md']) assert.ok(pkg.files.includes(file), `${file} is published`)
 })

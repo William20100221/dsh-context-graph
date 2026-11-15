@@ -1,7 +1,7 @@
 /**
  * Wiring check of index.js against a fake harness: memory on by default, /context-graph off + on + share,
  * injection into a second chat, recall by topic / chat / day / turn, and the meter. Needs the dsh peer packages:
- *   DSH_NODE_MODULES=<dsh install>/node_modules node --import ./test/resolve-dsh.mjs --test test/plugin.test.js
+ *   DSH_NODE_MODULES=<dsh install>/node_modules node --import ./test/helpers/resolve-dsh.mjs --test test/host/plugin.test.js
  * Skipped when DSH_NODE_MODULES is unset.
  */
 import assert from 'node:assert/strict'
@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { day } from '../graph.js'
+import { day } from '../../src/core/index.js'
 
 const skip = !process.env.DSH_NODE_MODULES
 const NO_UPDATES = { current: () => undefined }
@@ -67,7 +67,7 @@ function fakeCtx(llm) {
 }
 
 test('plugin: on by default; off/on + share; a second chat gets the list, hits, time slices and recall', { skip }, async () => {
-  const { apply } = await import('../index.js')
+  const { apply } = await import('../../index.js')
   const cwd = await mkdtemp(join(tmpdir(), 'context-graph-plugin-'))
   try {
     const llm = fakeLlm(BUILDER_REPLY)
@@ -176,7 +176,7 @@ test('plugin: on by default; off/on + share; a second chat gets the list, hits, 
 })
 
 test('plugin: builder failures are contained', { skip }, async () => {
-  const { apply } = await import('../index.js')
+  const { apply } = await import('../../index.js')
   const cwd = await mkdtemp(join(tmpdir(), 'context-graph-plugin-'))
   try {
     const ctx = fakeCtx(fakeLlm('not json at all'))
@@ -199,7 +199,7 @@ test('plugin: builder failures are contained', { skip }, async () => {
 })
 
 test('plugin: an available update is mentioned once per app start and in stats', { skip }, async () => {
-  const { apply } = await import('../index.js')
+  const { apply } = await import('../../index.js')
   const cwd = await mkdtemp(join(tmpdir(), 'context-graph-update-'))
   try {
     const ctx = fakeCtx(fakeLlm(BUILDER_REPLY))
