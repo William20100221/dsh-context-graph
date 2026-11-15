@@ -1,6 +1,6 @@
 {
   "name": "dsh-context-graph",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "description": "DeepSeek Harness plugin: memory graphs for every chat, on by default (switch the plugin off on the Plugins page to stop); other chats in the workspace recall exact past text by topic, chat or day, so fewer input tokens are re-sent",
   "icon": "./icon.svg",
   "type": "module",
@@ -20,7 +20,8 @@
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "test": "node --import ./test/helpers/resolve-dsh.mjs --test \"test/**/*.test.js\""
@@ -43,12 +44,12 @@
     "url": "https://github.com/William20100221/dsh-context-graph/issues"
   },
   "engines": {
-    "dsh": ">=0.2.1-rc.5 <0.3.0",
+    "dsh": ">=0.2.1-rc.1 <0.3.0-0",
     "node": ">=20"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-llm": ">=0.2.1-rc.5 <0.3.0",
-    "@deepseek-ai/dsh-tools": ">=0.2.1-rc.5 <0.3.0"
+    "@deepseek-ai/dsh-llm": ">=0.2.1-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-tools": ">=0.2.1-rc.1 <0.3.0-0"
   },
   "dsh": {
     "bundle": {
