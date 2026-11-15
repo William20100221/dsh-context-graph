@@ -1,0 +1,299 @@
+[
+  {
+    "key": "I1",
+    "milestone": "v0.7.0",
+    "labels": [
+      "bug",
+      "data-safety"
+    ],
+    "title": "Concurrent writes can corrupt meta.json/graph.json, and one bad file disables memory for the whole workspace",
+    "body": "**Problem**\nEvery write in a process uses the same temp file name (`<file>.<pid>.tmp`). Two writes to the same file at once (a background build finishing while `/context-graph off` runs, or while `recall` saves a hit counter) interleave: in 200 paired test writes, 70 left a corrupt `meta.json` and 50 failed with ENOENT on rename.\n\n`recall` also re-saves the other chat's whole `graph.json` from the copy it loaded at the start, only to bump `hits`, a counter nothing reads. If that chat's build saved new topics in between, they are overwritten and lost for good (the build already advanced `builtSeq`).\n\n**Blast radius**\n`readJson` re-throws a JSON syntax error, so one corrupt `meta.json` makes `listChats` throw. Matching, recall, stats, map and find then fail for every chat in the workspace until someone deletes the file by hand.\n\n**Fix**\n- Unique temp names per write.\n- Remove the `hits` write-back from `recall`.\n- Readers skip an unreadable file (logged once) instead of failing the workspace; the next build rewrites it.\n- Serialize writes per chat folder in-process.\n\n_Found in the cycle-1 audit of v0.6.2 (lenses: host, storage, safety) and confirmed by an independent reproduction._",
+    "number": 10
+  },
+  {
+    "key": "I2",
+    "milestone": "v0.7.0",
+    "labels": [
+      "bug",
+      "data-safety"
+    ],
+    "title": "Two chats can get the same chat number (cid)",
+    "body": "**Problem**\n`ensureMeta` picks `max(cid) + 1` after listing every chat (about 60 ms at 100 chats) and only then writes. Two chats reaching their first build together, or a command racing a build, both get the same number. In a test, two concurrent `ensureMeta` calls on an empty workspace both returned cid 1.\n\n**Impact**\n`recall(\"c3n12\")` resolves by cid, so it can return the wrong chat's topic.\n\n**Fix**\nAllocate numbers inside one in-process lock and claim each number with an exclusive create (`mkdir chats/.cid/<n>`), which also covers two dsh windows on one workspace.\n\n_Found in the cycle-1 audit (storage, safety) and confirmed._",
+    "number": 11
+  },
+  {
+    "key": "I3",
+    "milestone": "v0.7.0",
+    "labels": [
+      "bug",
+      "data-safety"
+    ],
+    "title": "A build that fails midway reissues topic ids, so one topic's source mixes unrelated text",
+    "body": "**Problem**\n`build()` appends source text first, then saves the graph (with `nextId`), then saves `builtSeq`. If the process stops or a write fails after the append, the next build reuses the same ids for new topics, and `src/n1.md` ends up holding text from two different topics.\n\n**Fix**\nCommit in a safe order: graph and meta first, verbatim text last, and store each message once keyed by its seq so a repeated write is a no-op.\n\n_Found in the cycle-1 audit (storage) and confirmed with a reproduction._",
+    "number": 12
+  },
+  {
+    "key": "I4",
+    "milestone": "v0.7.0",
+    "labels": [
+      "bug",
+      "quality"
+    ],
+    "title": "Turns that dsh compacts before they were indexed are never indexed",
+    "body": "**Problem**\nThe builder reads the chat's current surface (`session.surface.nodes`). dsh compaction replaces old turns on the surface with one checkpoint message. Turns that were waiting to be indexed (up to 3 by default, more after a failed build) disappear from the surface, and `builtSeq` then moves past them for good.\n\n**Fix**\nRead the span from the durable session log (`session.eventAt(seq)` still returns compacted events), skipping branches the user rewound.\n\n_Found in the cycle-1 audit (host) and confirmed against dsh-compaction-basic 0.2.1-rc.5._",
+    "number": 13
+  },
+  {
+    "key": "I5",
+    "milestone": "v0.7.0",
+    "labels": [
+      "bug",
+      "quality"
+    ],
+    "title": "Some valid builder answers are recorded as empty builds, and those turns are skipped forever",
+    "body": "**Problem**\n- Citations written as `\"msgs\": [\"m0\", \"m1\"]` (the transcript labels messages `[m0 user]`) drop every topic, yet the build is saved as successful and `builtSeq` advances.\n- `\"msgs\": [\"1\"]` passes one check and fails another: the topic is stored with no source text.\n- If the answer mentions `\"nodes\": [` before the real JSON (prose, a schema echo, a reasoning draft), only the first array is read, which is empty.\n\n**Fix**\nNormalize citations once in the parser; try every `nodes` array and keep the best; treat an answer with no usable topics as a failed build (keep `builtSeq`, save the raw output).\n\n_Found in the cycle-1 audit (host, core) and confirmed._",
+    "number": 14
+  },
+  {
+    "key": "I6",
+    "milestone": "v0.7.0",
+    "labels": [
+      "bug",
+      "quality"
+    ],
+    "title": "Graph merge: links by label to existing topics are dropped; ids like 'constructor' hit Object.prototype; labels and aliases are unbounded",
+    "body": "**Problem**\n- An edge that names an existing topic by its label is dropped, so `supersedes` chains break.\n- A missing or stale `nextId` gives ids like `nNaN` or overwrites an existing topic.\n- Graph lookups use plain objects: a topic labelled `constructor` or `toString` resolves to `Object.prototype` members, producing phantom edges and a hit rendered as `undefined: undefined`.\n- Labels and aliases have no length or count limit. A 3,000-character label with 25 common aliases injected about 895 tokens on unrelated prompts, and aliases accumulate with every rebuild.\n\n**Fix**\nUse own-key checks, seed label lookups from the whole graph, repair `nextId` on load, cap labels (80 chars) and aliases (12 x 40 chars).\n\n_Found in the cycle-1 audit (core, safety) and confirmed._",
+    "number": 15
+  },
+  {
+    "key": "I7",
+    "milestone": "v0.7.0",
+    "labels": [
+      "bug",
+      "tokens"
+    ],
+    "title": "A forked chat re-indexes its parent's history and gets the parent's topics injected",
+    "body": "**Problem**\nA dsh fork copies the parent's events into a new session. The fork has no memory folder yet, so its first build starts at seq 0 and sends up to 60,000 characters of inherited history to the model again, then stores a duplicate graph. Meanwhile the parent is treated as another chat, so its topics are injected although their text is already in the fork's context.\n\n**Fix**\nStart a fork's index at `inheritedEventCount`, record its parent, and skip the parent's topics that predate the fork.\n\n_Found in the cycle-1 audit (host, core) and confirmed._",
+    "number": 16
+  },
+  {
+    "key": "I8",
+    "milestone": "v0.7.0",
+    "labels": [
+      "bug",
+      "data-safety"
+    ],
+    "title": "Memory indexed by v0.1-v0.3 is ignored since v0.4",
+    "body": "**Problem**\nv0.4.0 moved storage to `.context-graph/chats/<sessionId>/`. Nothing reads or migrates the older root layout (`.context-graph/graph.json` + `src/`), so memory built with earlier versions is invisible: no chat can match or recall it, and `/context-graph map` says nothing is indexed. Real data in this layout exists on the maintainer's machine.\n\n**Fix**\nOn first load, move the root graph into a chat folder (the original session id when all topics share one), with a meta built from the topics' dates.\n\n_Found in the cycle-1 audit (quality) and confirmed._",
+    "number": 17
+  },
+  {
+    "key": "I9",
+    "milestone": "v0.7.0",
+    "labels": [
+      "security"
+    ],
+    "title": "Memory from other chats is injected without being marked as quoted data",
+    "body": "**Problem**\nInjected blocks carry labels, gists and (for one dominant short hit) verbatim text written in another chat. They are sent as a user-role message with nothing saying they are data. Text that an earlier chat summarised from an untrusted source (a web page, a pasted file) can therefore act as instructions in every later chat that matches it.\n\n**Fix**\nState once per block that the notes are quoted from other chats and are data, not instructions; put inlined source in a fenced block; strip fence markers from stored text.\n\n_Found in the cycle-1 audit (safety) and confirmed with a reproduction._",
+    "number": 18
+  },
+  {
+    "key": "I10",
+    "milestone": "v0.7.0",
+    "labels": [
+      "bug",
+      "speed"
+    ],
+    "title": "/context-graph on and build block the chat for the whole indexing call and fail mid-turn after changing flags",
+    "body": "**Problem**\nBoth commands run the build inside `agent.runMaintenance`, which (a) throws `already has active work` while a turn runs, after `on` has already written its flag, and (b) when idle, holds the user's next message until the builder call ends (tens of seconds on thinking models). The builder call also has no abort signal, so Stop cannot end it.\n\n**Fix**\nRun the build directly (the per-chat `building` flag already prevents overlap), pass the command's abort signal to `llm.stream`, and let `on` answer at once while indexing continues in the background.\n\n_Found in the cycle-1 audit (host) and confirmed against dsh-agent-loop 0.2.1-rc.5._",
+    "number": 19
+  },
+  {
+    "key": "I11",
+    "milestone": "v0.7.0",
+    "labels": [
+      "bug"
+    ],
+    "title": "Memory off is not fully off: the update notice is still injected, and recall still reads other chats",
+    "body": "**Problem**\n`/context-graph off` replies that nothing is added to the chat's requests, but the once-per-start update notice is injected regardless, and the `recall` tool still returns other chats' topics in an opted-out chat.\n\n**Fix**\nGate the notice and `recall` (except this chat's own `t7` turns) on the chat's memory flag; keep the update notice out of model context entirely (it is shown in `/context-graph stats`).\n\n_Found in the cycle-1 audit (host, safety) and confirmed._",
+    "number": 20
+  },
+  {
+    "key": "I12",
+    "milestone": "v0.7.0",
+    "labels": [
+      "bug",
+      "tokens"
+    ],
+    "title": "Token meter counts compaction and title calls as conversation requests",
+    "body": "**Problem**\nEvery `llm/stream` call that is not the builder lands in the 'main' bucket, including dsh compaction (`purpose: compaction`) and session-title calls. This skews the cache-hit rate and anything built on it, such as a savings figure.\n\n**Fix**\nCount only agent-loop requests (`isAgentLoopRequest`) as main; keep other calls in their own bucket.\n\n_Found in the cycle-1 audit (host) and confirmed._",
+    "number": 21
+  },
+  {
+    "key": "I13",
+    "milestone": "v0.7.0",
+    "labels": [
+      "compatibility"
+    ],
+    "title": "engines.dsh upper bound admits every 0.3.0 prerelease",
+    "body": "**Problem**\ndsh checks `engines.dsh` with semver `includePrerelease: true`, so `<0.3.0` accepts `0.3.0-alpha.1`. A 0.3 prerelease may change the APIs the plugin uses.\n\n**Fix**\nUse `<0.3.0-0` together with the lower-bound fix for #9, and add a test that checks both ends with dsh's own semver options.\n\n_Found in the cycle-1 audit (safety) and confirmed._",
+    "number": 22
+  },
+  {
+    "key": "I14",
+    "milestone": "v0.8.0",
+    "labels": [
+      "tokens",
+      "quality"
+    ],
+    "title": "No relevance floor: one common word injects up to 5 topics; CJK particles count as matches",
+    "body": "**Problem**\nA topic matches when a single label or alias token appears in the prompt. In a test with three chats, 9 of 10 unrelated prompts injected a block ('I got an error, can you help' matched two 'error' topics). A single hit is always inlined verbatim (up to 1,200 characters). When shown topics are skipped, the next 5 weaker hits fill their place every turn.\n\nCJK bigrams include particles and pronouns (`我们`, `的清`, hiragana endings like `した`), so '我们明天去吃饭吧' matched a design topic and a Japanese sentence about a walk outscored a real match.\n\n**Fix**\nWeight tokens by rarity across all topics, require a minimum score, keep only hits near the top score, never back-fill skipped ids, inline only strong hits, and drop particle bigrams.\n\n_Found in the cycle-1 audit (tokens, quality, core) and confirmed._",
+    "number": 23
+  },
+  {
+    "key": "I15",
+    "milestone": "v0.8.0",
+    "labels": [
+      "tokens",
+      "quality"
+    ],
+    "title": "Named times act as a hard filter; day blocks are padded; a casual 'today' injects a digest",
+    "body": "**Problem**\n- When a message names a time, only chats active then are searched, so a weak in-range hit replaces an exact older match.\n- Day blocks fill their topic slots with out-of-range topics.\n- Everyday phrases ('today I want to learn rust', '今天') inject an unrelated day digest (about 110-345 tokens).\n\n**Fix**\nRank with a time bonus instead of filtering, list only in-range topics, and send a day digest only when the message also asks about the past ('what did we do', '之前', '上次').\n\n_Found in the cycle-1 audit (core, tokens) and confirmed._",
+    "number": 24
+  },
+  {
+    "key": "I16",
+    "milestone": "v0.8.0",
+    "labels": [
+      "bug",
+      "quality"
+    ],
+    "title": "Time parsing misreads Chinese words and invalid dates; ranges shift an hour across DST; accented words are dropped",
+    "body": "**Problem**\n- Chinese time words match inside other words: 目前天气 reads as 'the day before yesterday', 登上月球 as 'last month', 这周期 as 'this week'.\n- Years are ignored (2025年11月1日 becomes this year) and invalid dates roll over (2026-02-31 becomes March 3).\n- Ranges use fixed 24-hour steps, so they are an hour off across daylight-saving changes (the maintainer's zone, Pacific/Auckland, has them).\n- `tokenize` drops non-ASCII Latin and full-width text ('café', 'Привет', 'ＡＰＩ').\n\n**Fix**\nAnchored patterns with look-arounds, year support, round-trip date validation, calendar arithmetic, NFKC normalization and Unicode word classes.\n\n_Found in the cycle-1 audit (core) and confirmed._",
+    "number": 25
+  },
+  {
+    "key": "I17",
+    "milestone": "v0.8.0",
+    "labels": [
+      "tokens"
+    ],
+    "title": "The chat list is sent again after every app restart and every /context-graph on",
+    "body": "**Problem**\nWhether a chat has received the list of other chats is kept only in memory. After every restart, each resumed chat gets the list again (about 570 tokens for 20 chats), although the first copy is still in its context and is re-sent with every request.\n\n**Fix**\nDecide from the chat's own context: send the list only when no list block is on its surface.\n\n_Found in the cycle-1 audit (host, tokens, quality) and confirmed._",
+    "number": 26
+  },
+  {
+    "key": "I18",
+    "milestone": "v0.8.0",
+    "labels": [
+      "tokens",
+      "quality",
+      "enhancement"
+    ],
+    "title": "No one-line summary per chat: the first message gets up to 20 first-prompt titles (540-1,300 tokens)",
+    "body": "**Problem**\nThe memory has no top layer that says what each chat is about. A new chat's first message gets up to 20 chats listed by their first prompt (often uninformative), unconditionally, even for 'hello': about 540 tokens in English and up to 1,300 in Chinese. Chats with no topics are listed too.\n\n**Fix**\nThe builder writes a one-line summary per chat in the same call (no extra request). The first message gets only the few chats relevant to it (or the newest), as `c3 11-14 <summary> (12)`, with a short header.\n\n_Found in the cycle-1 audit (tokens, quality) and confirmed._",
+    "number": 27
+  },
+  {
+    "key": "I19",
+    "milestone": "v0.8.0",
+    "labels": [
+      "tokens"
+    ],
+    "title": "Builder prompt: the fixed rules come after the transcript (never cached) and the topic list grows without bound",
+    "body": "**Problem**\nThe indexing prompt puts the changing transcript first, so the identical 374-token rules can never hit the provider's prefix cache. It also lists every existing topic on every build: 374 tokens at 0 topics, 1,877 at 200, 4,912 at 400.\n\n**Fix**\nRules first, then existing topics in id order (append-only, so earlier builds' text stays a cacheable prefix), then the transcript; above about 80 topics send only the relevant ones.\n\n_Found in the cycle-1 audit (tokens, storage) and confirmed._",
+    "number": 28
+  },
+  {
+    "key": "I20",
+    "milestone": "v0.8.0",
+    "labels": [
+      "tokens"
+    ],
+    "title": "recall of a topic returns its whole source, unbounded",
+    "body": "**Problem**\nStored source text is the full message (the builder only saw 2,000 characters), and every rebuild appends another section. `recall(\"c3n12\")` returns the whole file: a topic cited from a pasted 50,000-character log returns about 14,000 tokens, which then stays in the chat's context.\n\n**Fix**\nStore each message once with a capped head and tail; cap recall output and point to the full turn (`c3t7`) for the rest.\n\n_Found in the cycle-1 audit (host, tokens, quality) and confirmed._",
+    "number": 29
+  },
+  {
+    "key": "I21",
+    "milestone": "v0.8.0",
+    "labels": [
+      "tokens"
+    ],
+    "title": "Fixed overhead: about 210 tokens of recall schema on every request",
+    "body": "**Problem**\nThe `recall` tool's description and parameters cost about 210 tokens and ride with every request of every chat. The `depth` parameter only adds linked-topic gists.\n\n**Fix**\nShorten the description to about 80 tokens and drop `depth` (linked topics are listed by label and can be recalled by id).\n\n_Found in the cycle-1 audit (tokens) and confirmed._",
+    "number": 30
+  },
+  {
+    "key": "I22",
+    "milestone": "v0.8.0",
+    "labels": [
+      "tokens"
+    ],
+    "title": "Topics already fetched with recall are injected again",
+    "body": "**Problem**\nThe 'already shown' check reads only the plugin's own injected messages. A topic the model fetched with `recall` is not counted, so its gist (and possibly 1,200 characters of inline source) is injected again on the next related message.\n\n**Fix**\nAlso read recall tool results on the surface, counting only ids whose content was actually delivered.\n\n_Found in the cycle-1 audit (core) and confirmed._",
+    "number": 31
+  },
+  {
+    "key": "I23",
+    "milestone": "v0.8.0",
+    "labels": [
+      "storage"
+    ],
+    "title": "Verbatim text is stored once per citing topic (3x on real data), with UUID headers, pretty JSON and write-only fields",
+    "body": "**Problem**\nEach topic's `src/<id>.md` holds its own copy of every message it cites, so a message cited by three topics is stored three times (real data: six source files, two distinct texts). Each section header repeats the session UUID (21% of source bytes). `graph.json` is pretty-printed (27% whitespace) and carries per-build provenance nothing reads (31%), and it is re-read for every shared chat on every message.\n\n**Fix**\nOne message store per chat keyed by seq (each message once, capped), topics reference seqs, compact JSON, no write-only fields; migrate existing folders.\n\n_Found in the cycle-1 audit (host, core, tokens, storage) and confirmed._",
+    "number": 32
+  },
+  {
+    "key": "I24",
+    "milestone": "v0.8.0",
+    "labels": [
+      "speed"
+    ],
+    "title": "Every message reads 2N+2 files one at a time and re-tokenizes every topic before the request is sent",
+    "body": "**Problem**\nMatching runs inside the awaited pre-step. It reads every chat's `meta.json` and `graph.json` sequentially and tokenizes every label, alias and gist on every call. At 100 chats and 2,300 topics: about 200 reads and 140-160 ms added to every message. A one-topic recall also loads every chat.\n\n**Fix**\nIn-process cache keyed by file mtime and size with pre-tokenized topics, parallel stats, and recall that loads only the chat it needs. Measured target: 1-4 ms per message.\n\n_Found in the cycle-1 audit (storage) and confirmed._",
+    "number": 33
+  },
+  {
+    "key": "I25",
+    "milestone": "v0.8.0",
+    "labels": [
+      "enhancement",
+      "quality"
+    ],
+    "title": "Drill-down stops at cited snippets: another chat's full turns cannot be reached",
+    "body": "**Problem**\nThe memory tree should end in full verbatim context. `recall(\"t7\")` reads only the current chat; for other chats the deepest layer is whatever the builder chose to cite, and no block ever shows a turn id.\n\n**Fix**\nAdd `recall(\"c3t7\")`, read from dsh's own session log through `ctx.sessionQuery.readSession` (no extra storage), limited to shared chats, and end every topic recall with the turn ids it came from.\n\n_Found in the cycle-1 audit (quality) and confirmed._",
+    "number": 34
+  },
+  {
+    "key": "I26",
+    "milestone": "v0.9.0",
+    "labels": [
+      "enhancement",
+      "tokens"
+    ],
+    "title": "Show users how memory saves tokens and roughly how much",
+    "body": "**Problem**\nCounters live in memory, reset on every restart, mix all chats, and show raw numbers with no estimate of what memory saved or cost.\n\n**Plan**\nPersist per-chat and per-workspace counters. Estimate conservatively: savings come only from topics the model actually used (a gist standing in for its original messages); subtract what memory itself sent and the indexing calls. Show the result on the `/context-graph` card, on the plugin's page in Plugins, and optionally under the chat input. Show a negative net plainly.\n\n_Found in the cycle-1 audit (tokens, quality) and confirmed._",
+    "number": 35
+  },
+  {
+    "key": "I27",
+    "milestone": "v0.9.0",
+    "labels": [
+      "enhancement"
+    ],
+    "title": "Visual memory map",
+    "body": "**Problem**\n`/context-graph map` is text only.\n\n**Plan**\nAn optional visual map on the plugin's page in Plugins: workspace, chats (with summaries), topics coloured by kind, links, with a detail panel. Data comes through dsh's authenticated `/api` route registry (`connection.fetch`), never a plain web route, because plugin web routes are unauthenticated.\n\n_Found in the cycle-1 audit (quality) and confirmed._",
+    "number": 36
+  },
+  {
+    "key": "I28",
+    "milestone": "v0.9.0",
+    "labels": [
+      "documentation"
+    ],
+    "title": "README cost table and known limits do not match the code",
+    "body": "**Problem**\nThe cost table says chats without `on` cost nothing (memory is on by default since v0.5), about 15 tokens per listed chat (measured 26 in English and 61 in Chinese, plus a 72-token header), and under 150 tokens per message with hits (measured 196-204, plus up to 1,200 characters inline). Known limits still say builds are tracked per process (fixed by #2).\n\n**Fix**\nRegenerate the numbers from a test and point to the live counters.\n\n_Found in the cycle-1 audit (quality) and confirmed._",
+    "number": 37
+  }
+]
