@@ -5,8 +5,9 @@
  * the topic's label or aliases counts 2, in its gist 0.5. Chinese and Japanese have no spaces, so a
  * chain of k matching character pairs counts as (k+1)/2 words, rounded down (数据库 is one word,
  * 单元测试 two), and an identifier counts once with its parts, twice when it matches exactly and
- * looks like code (id_ed25519_signing, pnpm-lock.yaml). A topic is a hit only with a label word and
- * a score of 3 (two label words, or one plus two gist words); long messages need a little more.
+ * looks like code (id_ed25519_signing, pnpm-lock.yaml, loadViews); "tests" is "test" (#75). A
+ * topic is a hit only with a label word and a score of 3 (two label words, or one plus two gist
+ * words); long messages need a little more.
  * Rarity never lets a weak topic through; it only orders hits of equal evidence. Then:
  *   - copies: topics with the same label in several chats take one slot, shown as the newest (#43);
  *   - coverage: a lower hit stays only if it matches a word no higher hit matched, so one generic
@@ -34,14 +35,16 @@ const nodeWords = new WeakMap()
 /**
  * A topic's search words, computed once per topic object (#33). Loaded graphs are cached by file
  * stat (src/store), so the same objects come back on every message until the file changes.
+ * A lowerCamel name in the label is one label word without its humps, so "a file url" does not
+ * name pathToFileURL; its humps count only where the gist has them (#74).
  */
 export function nodeTokens(node) {
   let words = nodeWords.get(node)
   if (!words) {
     words = {
-      strong: new Set(tokenize([node.label, ...(node.aliases ?? [])].join(' '))),
+      strong: new Set(tokenize([node.label, ...(node.aliases ?? [])].join(' '), { humps: false })),
       weak: new Set(tokenize(node.gist ?? '')),
-      label: new Set(tokenize(node.label))
+      label: new Set(tokenize(node.label, { humps: false }))
     }
     nodeWords.set(node, words)
   }
