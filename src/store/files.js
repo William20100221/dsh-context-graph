@@ -45,6 +45,7 @@ function salvage(raw, error) {
  *   { state: 'salvaged', value }    trailing junk cut off (v0.6 could leave it); the next write repairs the file
  *   { state: 'quarantined', raw }   unreadable; moved aside to `<file>.corrupt-<time>` so nothing overwrites it
  * Errors other than "no such file" are thrown: the caller must not treat them as missing data (#10).
+ * So is an unreadable file that cannot be moved aside (#79).
  */
 export async function readJsonDetailed(path) {
   let raw
@@ -63,7 +64,10 @@ export async function readJsonDetailed(path) {
       return { state: 'salvaged', value: repaired }
     }
     const aside = `${path}.corrupt-${Date.now()}`
-    try { await rename(path, aside) } catch { /* another reader moved it first */ }
+    // Gone: another reader moved it first. Any other failure (on Windows a sync tool or a scan that
+    // holds the file: EBUSY) leaves it in place, and reading it as missing let a memory-off chat
+    // read as on and a writer replace the file with no copy kept (#79).
+    try { await rename(path, aside) } catch (error) { if (error?.code !== 'ENOENT') throw error }
     console.error(`context-graph: ${path} is unreadable (${error.message}); kept as ${aside}`)
     return { state: 'quarantined', raw }
   }

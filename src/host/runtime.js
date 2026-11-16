@@ -25,6 +25,13 @@ const firstKey = (text) => (text === undefined ? undefined : createHash('sha1').
 const startsWith = (meta, first) => first !== undefined && (meta?.firstKey !== undefined ? meta.firstKey === firstKey(first) : (meta?.firstPrompt ?? meta?.title) === first)
 
 /**
+ * Whether a chat's meta cannot say if the chat is a fork: written by 0.4-0.7 and not since (#58).
+ * From 0.8.0 on, the write that stores the first prompt (firstPrompt, then its fingerprint firstKey)
+ * also stores forkSeq when the chat is a fork, so a meta with either says (#72).
+ */
+const forkUnknown = (meta) => !Number.isInteger(meta?.forkSeq) && meta?.firstKey === undefined && meta?.firstPrompt === undefined
+
+/**
  * A fork's graph without the topics it inherited: topics whose every cited message lies before the
  * fork point are dropped, mixed ones keep only their own sources. Memoized per loaded graph, so the
  * same objects come back while the file is unchanged (the token memo in match.js relies on it).
@@ -137,6 +144,7 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
    * Where a forked chat's own history starts. dsh copies the parent's events into the fork with the
    * same seqs and reports how many in `inheritedEventCount`; `header.isSeeded` marks the copy. The
    * parent's id (`header.parentSession`) is optional: some dsh builds omit it for ordinary forks.
+   * @param session a live session, or dsh's observation of one (the same two fields).
    * @returns the first seq that is the fork's own, or undefined for a chat that is not a fork.
    */
   function forkSeqOf(session) {
@@ -231,7 +239,7 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
     const forkSeq = forkSeqOf(session)
     const parent = session.header?.parentSession
     const first = titleOf(eventAt)
-    const base = { title: first, firstKey: firstKey(first), workspace: dirFor(agent), startedAt: now, lastActiveAt: now }
+    const base = { title: first, firstKey: firstKey(first), startedAt: now, lastActiveAt: now }
     if (!forkSeq) return base
     const from = await parentMetaOf(agent, forkSeq, first)
     const point = forkSeq - 1
@@ -283,8 +291,11 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
    * or the inherited first prompt), so its next index titles it from its own prompts (reviews).
    */
   function upToDate(agent, meta) {
-    if (!meta || meta.firstKey !== undefined) return meta
-    const { firstPrompt, ...rest } = meta
+    if (!meta) return meta
+    // An absolute local path that nothing reads, in a folder users may sync: dropped (#78).
+    const { workspace, ...current } = meta
+    if (current.firstKey !== undefined) return current
+    const { firstPrompt, ...rest } = current
     const first = firstPrompt ?? titleOf((seq) => agent.session.eventAt(seq))
     return { ...rest, ...(first !== undefined ? { firstKey: firstKey(first) } : {}), ...(Number.isInteger(rest.forkSeq) ? { title: undefined } : {}) }
   }
@@ -298,9 +309,61 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
   /** Set flags such as `memoryOff` or `private`, creating the chat's meta if needed. */
   const setFlags = (agent, flags) => updateFor(agent, (meta) => ({ ...meta, ...flags, lastActiveAt: new Date().toISOString() }))
 
-  /** Fork points learned from dsh for chats whose meta has none (see recall.js), for this app run. */
+  /** Fork points learned from dsh for chats whose meta has none, for this app run (0: not a fork). */
   const forkPoints = new Map()
   const forkPointOf = (sid, meta) => Math.max(Number(meta?.forkSeq) || 0, forkPoints.get(sid) ?? 0)
+
+  /**
+   * Learn from dsh where a chat's own history starts when its meta cannot say (forkUnknown): one
+   * read of its log, remembered for this app run. Resolves to whether the chat is a fork.
+   */
+  async function learnForkPoint(sid, meta, signal) {
+    if (!forkUnknown(meta) || forkPoints.has(sid)) return false
+    const observation = await observe(sid, signal)
+    if (!observation) return false
+    try {
+      forkPoints.set(sid, forkSeqOf(observation) ?? 0)
+    } finally {
+      observation[Symbol.dispose]?.()
+    }
+    return forkPoints.get(sid) > 0
+  }
+
+  /**
+   * Ids of the dsh sessions that are forks (header.isSeeded), from one listing of session headers
+   * per app run (#58); undefined while dsh cannot list them here.
+   */
+  let seeded
+  function seededIds() {
+    const query = sessionQuery()
+    if (typeof query?.listSessions !== 'function') return undefined
+    seeded ??= Promise.resolve()
+      .then(() => query.listSessions())
+      .then((records) => new Set(records.filter((r) => r?.header?.isSeeded === true).map((r) => String(r.header.id))))
+      .catch(() => { seeded = undefined })
+    return seeded
+  }
+  const learning = new Map()
+
+  /**
+   * A fork indexed by 0.4-0.6 records no fork point, so its inherited topics would be matched as its
+   * own until it is opened or recalled (#58). dsh's listing, which the first message of a run that
+   * meets such a meta waits for, names the forks: one whose fork point is not known yet is left out
+   * (fail closed) while it is learned in the background, once per run (a log that cannot be read
+   * keeps it out); a chat dsh does not list as a fork is not one.
+   */
+  async function withoutUnknownForks(sid, chats) {
+    const unsure = chats.filter((c) => c.sid !== sid && forkUnknown(c.meta) && !forkPoints.has(c.sid))
+    const forks = unsure.length > 0 ? await seededIds() : undefined
+    if (!forks) return chats
+    const waiting = new Set()
+    for (const c of unsure) {
+      if (!forks.has(c.sid)) { forkPoints.set(c.sid, 0); continue }
+      waiting.add(c.sid)
+      if (!learning.has(c.sid)) learning.set(c.sid, learnForkPoint(c.sid, c.meta).catch(() => false))
+    }
+    return chats.filter((c) => !waiting.has(c.sid))
+  }
 
   const viewFrom = (dir, sid, { sid: other, meta }) => loadGraph(chatDir(dir, other)).then((graph) => ({
     sid: other,
@@ -319,7 +382,9 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
   async function loadViews(agent, { all = false } = {}) {
     const dir = dirFor(agent)
     const sid = sidOf(agent)
-    const chats = (await listChats(dir)).filter((c) => all || c.sid === sid || sharedOn(c.meta))
+    const listed = (await listChats(dir)).filter((c) => all || c.sid === sid || sharedOn(c.meta))
+    // The map (all) is the user's own view of every chat; nothing in it reaches a model.
+    const chats = all ? listed : await withoutUnknownForks(sid, listed)
     // One chat whose topics cannot be read (a file locked by a sync tool, no permission) is
     // skipped, like a bad meta, instead of failing the whole workspace (#62).
     const views = await Promise.all(chats.map((c) => viewFrom(dir, sid, c).catch((error) => {
@@ -410,5 +475,5 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
   }
 
   // toolTokens: what the recall tool's definition costs per request (set by recall.js).
-  return { cfg, state, tracked, seenDirs, noteDir, sidOf, isSubagent, pendingInput, dirFor, metaFor, ownerMeta, forkedFrom, updateFor, setFlags, loadViews, viewOf, messagesOf, resolveTarget, forkSeqOf, indexStart, forkPoints, startsWith, observe, creditUse, toolTokens: 0 }
+  return { cfg, state, tracked, seenDirs, noteDir, sidOf, isSubagent, pendingInput, dirFor, metaFor, ownerMeta, forkedFrom, updateFor, setFlags, loadViews, viewOf, messagesOf, resolveTarget, forkSeqOf, indexStart, forkPoints, learnForkPoint, startsWith, observe, creditUse, toolTokens: 0 }
 }
