@@ -8,67 +8,226 @@ import { clipTokens, estimateTokens, sliceChars, textOf } from './text.js'
 
 export const isHuman = (event) => event?.type === 'user/message' && event.data?.source?.kind === 'user'
 
+/**
+ * `source.kind` of the user/message events that carry the user's input, however dsh drove it (#69,
+ * #70): typed (a steer too), a /goal round, a scheduled reminder, a late answer to a question.
+ */
+export const PROMPT_KINDS = new Set(['user', 'goal', 'schedule', 'user-question-reply'])
+export const isPrompt = (event) => event?.type === 'user/message' && PROMPT_KINDS.has(event.data?.source?.kind)
+
 /** The text of a user or assistant event, as the builder stores it. */
 export const eventText = (event) => textOf(event?.data?.content ?? event?.data?.message?.content)
+
+const parse = (text) => { try { return JSON.parse(text) } catch { return undefined } }
+
+// dsh writes these values as JSON on a line of their own: dsh-goal-round-driver and dsh-schedule.
+const OBJECTIVE = /^Objective: (.+)$/m
+const REMINDER = /^reminder_prompt_json: (.+)$/m
+const REMINDERS = /^reminders_json: (.+)$/m
+const jsonAt = (re, text) => parse(re.exec(text)?.[1])
+
+/** A reminder's own prompts (dsh frames one, or a batch), trimmed as dsh stores them. */
+function reminderPrompts(text) {
+  const one = jsonAt(REMINDER, text)
+  const batch = jsonAt(REMINDERS, text)
+  const prompts = typeof one === 'string' ? [one] : Array.isArray(batch) ? batch.map((r) => r?.reminder_prompt) : []
+  return prompts.filter((p) => typeof p === 'string').map((p) => p.trim())
+}
+
+/** The user's choices, each after its question when known: "Which database? → Postgres 16" (#70). */
+function answersText(answers, questions) {
+  if (!Array.isArray(answers)) return ''
+  const asked = new Map((Array.isArray(questions) ? questions : []).map((q) => [q?.id, q?.question]))
+  return answers.map((a) => {
+    const chosen = [...(Array.isArray(a?.selected) ? a.selected : []), a?.custom].filter((s) => typeof s === 'string' && s.trim()).join('; ')
+    const question = asked.get(a?.id)
+    return chosen && (typeof question === 'string' ? `${question} → ${chosen}` : chosen)
+  }).filter(Boolean).join('\n')
+}
+
+/**
+ * A prompt's words as the builder and the matcher read them (#69, #70): a goal round's objective and
+ * a reminder's own prompt without dsh's framing around them, the choices of a late answer.
+ */
+export function promptText(message) {
+  const text = textOf(message?.content)
+  switch (message?.source?.kind) {
+    case 'goal': {
+      const objective = jsonAt(OBJECTIVE, text)
+      return typeof objective === 'string' ? objective : text
+    }
+    case 'schedule': return reminderPrompts(text).join('\n') || text
+    case 'user-question-reply': {
+      const reply = parse(text)
+      return reply ? answersText(reply.answers, reply.questions) : text
+    }
+    default: return text
+  }
+}
+
+const argsOf = (block) => (typeof block?.arguments === 'string' ? parse(block.arguments) : block?.arguments) ?? {}
+
+/** An assistant message's text, with any plan it handed to exit_plan_mode: dsh keeps the plan only as that call's argument (#70). */
+function assistantText(blocks) {
+  const plans = blocks.filter((b) => b?.type === 'tool-call' && b.name === 'exit_plan_mode').map((b) => argsOf(b).plan).filter((p) => typeof p === 'string' && p.trim())
+  return [textOf(blocks), ...plans.map((p) => `Plan:\n${p.trim()}`)].filter(Boolean).join('\n\n')
+}
+
+/**
+ * The log event by event, with dsh's own turn numbers (#71) and what stays private (#59, #69).
+ * Turns: a message belongs to the turn its `turn/start` opened, so a steer stays in its turn and a
+ * goal round or reminder has one of its own; a log without numbered turns counts prompts instead.
+ * Private: a seq in `gaps`; a turn whose first prompt is private, as a whole; after a private
+ * prompt, the rest of its turn. A prompt is private when typed in a gap or driven from there: a
+ * round of a goal that /goal or a goal tool changed in a private stretch, a reminder scheduled
+ * there, the answer to a question asked there (one whose goal or question is unknown, too).
+ * Each step: { seq, event, turn, start, prompt, hidden, from, role, text }, `from` being where the
+ * private stretch of a hidden step starts (a turn made private by its prompt, from its turn/start).
+ */
+function* walk(eventAt, gaps = []) {
+  const goals = new Map()
+  const reminders = new Set()
+  const asks = new Map()
+  const drivenFromGap = ({ source, content }) => {
+    if (source.kind === 'goal') return goals.get(source.goalId) ?? true
+    if (source.kind === 'schedule') return reminderPrompts(textOf(content)).some((p) => reminders.has(p))
+    if (source.kind === 'user-question-reply') return asks.get(source.callId)?.hidden ?? true
+    return false
+  }
+  let numbered = false
+  let turn
+  let turnSeq = -1
+  let turnHidden = false
+  let hidden = false
+  let prompted = false
+  for (let seq = 0; ; seq++) {
+    const event = eventAt(seq)
+    if (!event) return
+    const gap = inGap(seq, gaps)
+    const prompt = isPrompt(event)
+    let start = false
+    if (event.type === 'turn/start' && Number.isInteger(event.data?.turn)) { numbered = true; turn = event.data.turn; start = true }
+    else if (prompt && !numbered) { turn = (turn ?? 0) + 1; start = true }
+    if (start) { turnSeq = seq; turnHidden = gap; hidden = gap; prompted = false }
+    let from = seq
+    let role
+    let text
+    if (prompt) {
+      const own = gap || drivenFromGap(event.data)
+      if (!prompted && own && !turnHidden) { turnHidden = true; from = turnSeq }
+      hidden = turnHidden || own
+      prompted = true
+      role = 'user'
+      text = promptText(event.data)
+    } else if (event.type === 'assistant/message') {
+      const blocks = Array.isArray(event.data?.message?.content) ? event.data.message.content : []
+      role = 'assistant'
+      text = assistantText(blocks)
+      for (const b of blocks) {
+        if (b?.type !== 'tool-call') continue
+        if (b.name === 'ask_user_question') asks.set(b.id, { questions: argsOf(b).questions, hidden: gap || hidden })
+        else if ((b.name === 'schedule_create' || b.name === 'schedule_update') && (gap || hidden)) {
+          // A reminder scheduled in a private stretch stays private when it comes back (#69).
+          const scheduled = argsOf(b).prompt
+          if (typeof scheduled === 'string') reminders.add(scheduled.trim())
+        }
+      }
+    } else if (event.type === 'tool/result') {
+      // The user's answers to ask_user_question: the only tool output read (#47, #70).
+      const ask = event.data?.message?.toolCallId === undefined ? undefined : asks.get(event.data.message.toolCallId)
+      if (ask) {
+        role = 'user'
+        text = answersText(parse(textOf(event.data.message.content))?.answers, ask.questions)
+      }
+    } else if (event.type === 'goal/change') {
+      const id = event.data?.goal?.id ?? event.data?.cleared?.id
+      if (id !== undefined) goals.set(id, goals.get(id) === true || gap || hidden)
+    }
+    const step = { seq, event, turn, start, prompt, hidden: gap || hidden, from, role, text }
+    // What comes between turns (a /goal typed then) is judged by the gaps alone.
+    if (event.type === 'turn/end') hidden = false
+    yield step
+  }
+}
 
 /**
  * The human/assistant exchange after `afterSeq`, read from the durable session log (seq 0, 1, 2 ...
  * until `eventAt` returns nothing). Not from the surface: dsh compaction replaces old turns on the
  * surface with one checkpoint, and turns that were still waiting to be indexed would be lost (#13).
  * Within one session the log is never edited, so nothing outside the conversation is read.
- * Each message carries its turn number (t1 is the first human prompt of the log) and its time.
+ * Each message carries its dsh turn number (see walk) and its time. Prompts are what the user
+ * typed or dsh drove (a goal round's objective once per goal revision, #69); assistant text
+ * includes the plans handed to exit_plan_mode, and the user's answers to ask_user_question are
+ * user text (#70).
  * `completeOnly`: stop before a turn that is still running (a `turn/start` with no `turn/end` after
  * it), so a build started by a command mid-turn never splits that turn's question from its answer.
- * `gaps`: seq ranges `[from, to]` typed while memory was off; never read (#59).
+ * `gaps`: seq ranges `[from, to]` typed while memory was off; never read, nor what they drove (#59, #69).
  * `titleFrom`: only dsh titles at or after this seq, and made only from prompts at or after it,
  * count: a fork passes its first own prompt, so neither its parent's titles nor the rename dsh
  * gives a new fork ("<parent's title> (1)") nor a title listing inherited prompts is used (#60, review).
- * @returns { messages: [{ seq, role, text, turn, time }], lastSeq, userTurns, turns, title, open }
- *   `title`: the chat's latest dsh title (model-made, or the user's own rename), if any (#41);
- *   `open`: the span stopped before a running turn.
+ * @returns { messages: [{ seq, role, text, turn, time }], lastSeq, userTurns, turns, title, open, hidden, turnAt }
+ *   `userTurns`: turns of the span with a prompt that is not private; `turns`: turns with a prompt
+ *   up to the end; `title`: the chat's latest dsh title (model-made, or the user's own rename), if
+ *   any (#41); `open`: the span stopped before a running turn; `hidden`: the private stretches of
+ *   the whole log, `[from, to]`, the gaps included; `turnAt(seq)`: the turn of any seq of the log.
  */
 export function collectSpan(eventAt, afterSeq = -1, { completeOnly = false, gaps = [], titleFrom = 0 } = {}) {
   const all = []
-  const humans = []
+  const prompts = []
+  const starts = []
+  const hidden = []
+  const hiddenPrompts = new Set()
+  const objectives = new Set()
   let end = -1
   let openTurn = -1
   let title
-  for (let seq = 0; ; seq++) {
-    const event = eventAt(seq)
-    if (!event) break
+  let run
+  for (const step of walk(eventAt, gaps)) {
+    const { seq, event } = step
     end = seq
+    if (step.start) starts.push([seq, step.turn])
+    if (step.hidden) {
+      if (run && step.from <= run[1] + 1) run[1] = seq
+      else hidden.push(run = [step.from, seq])
+    }
+    if (step.prompt) {
+      prompts.push(step)
+      if (step.hidden) hiddenPrompts.add(seq)
+    }
     if (event.type === 'turn/start') openTurn = seq
     else if (event.type === 'turn/end') openTurn = -1
-    else if (event.type === 'session/title' && seq >= titleFrom && typeof event.data?.title === 'string' && event.data.title.trim() && !titleFromGap(event, seq, gaps) && !madeBefore(event, titleFrom)) title = event.data.title.trim()
-    if (isHuman(event)) {
-      humans.push(seq)
-      const text = textOf(event.data.content)
-      if (text && seq > afterSeq) all.push({ seq, role: 'user', text, turn: humans.length, time: event.time })
-    } else if (seq > afterSeq && event.type === 'assistant/message') {
-      const text = textOf(event.data?.message?.content)
-      if (text) all.push({ seq, role: 'assistant', text, turn: humans.length || undefined, time: event.time })
+    else if (event.type === 'session/title' && seq >= titleFrom && typeof event.data?.title === 'string' && event.data.title.trim() && !titleFromGap(event, seq, gaps, hiddenPrompts) && !madeBefore(event, titleFrom)) title = event.data.title.trim()
+    let text = step.text
+    const source = step.prompt && !step.hidden ? event.data.source : undefined
+    if (source?.kind === 'goal') {
+      // Every round repeats its goal's objective word for word: read once per goal revision (#69).
+      const key = `${source.goalId}:${source.revision}`
+      if (objectives.has(key)) text = ''
+      objectives.add(key)
     }
+    if (text && seq > afterSeq && !step.hidden) all.push({ seq, role: step.role, text, turn: step.turn, time: event.time })
   }
   const limit = completeOnly && openTurn >= 0 ? openTurn - 1 : end
-  // A turn whose prompt was typed while memory was off is private as a whole, also the part of its
-  // answer written after `on` (#59, review).
-  const gapped = (m) => inGap(m.seq, gaps) || (m.turn !== undefined && inGap(humans[m.turn - 1], gaps))
-  const messages = all.filter((m) => m.seq <= limit && !gapped(m))
+  const turnsOf = (list) => new Set(list.filter((p) => p.seq <= limit).map((p) => p.turn)).size
   return {
-    messages,
+    messages: all.filter((m) => m.seq <= limit),
     lastSeq: Math.max(afterSeq, limit),
-    userTurns: messages.filter((m) => m.role === 'user').length,
-    turns: humans.filter((seq) => seq <= limit).length,
+    userTurns: turnsOf(prompts.filter((p) => !p.hidden && p.seq > afterSeq)),
+    turns: turnsOf(prompts),
     title,
-    open: completeOnly && openTurn >= 0
+    open: completeOnly && openTurn >= 0,
+    hidden,
+    // Seqs past the log (messages migrated from other sessions) have no turn here.
+    turnAt: (seq) => (seq <= end ? starts.findLast(([s]) => s <= seq)?.[1] : undefined)
   }
 }
 
 /**
- * A dsh title that comes from the off stretch: written there, or derived from a prompt typed there
- * (`messageSeqs` names the prompts a generated title was made from). Never shown to other chats.
+ * A dsh title that comes from what stays private: written in an off stretch, or derived from a
+ * prompt typed there or driven from there (`messageSeqs` names the prompts a generated title was
+ * made from; #59, #69). Never shown to other chats.
  */
-const titleFromGap = (event, seq, gaps) => inGap(seq, gaps) || (Array.isArray(event.data?.messageSeqs) && event.data.messageSeqs.some((s) => inGap(s, gaps)))
+const titleFromGap = (event, seq, gaps, hiddenPrompts) => inGap(seq, gaps) || (Array.isArray(event.data?.messageSeqs) && event.data.messageSeqs.some((s) => inGap(s, gaps) || hiddenPrompts.has(s)))
 
 /** A dsh title made (in part) from prompts before `from`: in a fork, its parent's prompts. */
 const madeBefore = (event, from) => Array.isArray(event.data?.messageSeqs) && event.data.messageSeqs.some((s) => s < from)
@@ -87,6 +246,21 @@ export const inGap = (seq, gaps = []) => (Array.isArray(gaps) ? gaps : []).some(
 
 /** The first gap that starts after `seq`, or undefined. */
 export const nextGap = (seq, gaps = []) => (Array.isArray(gaps) ? gaps : []).filter((g) => Array.isArray(g) && g[0] > seq).sort((a, b) => a[0] - b[0])[0]
+
+/**
+ * `gaps` with `ranges` added, in order, touching ones joined. Past 50 the two oldest merge, also
+ * covering the stretch between them: a gap is never dropped (as `on` keeps them).
+ */
+export function mergeGaps(gaps = [], ranges = []) {
+  const out = []
+  for (const [from, to] of [...(Array.isArray(gaps) ? gaps : []), ...ranges].filter(Array.isArray).sort((a, b) => a[0] - b[0])) {
+    const last = out.at(-1)
+    if (last && from <= last[1] + 1) last[1] = Math.max(last[1], to)
+    else out.push([from, to])
+  }
+  while (out.length > 50) out.splice(0, 2, [out[0][0], out[1][1]])
+  return out
+}
 
 const TOPIC_LINE = /^\s*- (c\d+n\d+) /gm
 const RECALLED = /^(?:# |\s*- )(c\d+n\d+) /gm
@@ -117,7 +291,10 @@ export function shownContext(nodes, eventAt) {
       for (const m of text.matchAll(TOPIC_LINE)) ids.add(m[1])
     } else if (event?.type === 'tool/result') {
       const text = textOf(event.data?.message?.content)
-      if (RECALL_RESULT.test(text)) tokens += estimateTokens(text)
+      // Only a recall result names what this chat holds: a file or command output with a
+      // "- c3n12 ..." line hides no topic, and is not scanned (#73).
+      if (!RECALL_RESULT.test(text)) continue
+      tokens += estimateTokens(text)
       for (const m of text.matchAll(RECALLED)) ids.add(m[1])
     }
   }
@@ -125,14 +302,15 @@ export function shownContext(nodes, eventAt) {
 }
 
 /**
- * The answer of the newest turn: the assistant's text after the last human message on the
- * surface. Used once per turn to see which shown topics the answer actually used (#35).
+ * The answer of the newest turn: the assistant's text after the last prompt on the surface (a
+ * goal round's answer is its own, #69). Used once per turn to see which shown topics the answer
+ * actually used (#35).
  */
 export function lastAnswer(nodes, eventAt) {
   const parts = []
   for (let i = nodes.length - 1; i >= 0; i--) {
     const event = eventAt(nodes[i])
-    if (isHuman(event)) break
+    if (isPrompt(event)) break
     if (event?.type === 'assistant/message') parts.unshift(textOf(event.data?.message?.content))
   }
   return parts.filter(Boolean).join('\n')
@@ -185,44 +363,39 @@ function fit(parts, maxTokens) {
   return joined([head, ...marker, ...kept, ...(answer ? [answer] : []), ...after])
 }
 
+/** How a recalled turn names a prompt dsh drove rather than one the user typed. */
+const DRIVEN = { goal: 'goal', schedule: 'reminder' }
+
 /**
- * Turn `n` (its human prompt through the step before the next one), lean (#47): the prompt, the
- * assistant's text, and its tool use as one line; tool output is left out (it averaged 9,000 tokens
- * on real logs). Capped at about `maxTokens`.
+ * Turn `n` as dsh numbers it (#71: from its turn/start to the next one), lean (#47): its prompts,
+ * the assistant's text and plans, the user's answers to its questions (#70), and its tool use as
+ * one line; tool output is left out (it averaged 9,000 tokens on real logs). Capped at about
+ * `maxTokens`.
  * @param limitSeq last seq that may be read: another chat's turn stops at its indexed position.
- * @returns { text, seq, endSeq } or undefined when the log has no turn n at or before `limitSeq`.
+ * @returns { text, seq, endSeq } or undefined when the log has nothing of turn n at or before `limitSeq`.
  */
 export function turnTranscript(eventAt, n, { maxTokens = 2000, limitSeq = Infinity } = {}) {
-  let count = 0
-  let start = -1
-  for (let seq = 0; seq <= limitSeq; seq++) {
-    const event = eventAt(seq)
-    if (!event) break
-    if (isHuman(event) && ++count === n) { start = seq; break }
-  }
-  if (start < 0) return undefined
   const parts = []
   let tools = []
   const flush = () => {
     if (tools.length > 0) parts.push({ kind: 'tools', text: toolLine(tools) })
     tools = []
   }
-  let end = start
-  for (let seq = start; seq <= limitSeq; seq++) {
-    const event = eventAt(seq)
-    if (!event || (seq > start && isHuman(event))) break
-    end = seq
-    if (isHuman(event)) parts.push({ kind: 'user', text: `user:\n${textOf(event.data.content)}` })
-    else if (event.type === 'assistant/message') {
-      const blocks = Array.isArray(event.data?.message?.content) ? event.data.message.content : []
-      const text = textOf(blocks)
-      if (text) {
-        flush()
-        parts.push({ kind: 'assistant', text: `assistant:\n${text}` })
-      }
-      for (const b of blocks) if (b?.type === 'tool-call' && b.name) tools.push(b.name)
+  let start = -1
+  let end = -1
+  for (const step of walk(eventAt)) {
+    if (step.seq > limitSeq || (start >= 0 && step.start)) break
+    if (start < 0 && !(step.start && step.turn === n)) continue
+    if (start < 0) start = step.seq
+    end = step.seq
+    const { event } = step
+    if (step.role && (step.text || step.prompt)) {
+      flush()
+      parts.push({ kind: step.role, text: `${(step.prompt && DRIVEN[event.data.source.kind]) || step.role}:\n${step.text}` })
     }
+    const blocks = event.type === 'assistant/message' && Array.isArray(event.data?.message?.content) ? event.data.message.content : []
+    for (const b of blocks) if (b?.type === 'tool-call' && b.name) tools.push(b.name)
   }
   flush()
-  return { text: fit(parts, maxTokens), seq: start, endSeq: end }
+  return parts.length > 0 ? { text: fit(parts, maxTokens), seq: start, endSeq: end } : undefined
 }

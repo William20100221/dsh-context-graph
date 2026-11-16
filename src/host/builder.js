@@ -13,9 +13,10 @@ import { betterParse, builderPrompt, parseBuilderOutput, planSpan } from '../cor
 import { memoryOn, offPoint } from '../core/chat.js'
 import { mergeDelta } from '../core/graph.js'
 import { emptyCounters, usedIn } from '../core/ledger.js'
-import { collectSpan, firstPromptSeq, lastAnswer, titleOf } from '../core/session.js'
+import { collectSpan, firstPromptSeq, lastAnswer, mergeGaps, titleOf } from '../core/session.js'
 import { textOf } from '../core/text.js'
 import { chatDir, loadGraph, saveGraph } from '../store/chats.js'
+import { locked, readJson, writeJson } from '../store/files.js'
 import { addToLedger } from '../store/ledger.js'
 import { loadMessages, saveMessages } from '../store/messages.js'
 import { PURPOSE } from './config.js'
@@ -25,6 +26,28 @@ const MAX_FAILED_ANSWERS = 3
 
 /** A chat's last-active time is refreshed at most this often on turns that do not index (#40). */
 const TOUCH_MS = 3600000
+
+/** A chat with turns too few to index yet is indexed once it has been quiet this long (#42). */
+const QUIET_MS = 600000
+
+/**
+ * Messages stored before turn ids followed dsh's own turns (#71) take their turn from the log, by
+ * seq. Under the lock saveMessages takes; a later build finds nothing to change and writes nothing.
+ */
+function relabel(chat, turnAt) {
+  const file = join(chat, 'msgs.json')
+  return locked(`${chat}#msgs`, async () => {
+    const store = await readJson(file)
+    let changed = false
+    for (const [seq, m] of Object.entries(store?.m ?? {})) {
+      const t = turnAt(Number(seq))
+      if (t === undefined || !m || typeof m !== 'object' || m.t === t) continue
+      m.t = t
+      changed = true
+    }
+    if (changed) await writeJson(file, store)
+  })
+}
 
 /** The seq just before the middle prompt of a span: the half a cut-off answer is retried with (#45). */
 function firstHalfEnd(messages) {
@@ -77,6 +100,13 @@ export function registerBuilder(ctx, rt, meter) {
       if (['built', 'failed', 'cancelled'].includes(result.status)) st.lastBuild = { ...result, at: new Date().toISOString() }
       return result
     }
+    // What dsh drove from an off stretch up to `to` (rounds of a goal set there, a reminder
+    // scheduled there) joins its gaps where the index moves past it, so turn recall never serves
+    // it either (#69).
+    const gapsTo = (latest, to) => {
+      const gaps = mergeGaps(latest.gaps, span.hidden.filter(([from]) => from <= to).map(([from, end]) => [from, Math.min(end, to)]))
+      return gaps.length > 0 ? { gaps } : {}
+    }
     const failed = (reason, { half = false } = {}) => {
       if (span) {
         st.retryAt = span.userTurns + cfg.buildEveryTurns
@@ -101,7 +131,8 @@ export function registerBuilder(ctx, rt, meter) {
       const chars = span.messages.reduce((n, m) => n + m.text.length, 0)
       const needTurns = Math.max(cfg.buildEveryTurns, st.retryAt)
       if (!force && (span.userTurns < needTurns || chars < cfg.buildMinChars)) {
-        return { status: 'skipped', reason: `${span.userTurns}/${needTurns} human turns, ${chars}/${cfg.buildMinChars} chars` }
+        // What is waiting, so a chat that goes quiet below the threshold is still indexed (#42).
+        return { status: 'skipped', reason: `${span.userTurns}/${needTurns} human turns, ${chars}/${cfg.buildMinChars} chars`, userTurns: span.userTurns, chars }
       }
       const pinned = st.pin === undefined ? span.messages : span.messages.filter((m) => m.seq <= st.pin)
       if (pinned.length === 0) st.pin = undefined
@@ -164,7 +195,7 @@ export function registerBuilder(ctx, rt, meter) {
           st.failedAnswers = 0
           st.pin = undefined
           st.retryAt = 0
-          await rt.updateFor(agent, (latest) => ({ ...latest, builtSeq: Math.max(latest.builtSeq ?? -1, endSeq) }))
+          await rt.updateFor(agent, (latest) => ({ ...latest, ...gapsTo(latest, endSeq), builtSeq: Math.max(latest.builtSeq ?? -1, endSeq) }))
           return finish({ status: 'failed', reason: `${why}; skipped these turns after ${MAX_FAILED_ANSWERS} unusable answers in a row; raw output saved to ${saved}` })
         }
         return failed(`${why}; raw output saved to ${saved}`, { half: cutOff })
@@ -180,17 +211,22 @@ export function registerBuilder(ctx, rt, meter) {
       // text to a topic (#12).
       const cited = [...new Set(usable.flatMap((n) => n.msgs))].map((i) => read[i]).filter(Boolean)
       await saveMessages(chat, cited)
+      await relabel(chat, span.turnAt).catch((error) => console.error('context-graph: stored turn ids not relabelled (non-fatal)', error))
       await saveGraph(chat, graph)
-      await rt.updateFor(agent, (latest) => ({
-        ...latest,
-        // dsh's own title (model-made or the user's rename) once there is one (#41). A meta whose
-        // off stretches were lost (recovered, turnsClosed) takes no new title from the log (review).
-        // (Its first-prompt fingerprint is set by runtime.js upToDate before this change runs.)
-        title: latest.turnsClosed === true ? latest.title : span.title ?? latest.title ?? titleOf(eventAt, 60, forkSeq, latest.gaps),
-        ...(delta.summary ? { summary: delta.summary } : {}),
-        lastActiveAt: now,
-        builtSeq: endSeq
-      }))
+      await rt.updateFor(agent, (latest) => {
+        const gaps = gapsTo(latest, endSeq)
+        return {
+          ...latest,
+          ...gaps,
+          // dsh's own title (model-made or the user's rename) once there is one (#41). A meta whose
+          // off stretches were lost (recovered, turnsClosed) takes no new title from the log (review).
+          // (Its first-prompt fingerprint is set by runtime.js upToDate before this change runs.)
+          title: latest.turnsClosed === true ? latest.title : span.title ?? latest.title ?? titleOf(eventAt, 60, forkSeq, gaps.gaps),
+          ...(delta.summary ? { summary: delta.summary } : {}),
+          lastActiveAt: now,
+          builtSeq: endSeq
+        }
+      })
       st.retryAt = 0
       meter.builds++
       return finish({ status: 'built', nodes: touched.length, newNodes: touched.filter((t) => t.isNew).length, totalNodes: Object.keys(graph.nodes).length, edges: graph.edges.length, dir: chat, more: Boolean(plan.rest) })
@@ -294,8 +330,51 @@ export function registerBuilder(ctx, rt, meter) {
     return (await turnOn(agent, { deferred: true })) !== undefined
   }
 
+  /**
+   * A chat left with turns too few to index (below buildEveryTurns, #42): short chats and the last
+   * turns of long ones, which often hold the conclusion. It is indexed once quiet for QUIET_MS, or
+   * at once when a new chat of its workspace starts (the user has moved on); a turn starting in it
+   * cancels that. Timers come from dsh's timer service, so they end with the plugin; without one,
+   * chats wait for their next turns as before. ponytail: an app quit before the timer fires leaves
+   * the tail until that chat's next turn; a startup scan (sessionQuery.listSessions) if it matters.
+   */
+  const quiet = new Map()
+  function whenQuiet(agent, result) {
+    const timer = ctx.get('timer')
+    if (!timer || result?.status !== 'skipped' || !(result.userTurns >= 1 && result.chars >= cfg.buildMinChars)) return
+    const sid = rt.sidOf(agent)
+    quiet.get(sid)?.cancel()
+    const entry = { agent, dir: rt.dirFor(agent) }
+    entry.cancel = timer.timeout(() => { if (quiet.get(sid) === entry) flush(sid) }, QUIET_MS)
+    quiet.set(sid, entry)
+  }
+  function flush(sid, { early = false } = {}) {
+    const entry = quiet.get(sid)
+    quiet.delete(sid)
+    if (early) entry.cancel()
+    // Stops before a running turn, so a flush that comes late never splits one.
+    void build(entry.agent, { force: true, completeOnly: true })
+  }
+  function started(agent) {
+    if (rt.isSubagent(agent)) return
+    const sid = rt.sidOf(agent)
+    quiet.get(sid)?.cancel()
+    quiet.delete(sid)
+    if (quiet.size === 0 || hasAnswer(agent)) return
+    const dir = rt.dirFor(agent)
+    for (const [other, entry] of quiet) if (entry.dir === dir) flush(other, { early: true })
+  }
+  const hasAnswer = (agent) => {
+    for (let seq = 0; ; seq++) {
+      const event = agent.session.eventAt(seq)
+      if (!event) return false
+      if (event.type === 'assistant/message') return true
+    }
+  }
+
   const whenIdle = (agent) => void onAtIdle(agent).catch((error) => console.error('context-graph: memory on at idle failed (non-fatal)', error))
   ctx.on('agent/status', ({ agent, status }) => {
+    if (status === 'running') return started(agent)
     if (status !== 'idle') return
     // A turn that ended normally gave its shown topics to its turn end; a stopped or failed one did
     // not, and they must not be judged against the next turn's answer (third review).
@@ -319,6 +398,7 @@ export function registerBuilder(ctx, rt, meter) {
       .then((resumed) => (resumed ? { status: 'resumed' } : build(payload.agent, { force })))
       .then((result) => {
         if (force && result.status === 'busy') st.indexAtEnd = true
+        whenQuiet(payload.agent, result)
         return result.status === 'built' ? undefined : touch(payload.agent)
       })
       .catch((error) => console.error('context-graph: activity update failed (non-fatal)', error))
