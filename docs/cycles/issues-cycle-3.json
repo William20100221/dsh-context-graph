@@ -1,0 +1,110 @@
+[
+  {
+    "key": "C3-1",
+    "milestone": "v0.9.0",
+    "labels": [
+      "bug",
+      "security",
+      "data-safety"
+    ],
+    "title": "Turns typed while memory is off are indexed and shared after /context-graph on",
+    "body": "**Problem**\n`off` only sets the flag; the index position stays where the last build ended. `on` then builds from that position, so every turn typed during the opt-out goes to the indexing call: its text is stored, its topics are matched into other chats (source inlined), and `recall(\"cNtK\")` serves those turns because the index position now covers them. In a reproduction, a turn typed while off with an access key and a PIN was readable from another chat after `on`. This breaks the promise that turns after `off` stay unreadable (rule 7, 'opt-out is complete').\n\n**Fix**\n`off` records where memory went off; `on` records the stretch between off and on as a gap that the builder never reads and turn recall never serves. Turns before `off` that were not indexed yet are still indexed.\n\n_Found in the cycle-3 audit of v0.8.0 (lens: bugs) and confirmed by reproduction._",
+    "number": 59
+  },
+  {
+    "key": "C3-2",
+    "milestone": "v0.9.0",
+    "labels": [
+      "bug",
+      "security"
+    ],
+    "title": "A fork of a private chat starts shared and is titled with the parent's first prompt",
+    "body": "**Problem**\nA fork's meta takes its title from the first human prompt of its whole log, which is the parent's, and the latest dsh title event, which can be the parent's. It never takes the parent's `private` or `memoryOff`. When the fork's build writes no summary, other chats see the private parent's first prompt in the chat list, a day digest and `recall(\"cN\")`; and the fork's own turns, which continue a private conversation, are shared by default.\n\n**Fix**\nA fork starts with its parent's privacy and memory flags (parent from the header, else a chat with the same first prompt whose stored text matches the fork's log). Its title comes from its own first prompt and its own dsh titles (at or after the fork point); the inherited first prompt is kept only for ancestor matching.\n\n_Found in the cycle-3 audit (lens: bugs) and confirmed._",
+    "number": 60
+  },
+  {
+    "key": "C3-3",
+    "milestone": "v0.9.0",
+    "labels": [
+      "bug",
+      "data-safety"
+    ],
+    "title": "A topic id the model invents can overwrite another new topic and attach the wrong source",
+    "body": "**Problem**\n`mergeDelta` accepts any `nN` id that exists at that moment, including one the same answer just allocated. Models often number their new topics to link them; when that numbering and the allocator disagree, the later topic overwrites the earlier one, takes its cited messages, and the link between them is dropped. Graphs upgraded from v0.4-v0.6 (where `nextId` can run ahead) make it more likely.\n\n**Fix**\nOnly ids that existed before this answer count as existing; invented ids are names for new topics.\n\n_Found in the cycle-3 audit (lens: bugs) and confirmed._",
+    "number": 61
+  },
+  {
+    "key": "C3-4",
+    "milestone": "v0.9.0",
+    "labels": [
+      "bug",
+      "data-safety"
+    ],
+    "title": "One unreadable topics.json switches memory off for the whole workspace",
+    "body": "**Problem**\nA chat whose `topics.json` cannot be read (locked by a sync or backup tool on Windows, EACCES after copying a folder, a directory in its place) makes the whole workspace load fail: no chat gets memory, and stats, find, map and day recall throw. A bad `meta.json` is already skipped per chat; graphs were not.\n\n**Fix**\nSkip that one chat (logged), like a bad meta.\n\n_Found in the cycle-3 audit (lens: bugs) and confirmed with a real file lock._",
+    "number": 62
+  },
+  {
+    "key": "C3-5",
+    "milestone": "v0.9.0",
+    "labels": [
+      "speed"
+    ],
+    "title": "The read cache thrashes past 1,000 chats: about 1 second per message at 1,500",
+    "body": "**Problem**\nEach message reads every chat's meta and topics through the read cache, two entries per chat, but the cache holds 2,000 entries. Past 1,000 chats the same pass evicts what it needs next: at 1,500 chats a message took 1,047 ms (and 756 MB) instead of 143 ms (344 MB).\n\n**Fix**\nA cap far above any real workspace (20,000 entries).\n\n_Found in the cycle-3 audit (lens: bugs) and measured._",
+    "number": 63
+  },
+  {
+    "key": "C3-6",
+    "milestone": "v0.9.0",
+    "labels": [
+      "bug",
+      "quality"
+    ],
+    "title": "The on card tells a private chat that other chats can use it",
+    "body": "**Problem**\nThe `on` card's text is fixed: 'other chats in this workspace can use it', even for a chat that is private (unshared, or recovered fail-closed).\n\n**Fix**\nSay whether the chat is shared, from its meta.\n\n_Found in the cycle-3 audit (lens: bugs) and confirmed._",
+    "number": 64
+  },
+  {
+    "key": "C3-7",
+    "milestone": "v0.9.0",
+    "labels": [
+      "bug",
+      "quality"
+    ],
+    "title": "After on, a turn that was running is not indexed when it ends",
+    "body": "**Problem**\n`on` indexes up to the last finished turn, and says a running turn is indexed when it ends. But that turn's end only builds after the normal 4 turns, so in a chat that is then left alone it is never indexed.\n\n**Fix**\nWhen a command build stopped before a running turn, the build at that turn's end runs once without the 4-turn wait.\n\n_Found in the cycle-3 audit (lens: bugs) and confirmed._",
+    "number": 65
+  },
+  {
+    "key": "C3-8",
+    "milestone": "v0.9.0",
+    "labels": [
+      "speed"
+    ],
+    "title": "A pasted file or log makes a message take up to a second at 150 chats",
+    "body": "**Problem**\nMatching scored every topic against every word of the message: a 14 KB paste (530 search words x 9,000 topics) took 0.66-1.3 s before the request was sent, blocking dsh's event loop; even an ordinary message spent half its time there.\n\n**Fix**\nA word index per loaded graph: only topics that share a word with the message are visited, and their evidence is counted only over the message words they hold (same results). Plus a fast path in the tokenizer for plain words. Measured: the paste 26-63 ms, an ordinary message about half its cost.\n\n_Found in the cycle-3 audit (lens: tokens and speed) and measured._",
+    "number": 66
+  },
+  {
+    "key": "C3-9",
+    "milestone": "v0.9.0",
+    "labels": [
+      "tokens",
+      "quality"
+    ],
+    "title": "Topic recall splits its budget evenly, so a short prompt's share is wasted and the answer is cut",
+    "body": "**Problem**\nA topic recall gives each of its newest messages an equal share of the 1,000-token budget. A topic usually cites a short prompt and a long answer: the prompt uses a few tokens of its share, the answer is cut at its own, and the model is pushed into a second recall. 24% of real prompt/answer pairs fit the budget yet were cut.\n\n**Fix**\nShare the budget: each message gets what it needs, up to a fair share of what is left, shortest first.\n\n_Found in the cycle-3 audit (lens: tokens) and confirmed._",
+    "number": 67
+  },
+  {
+    "key": "C3-10",
+    "milestone": "v0.9.0",
+    "labels": [
+      "tokens"
+    ],
+    "title": "The recall tool definition repeats its id forms: 106 tokens on every request",
+    "body": "**Problem**\nThe tool's description and its parameter description both list the id forms; it is sent with every request of every chat.\n\n**Fix**\nOne sentence that names each form once, with what it returns; no parameter description. About 70 tokens.\n\n_Found in the cycle-3 audit (lens: tokens) and measured._",
+    "number": 68
+  }
+]
