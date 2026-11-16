@@ -16,9 +16,8 @@ import { emptyCounters, usedIn } from '../core/ledger.js'
 import { collectSpan, firstPromptSeq, lastAnswer, mergeGaps, titleOf } from '../core/session.js'
 import { textOf } from '../core/text.js'
 import { chatDir, loadGraph, saveGraph } from '../store/chats.js'
-import { locked, readJson, writeJson } from '../store/files.js'
 import { addToLedger } from '../store/ledger.js'
-import { loadMessages, saveMessages } from '../store/messages.js'
+import { loadMessages, relabelTurns, saveMessages } from '../store/messages.js'
 import { PURPOSE } from './config.js'
 
 /** After this many unusable answers in a row for one span, the span is skipped instead of re-sent again. */
@@ -29,25 +28,6 @@ const TOUCH_MS = 3600000
 
 /** A chat with turns too few to index yet is indexed once it has been quiet this long (#42). */
 const QUIET_MS = 600000
-
-/**
- * Messages stored before turn ids followed dsh's own turns (#71) take their turn from the log, by
- * seq. Under the lock saveMessages takes; a later build finds nothing to change and writes nothing.
- */
-function relabel(chat, turnAt) {
-  const file = join(chat, 'msgs.json')
-  return locked(`${chat}#msgs`, async () => {
-    const store = await readJson(file)
-    let changed = false
-    for (const [seq, m] of Object.entries(store?.m ?? {})) {
-      const t = turnAt(Number(seq))
-      if (t === undefined || !m || typeof m !== 'object' || m.t === t) continue
-      m.t = t
-      changed = true
-    }
-    if (changed) await writeJson(file, store)
-  })
-}
 
 /** The seq just before the middle prompt of a span: the half a cut-off answer is retried with (#45). */
 function firstHalfEnd(messages) {
@@ -211,7 +191,7 @@ export function registerBuilder(ctx, rt, meter) {
       // text to a topic (#12).
       const cited = [...new Set(usable.flatMap((n) => n.msgs))].map((i) => read[i]).filter(Boolean)
       await saveMessages(chat, cited)
-      await relabel(chat, span.turnAt).catch((error) => console.error('context-graph: stored turn ids not relabelled (non-fatal)', error))
+      await relabelTurns(chat, span.turnAt).catch((error) => console.error('context-graph: stored turn ids not relabelled (non-fatal)', error))
       await saveGraph(chat, graph)
       await rt.updateFor(agent, (latest) => {
         const gaps = gapsTo(latest, endSeq)
@@ -311,8 +291,10 @@ export function registerBuilder(ctx, rt, meter) {
     })
     if (!applied) return undefined
     // The chat list may be sent again (memory.js), once.
-    Object.assign(rt.state(rt.sidOf(agent)), { announce: true, listed: false })
-    void build(agent, { force: true, completeOnly: true })
+    const st = rt.state(rt.sidOf(agent))
+    Object.assign(st, { announce: true, listed: false })
+    // A turn end's own build may still be running: then the next turn end indexes (as for #65).
+    void build(agent, { force: true, completeOnly: true }).then((result) => { if (result.status === 'busy') st.indexAtEnd = true })
     return meta
   }
 

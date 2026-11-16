@@ -135,7 +135,7 @@ export function registerCommand(ctx, rt, { build, turnOn, onAtIdle, meter, updat
               text: [
                 `Memory ${memoryOn(meta) ? 'on' : meta?.onWhenIdle === true ? 'off until this turn ends' : 'off'} · ${own || !meta ? `${plural(Object.keys(own?.graph.nodes ?? {}).length, 'topic')} in this chat` : 'topics of this chat could not be read'} · ${sharedOn(meta) ? 'shared' : 'private'} · ${plural(shared, 'shared chat')} · ${plural(pending, 'turn')} waiting to be indexed${updates.current() ? ' · update available' : ''}`,
                 // What memory did for this chat and the workspace, with the estimate's terms (#35).
-                ledger ? savingsLine(here, everywhere) : 'Savings: unavailable for now (.context-graph/ledger.json could not be read)',
+                ledger ? savingsLine(here, everywhere) : 'Savings: unavailable for now (the savings ledger could not be read)',
                 lastLine,
                 `Version ${version}: ${updates.current() ?? 'no newer version found'}`,
                 `Graph folder: ${rt.dirFor(agent)}`,

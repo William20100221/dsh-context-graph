@@ -122,11 +122,10 @@ test('plugin: on by default; off/on + share; a second chat gets the list, hits, 
     // Chat B: on and shared by default, so its very first turn already gets chat A's memory.
     const sessionB = fakeSession('sB', cwd, [{ type: 'system/message', data: {} }])
     const agentB = { options: { cwd }, session: sessionB, runMaintenance: (fn) => fn() }
-    // One shared word ("commits") is not evidence enough (#23); two label words are.
+    // One shared word ("commits") is not evidence enough (#23); two label words are. With no topic
+    // and no question about earlier work, a new chat gets no chat list either (#76).
     const untouched = await step(agentB, ask('how do we sign commits?'))
-    assert.equal(untouched.messages.length, 2)
-    assert.doesNotMatch(untouched.messages[1].content[0].text, /c1n1/, 'only the chat list')
-    assert.match(untouched.messages[1].content[0].text, /^\[context-graph\] Earlier chats in this workspace[^\n]*\nc1 We decided to sign commits with the SSH key id_ed25519_sign…: commit signing$/)
+    assert.equal(untouched.messages.length, 1, 'nothing at all')
     assert.match((await step(agentB, ask('how do we sign commits with gpg?'))).messages[1].content[0].text, /^\[context-graph\] Notes from other chats[^\n]*\n- c1n1 commit signing: commits are signed[^\n]*$/, 'listed, not inlined: two label words')
     assert.match((await run(agentB, 'on')).text, /^Memory on · indexing this chat now · 1 shared chat to draw on/)
     await settle()

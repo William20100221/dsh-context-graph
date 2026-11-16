@@ -40,6 +40,24 @@ export function saveMessages(chat, messages) {
   })
 }
 
+/**
+ * Give stored messages the turn `turnAt(seq)` says (#71: turn ids follow dsh's own turns now).
+ * Under the lock saveMessages takes; when nothing changes, nothing is written.
+ */
+export function relabelTurns(chat, turnAt) {
+  return locked(`${chat}#msgs`, async () => {
+    const store = await readJson(file(chat))
+    let changed = false
+    for (const [seq, m] of Object.entries(store?.m ?? {})) {
+      const t = turnAt(Number(seq))
+      if (t === undefined || !m || typeof m !== 'object' || m.t === t) continue
+      m.t = t
+      changed = true
+    }
+    if (changed) await writeJson(file(chat), store)
+  })
+}
+
 /** The stored messages a topic cites, oldest first: `[{ seq, role, turn, text }]`. */
 export function sourceOf(messages, node) {
   return (node?.refs ?? [])

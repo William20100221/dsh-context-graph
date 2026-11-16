@@ -100,8 +100,11 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
   const sidOf = (agent) => String(agent.session.id)
   const isSubagent = (agent) => agent.options?.origin === 'subagent' || agent.session.header?.origin === 'subagent'
 
-  /** Input the user typed that dsh holds and has not logged yet (queued turns, steering); dsh's own notices do not count. */
-  const pendingInput = (agent) => [...(agent.inbox?.nextTurn ?? []), ...(agent.inbox?.nextStep ?? [])].some((m) => m?.source?.kind === 'user')
+  /**
+   * Input the user typed that dsh holds and has not logged yet (queued turns, steering, a late
+   * answer to a question, #70); dsh's own notices do not count.
+   */
+  const pendingInput = (agent) => [...(agent.inbox?.nextTurn ?? []), ...(agent.inbox?.nextStep ?? [])].some((m) => m?.source?.kind === 'user' || m?.source?.kind === 'user-question-reply')
 
   function dirFor(agent) {
     const base = agent.options?.cwd ?? agent.session.header?.cwd ?? process.cwd()

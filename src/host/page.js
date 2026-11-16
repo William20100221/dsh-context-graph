@@ -52,8 +52,9 @@ export function registerPage(ctx, rt) {
     return { v: 1, chats: {}, unreadable: true }
   })
 
-  async function chatsOf(dir) {
-    const ledger = await ledgerOf(dir)
+  /** `savings: false`: the topic route needs no ledger, which is one file per chat (#83). */
+  async function chatsOf(dir, { savings = true } = {}) {
+    const ledger = savings ? await ledgerOf(dir) : { v: 1, chats: {} }
     // One chat whose topics cannot be read is left out, as in the chats themselves (#62).
     const read = async ({ sid, meta }) => ({ sid, cid: meta.cid, meta, graph: await loadGraph(chatDir(dir, sid)), c: counters(ledger.chats[sid]?.c), unreadable: ledger.unreadable === true })
     const chats = await Promise.all((await listChats(dir)).map((chat) => read(chat).catch((error) => {
@@ -93,9 +94,9 @@ export function registerPage(ctx, rt) {
    * own number (a meta that could not be read has none until it is written again, and a copied
    * folder can repeat one: the first chat with topics keeps it).
    */
-  async function drawn(dir) {
+  async function drawn(dir, options) {
     const seen = new Set()
-    return (await chatsOf(dir)).filter((c) => Number.isInteger(c.cid) && Object.keys(c.graph.nodes).length > 0 && !seen.has(c.cid) && seen.add(c.cid))
+    return (await chatsOf(dir, options)).filter((c) => Number.isInteger(c.cid) && Object.keys(c.graph.nodes).length > 0 && !seen.has(c.cid) && seen.add(c.cid))
   }
 
   async function map(w) {
@@ -133,7 +134,7 @@ export function registerPage(ctx, rt) {
   async function topic(w, id) {
     const m = /^c(\d+)(n\d+)$/.exec(String(id ?? ''))
     if (!m) return undefined
-    const chat = (await drawn(w.dir)).find((c) => String(c.cid) === m[1])
+    const chat = (await drawn(w.dir, { savings: false })).find((c) => String(c.cid) === m[1])
     if (!chat) return undefined
     const graph = chat.graph
     if (!has(graph, m[2])) return undefined

@@ -68,7 +68,8 @@ test('#41 dsh\'s own title and #27 the builder\'s summary are kept; the list sho
   assert.match(meta.firstKey, /^[0-9a-f]{16}$/, 'the first prompt is kept for fork matching, as a fingerprint')
   assert.equal(meta.firstPrompt, undefined)
   assert.equal(meta.summary, 'Commit signing setup with SSH keys')
-  const out = await h.step(agentOf('sU', cwd, [system()]), ask('hello'))
+  // A question about earlier work gets the list on its own (#76).
+  const out = await h.step(agentOf('sU', cwd, [system()]), ask('what did we work on before?'))
   assert.match(out.messages[1].content[0].text, /\nc1 Commit signing setup with SSH keys$/)
   assert.ok(estimateTokens(out.messages[1].content[0].text) < 60)
 }))
@@ -76,10 +77,11 @@ test('#41 dsh\'s own title and #27 the builder\'s summary are kept; the list sho
 test('#26 the chat list is sent once per chat: not again after a restart, again after compaction drops it', { skip }, () => inWorkspace(async (cwd) => {
   await (await setup()).run(agentOf('sA', cwd, chatEvents(4)), 'build')
   const b = agentOf('sB', cwd, [system()])
-  assert.equal((await (await setup()).step(b, ask('hello'))).messages.length, 2, 'the list')
-  assert.equal((await (await setup()).step(b, ask('hello again'))).messages.length, 1, 'a new app run sees it on the surface')
+  // The list rides with a block (#76): a first message that finds a topic.
+  assert.match((await (await setup()).step(b, ask('is commit signing set up?'))).messages[1].content[0].text, /^\[context-graph\] Earlier chats/, 'the list')
+  assert.equal((await (await setup()).step(b, ask('tell me more about commit signing'))).messages.length, 1, 'a new app run sees it on the surface')
   b.session.compact(1, 2)
-  assert.equal((await (await setup()).step(b, ask('and now?'))).messages.length, 2, 'compaction took it away: sent again')
+  assert.match((await (await setup()).step(b, ask('and the gpg commit signing?'))).messages[1].content[0].text, /^\[context-graph\] Earlier chats/, 'compaction took it away: sent again')
 }))
 
 test('#40 a resumed chat counts as active even on turns that do not index', { skip }, () => inWorkspace(async (cwd) => {

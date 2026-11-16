@@ -1,13 +1,11 @@
 /**
  * Core tests for the cycle-4 input fixes (v0.10.0): what dsh drives besides typed prompts (#69, #70),
- * dsh's own turn numbers (#71), what counts as shown (#73), the chat list's evidence (#76).
+ * dsh's own turn numbers (#71), what counts as shown (#73). The chat list (#76): test/host/cycle4-input.test.js.
  *   node --test test/core/cycle4-input.test.js
  */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { emptyGraph, mergeDelta } from '../../src/core/graph.js'
-import { renderChats } from '../../src/core/render.js'
 import { collectSpan, mergeGaps, promptText, shownContext, turnTranscript } from '../../src/core/session.js'
 
 const system = { type: 'system/message', data: {} }
@@ -117,14 +115,4 @@ test('#73 only recall results count as shown: a file that lists topic ids hides 
   ]
   const shown = shownContext([0, 1], (s) => log[s])
   assert.deepEqual([...shown.ids], ['c4n7'])
-})
-
-test('#76 the chat list is left out for a message whose words are in no earlier chat', () => {
-  const graph = emptyGraph()
-  mergeDelta(graph, { nodes: [{ label: 'commit signing', gist: 'signed with id_ed25519_signing', aliases: ['gpg'], kind: 'decision', msgs: [0] }], edges: [] }, { now: 'T' })
-  const views = [{ sid: 'a', cid: 1, meta: { title: 'SSH commit signing', lastActiveAt: 'T' }, graph, own: false }]
-  assert.equal(renderChats(views, { prompt: 'what is a good name for my new puppy', related: true }), '')
-  assert.match(renderChats(views, { prompt: 'what is a good name for my new puppy' }), /^\[context-graph\] Earlier chats/, 'unchanged without the evidence check')
-  assert.match(renderChats(views, { prompt: 'can you check the gpg setup?', related: true }), /\nc1 SSH commit signing/)
-  assert.match(renderChats(views, { prompt: 'hello', related: true }), /\nc1 /, 'no words to judge by: listed as before')
 })

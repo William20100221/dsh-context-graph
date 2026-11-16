@@ -192,7 +192,7 @@ test('e2e: /context-graph off then on, through dsh\'s command service, records a
 const OBJECTIVE = 'set up commit signing with gpg for this repo, like we did before'
 const ROUND = 'Configured gpg.format ssh with the signing key id_ed25519_signing and checked a signed commit on main; more checks remain for the next round.'
 
-test('e2e: a /goal chat gets memory in its first round, and its rounds count toward indexing', { skip, todo: 'needs #69' }, async () => {
+test('e2e: a /goal chat gets memory in its first round, and its rounds count toward indexing (#69)', { skip }, async () => {
   // Chat G has no typed prompt: every request it makes is a goal round.
   const script = (options) => ({ text: options.sessionId === 'chat-g' ? ROUND : ANSWER })
   await withDsh({ script }, async ({ ctx, calls, workspace, chat, command }) => {

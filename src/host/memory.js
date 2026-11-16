@@ -134,7 +134,8 @@ export function registerMemory(ctx, rt, meter) {
       if (total === 0 && range && asksAboutPast(prompt)) {
         // A question about a day with no topic hit gets that day's digest, kept small; recall("YYYY-MM-DD") has the rest (#24).
         const skipped = await held()
-        const block = renderRange(views.filter((v) => !v.own && !skipped.has(v)), range, { maxChats: cfg.rangeMaxChats, maxTopics: cfg.rangeMaxTopics })
+        // Also bounded in tokens, like a day recall (#77): long gists cannot grow it past a recall's size.
+        const block = renderRange(views.filter((v) => !v.own && !skipped.has(v)), range, { maxChats: cfg.rangeMaxChats, maxTopics: cfg.rangeMaxTopics, maxTokens: cfg.sourceMaxTokens })
         const ids = [...block.matchAll(TOPIC_LINE)].map((m) => m[1])
         const seen = shown.texts.has(block) || (ids.length > 0 && ids.every((id) => shown.ids.has(id)))
         if (!seen) parts.push(block)
@@ -148,11 +149,12 @@ export function registerMemory(ctx, rt, meter) {
         }
         parts.push(renderHits(hits, { inline }))
       }
-      if (listing) {
+      if (listing && (parts.length > 0 || asksAboutPast(prompt))) {
         // Evidence before tokens (#76): the list rides with the chat's first block or a question
-        // about earlier work; alone, never with a message whose words are in no earlier chat.
+        // about earlier work. A first message about something else gets nothing: the list would
+        // also be re-sent with every later request of the chat.
         const skipped = await held()
-        const list = renderChats(views.filter((v) => !skipped.has(v)), { prompt, maxTokens: cfg.listMaxTokens, maxChats: cfg.listMaxChats, related: parts.length === 0 && !asksAboutPast(prompt) })
+        const list = renderChats(views.filter((v) => !skipped.has(v)), { prompt, maxTokens: cfg.listMaxTokens, maxChats: cfg.listMaxChats })
         if (list) { parts.unshift(list); layer = 'surface' }
       }
       if (parts.length === 0) return decision
