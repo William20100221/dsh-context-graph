@@ -11,7 +11,9 @@
  *   the first message of a chat also gets one line per earlier chat.
  * - recall (src/host/recall.js): a topic (c3n12), a chat (c3), a day (2026-11-01), or a turn of
  *   another chat (c3t7, read from dsh's own log) or of this one (t7).
- * - meter (src/host/meter.js) and the /context-graph command (src/host/command.js).
+ * - meter (src/host/meter.js) and the /context-graph command (src/host/command.js); the savings
+ *   estimate is kept per chat in the workspace ledger (#35).
+ * - page (src/host/page.js): owner-only routes for the plugin's page in Plugins: totals and the map.
  * Nothing is merged between chats; sharing is a flag on the chat. Stock compaction is untouched.
  */
 
@@ -19,6 +21,7 @@ import { registerBuilder } from './builder.js'
 import { registerCommand } from './command.js'
 import { DEFAULTS, upgradeConfig, version } from './config.js'
 import { registerMemory } from './memory.js'
+import { registerPage } from './page.js'
 import { createMeter, registerMeter } from './meter.js'
 import { registerRecall } from './recall.js'
 import { createRuntime } from './runtime.js'
@@ -30,13 +33,14 @@ export const inject = ['tools']
 export function apply(ctx, config = {}) {
   const { _updates, ...rest } = config
   // dsh's agents service finds the chat behind a nested subagent (runtime.ownerMeta).
-  const rt = createRuntime({ ...DEFAULTS, ...upgradeConfig(rest) }, { agentById: (id) => ctx.get('agents')?.get?.(id) })
+  const rt = createRuntime({ ...DEFAULTS, ...upgradeConfig(rest) }, { agentById: (id) => ctx.get('agents')?.get?.(id), sessionQuery: () => ctx.get('sessionQuery') })
   // `_updates` lets tests stand in for the network check.
   const updates = _updates ?? startUpdateCheck(version)
   const meter = createMeter()
-  const build = registerBuilder(ctx, rt, meter)
+  const { build, turnOn, onAtIdle } = registerBuilder(ctx, rt, meter)
   registerMemory(ctx, rt, meter)
-  registerMeter(ctx, meter)
+  registerMeter(ctx, meter, rt)
   registerRecall(ctx, rt, meter)
-  registerCommand(ctx, rt, { build, meter, updates })
+  registerCommand(ctx, rt, { build, turnOn, onAtIdle, meter, updates })
+  registerPage(ctx, rt)
 }

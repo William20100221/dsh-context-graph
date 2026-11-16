@@ -75,6 +75,21 @@ const isLow = (code) => code >= 0xdc00 && code <= 0xdfff
 export const cutBefore = (s, i) => (i > 0 && i < s.length && isHigh(s.charCodeAt(i - 1)) && isLow(s.charCodeAt(i)) ? i - 1 : i)
 export const cutAfter = (s, i) => (i > 0 && i < s.length && isLow(s.charCodeAt(i)) && isHigh(s.charCodeAt(i - 1)) ? i + 1 : i)
 
+const HEAD = 4500
+const TAIL = 1000
+
+/**
+ * A long message as it is stored: its head and tail; the full text stays in dsh's own session log.
+ * Here in the core because the savings estimate counts every source as if it was stored this way.
+ */
+export function capText(text) {
+  const s = String(text ?? '')
+  if (s.length <= HEAD + TAIL + 200) return s
+  const head = cutBefore(s, HEAD)
+  const tail = cutAfter(s, s.length - TAIL)
+  return `${s.slice(0, head)}\n…[${tail - head} chars omitted; the full turn is in the chat's dsh log]…\n${s.slice(tail)}`
+}
+
 /** The first `max` characters of `s`, never half a surrogate pair. */
 export const sliceChars = (s, max) => s.slice(0, cutBefore(s, Math.min(max, s.length)))
 
@@ -122,6 +137,11 @@ export function searchUnits(text) {
     }
   }
   for (const raw of lower.replace(CJK_RUN, ' ').match(/[\p{L}\p{N}_./-]{2,}/gu) ?? []) {
+    // Most words have no separator: one plain word, no parts (#66).
+    if (!/[_./-]/.test(raw)) {
+      if (!STOPWORDS.has(raw)) units.push({ kind: 'word', tokens: [raw], code: false })
+      continue
+    }
     const word = raw.replace(/[./-]+$/, '')
     if (word.length < 2 || !/[\p{L}\p{N}]/u.test(word) || STOPWORDS.has(word)) continue
     const tokens = [word]

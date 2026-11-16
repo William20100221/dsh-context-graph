@@ -63,13 +63,14 @@ export const globalId = (view, id) => `c${view.cid}${id}`
 /**
  * The evidence a topic's words give for a message, counted per word of the message. `units` come
  * plain words first, code last (see matchAcross).
+ * `said`: tokens that count as already counted (the savings estimate passes the prompt's).
  * @returns { label, gist, matched } label and gist words, and the message's tokens that matched.
  */
-function evidence(units, { strong, weak }) {
+function evidence(units, { strong, weak }, said = []) {
   let label = 0
   let gist = 0
   const matched = []
-  const counted = new Set()
+  const counted = new Set(said)
   const add = (tokens, words, isLabel) => {
     for (const t of tokens) counted.add(t)
     matched.push(...tokens)
@@ -129,6 +130,20 @@ function evidence(units, { strong, weak }) {
   return { label, gist, matched }
 }
 
+/** Plain words and CJK first, code last: see matchAcross. */
+const ordered = (all) => [...all.filter((u) => !(u.kind === 'word' && u.code)), ...all.filter((u) => u.kind === 'word' && u.code)]
+
+/**
+ * How many words of `text` are among a topic's `{ strong, weak }` words, counted the way matching
+ * counts them (a Chinese word once, an exact code identifier of the label twice), leaving out the
+ * tokens in `said`. The savings estimate tells an answer that used a topic from one that did not
+ * with it (src/core/ledger.js).
+ */
+export function wordsIn(text, words, said = []) {
+  const { label, gist } = evidence(ordered(searchUnits(text)), words, said)
+  return label + gist
+}
+
 /**
  * Match a message against every view except the own chat (its text is still in context).
  * @param skip ids already in the chat's context; dropped after the cut, their slots stay empty.
@@ -143,33 +158,62 @@ function evidence(units, { strong, weak }) {
 export function matchAcross(views, query, { max = 5, range, skip, floor, cover = true, collapse = true } = {}) {
   // Plain words and CJK first, code last: a word met first inside a path (src/auth/session.ts)
   // must not lower the weight of the same word written plainly ("the session cookie").
-  const all = searchUnits(query)
-  const units = [...all.filter((u) => !(u.kind === 'word' && u.code)), ...all.filter((u) => u.kind === 'word' && u.code)]
+  const units = ordered(searchUnits(query))
   const q = tokenize(query)
   if (q.length === 0) return { hits: [], total: 0 }
   const gate = floor ?? SCORE.floor + Math.min(SCORE.longMax, Math.floor(Math.max(0, units.length - SCORE.longAfter) / SCORE.longStep))
   // An exact code identifier is the only token worth two words.
   const codeWholes = new Set(units.filter((u) => u.kind === 'word' && u.code).map((u) => u.tokens[0]))
+  // Which units of the message hold each word: a topic's evidence is counted only over the units
+  // holding one of its words (the others add nothing), so a long paste costs only what it matches.
+  const unitsOf = new Map()
+  units.forEach((unit, k) => {
+    for (const t of unit.kind === 'cjk' ? unit.bigrams : unit.tokens) {
+      if (!t) continue
+      if (!unitsOf.has(t)) unitsOf.set(t, [])
+      const list = unitsOf.get(t)
+      if (list.at(-1) !== k) list.push(k)
+    }
+  })
   const df = new Map()
   let total = 0
   const found = []
   for (const view of views) {
     if (view.own) continue
-    for (const [rawId, node] of Object.entries(view.graph.nodes)) {
-      total++
-      const words = nodeTokens(node)
-      // The most this topic could score: most topics share one ordinary word and stop here.
-      let bound = 0
-      let label = false
-      for (const t of q) {
-        const isLabel = words.strong.has(t)
-        if (!isLabel && !words.weak.has(t)) continue
-        df.set(t, (df.get(t) ?? 0) + 1)
-        if (isLabel) label = true
-        bound += isLabel ? SCORE.label * (codeWholes.has(t) ? 2 : 1) : SCORE.gist
+    const index = wordIndex(view.graph)
+    total += index.entries.length
+    // Only topics that share a word with the message, with the most each could score (#66).
+    const candidates = new Map()
+    const reach = (i) => {
+      let c = candidates.get(i)
+      if (!c) candidates.set(i, (c = { bound: 0, label: false, words: [] }))
+      return c
+    }
+    for (const t of q) {
+      const strong = index.strong.get(t)
+      const weak = index.weak.get(t)
+      const count = (strong?.length ?? 0) + (weak?.length ?? 0)
+      if (count === 0) continue
+      df.set(t, (df.get(t) ?? 0) + count)
+      for (const i of strong ?? []) {
+        const c = reach(i)
+        c.bound += SCORE.label * (codeWholes.has(t) ? 2 : 1)
+        c.label = true
+        c.words.push(t)
       }
-      if (!label || bound < gate) continue
-      const e = evidence(units, words)
+      for (const i of weak ?? []) {
+        const c = reach(i)
+        c.bound += SCORE.gist
+        c.words.push(t)
+      }
+    }
+    for (const i of [...candidates.keys()].sort((a, b) => a - b)) {
+      const c = candidates.get(i)
+      if (!c.label || c.bound < gate) continue
+      const [rawId, node] = index.entries[i]
+      const words = nodeTokens(node)
+      const held = [...new Set(c.words.flatMap((t) => unitsOf.get(t) ?? []))].sort((a, b) => a - b)
+      const e = evidence(held.map((k) => units[k]), words)
       const raw = e.label * SCORE.label + e.gist * SCORE.gist
       // How much of its own label the message covers: on equal evidence, the topic the message names
       // exactly ("Redis session store") comes before a longer one ("... load test").
@@ -250,6 +294,33 @@ export function matchAcross(views, query, { max = 5, range, skip, floor, cover =
   const rest = Math.max(0, ...ranked.filter((h) => h !== top).map((h) => h.raw))
   const lead = top && !shown(top) && top.label >= SCORE.inline && top.raw >= 2 * rest ? top : undefined
   return { hits: kept.filter((hit) => !shown(hit)), lead, total: kept.length }
+}
+
+const indexMemo = new WeakMap()
+
+/**
+ * A loaded graph's topics by word, once per graph object (#66): label/alias words, and gist-only
+ * words, each to the topics' positions. A message then visits only the topics it shares a word with.
+ */
+function wordIndex(graph) {
+  let index = indexMemo.get(graph)
+  if (!index) {
+    const entries = Object.entries(graph.nodes)
+    const strong = new Map()
+    const weak = new Map()
+    const add = (map, t, i) => {
+      if (!map.has(t)) map.set(t, [])
+      map.get(t).push(i)
+    }
+    entries.forEach(([, node], i) => {
+      const words = nodeTokens(node)
+      for (const t of words.strong) add(strong, t, i)
+      for (const t of words.weak) if (!words.strong.has(t)) add(weak, t, i)
+    })
+    index = { entries, strong, weak }
+    indexMemo.set(graph, index)
+  }
+  return index
 }
 
 const subjectsMemo = new WeakMap()

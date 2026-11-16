@@ -58,7 +58,8 @@ function harness({ reply = REPLY, gate } = {}) {
     on: (event, fn) => { listeners[event] = fn },
     get: (service) => (service === 'llm' ? llm : undefined),
     tools: { register: (tool) => tools.push(tool) },
-    plugin: (nested) => nested.apply({ effect: (gen) => { for (const _ of gen()); }, commands: { register: (c) => { commands.push(c); return () => {} } } })
+    // Like cordis: a nested plugin needing a service this fake lacks (the page's connection) does not start.
+    plugin: (nested) => { if ((nested.inject ?? []).every((name) => name === 'commands')) nested.apply({ effect: (gen) => { for (const _ of gen()); }, commands: { register: (c) => { commands.push(c); return () => {} } } }) }
   }
   return { ctx, listeners, tools, commands, llm }
 }

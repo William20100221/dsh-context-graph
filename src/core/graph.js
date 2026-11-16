@@ -96,12 +96,16 @@ export function surfaceNodes(graph, max = 40) {
 export function mergeDelta(graph, delta, { now, refsOf = () => [] }) {
   const byLabel = new Map()
   for (const [id, node] of Object.entries(graph.nodes)) byLabel.set(labelKey(node.label), id)
+  // Only ids that existed before this answer are existing topics. An id the model invented to
+  // name a new topic (to link it) may equal one allocated a moment ago for another new topic,
+  // which would then be overwritten and given the wrong source (#61).
+  const before = new Set(Object.keys(graph.nodes))
   const named = new Map()
   const touched = []
   for (const n of delta.nodes) {
     const label = clip(n.label, LIMITS.label)
     if (!label) continue
-    const given = typeof n.id === 'string' && /^n\d+$/.test(n.id) && has(graph, n.id) ? n.id : undefined
+    const given = typeof n.id === 'string' && /^n\d+$/.test(n.id) && before.has(n.id) ? n.id : undefined
     const id = given ?? byLabel.get(labelKey(label)) ?? `n${graph.nextId++}`
     const prev = has(graph, id) ? graph.nodes[id] : undefined
     const aliases = [...new Set([...(Array.isArray(n.aliases) ? n.aliases : []), ...(prev?.aliases ?? [])].map((a) => clip(a, LIMITS.alias)).filter(Boolean))].slice(0, LIMITS.aliases)

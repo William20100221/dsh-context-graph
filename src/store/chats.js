@@ -100,15 +100,31 @@ async function setAside(folder, name) {
   return newest ? readFile(join(folder, newest), 'utf8') : undefined
 }
 
-/** What can still be read from an unreadable meta.json: its chat number and index position. */
+/**
+ * What can still be read from an unreadable meta.json: its chat number, index and fork positions,
+ * the title and summary it had (made safely before the damage), and the stretches typed while
+ * memory was off (#59). A meta whose stretches cannot be read back may have had some, so every turn
+ * of that chat stays closed to other chats, and no title is taken from its log (review).
+ */
 function recoverMeta(raw) {
+  const text = String(raw ?? '')
   const number = (name) => {
-    const m = new RegExp(`"${name}"\\s*:\\s*(\\d+)`).exec(String(raw ?? ''))
+    const m = new RegExp(`"${name}"\\s*:\\s*(\\d+)`).exec(text)
     return m ? Number(m[1]) : undefined
   }
+  const string = (name) => {
+    const m = new RegExp(`"${name}"\\s*:\\s*("(?:[^"\\\\]|\\\\.)*")`).exec(text)
+    try { return m ? JSON.parse(m[1]) : undefined } catch { return undefined }
+  }
   const out = {}
-  if (number('cid') !== undefined) out.cid = number('cid')
-  if (number('builtSeq') !== undefined) out.builtSeq = number('builtSeq')
+  for (const name of ['cid', 'builtSeq', 'offSeq', 'forkSeq', 'closedThrough']) if (number(name) !== undefined) out[name] = number(name)
+  for (const name of ['title', 'summary', 'firstKey']) if (typeof string(name) === 'string') out[name] = string(name)
+  const m = /"gaps"\s*:\s*(\[(?:\s*\[\s*-?\d+\s*,\s*-?\d+\s*\]\s*,?)*\s*\])/.exec(text)
+  let gaps
+  try { gaps = m ? JSON.parse(m[1]) : undefined } catch { gaps = undefined }
+  if (Array.isArray(gaps)) out.gaps = gaps
+  // A meta repaired before stays unsure where it was (a second damage must not reopen those turns).
+  if (!Array.isArray(gaps) || /"turnsClosed"\s*:\s*true/.test(text)) out.turnsClosed = true
   return out
 }
 
@@ -127,7 +143,9 @@ export function updateMeta(dir, sid, change = (meta) => meta, init = () => ({}))
     if (!meta || typeof meta !== 'object') {
       // An unreadable meta may already have been set aside by a reader (listChats): use that copy.
       const lost = read.state === 'quarantined' ? read.raw : await setAside(chatDir(dir, sid), 'meta.json')
-      meta = { ...init(), ...(lost === undefined ? {} : recoverMeta(lost)) }
+      // A fresh meta's title comes from the log, which may hold an off stretch the lost file knew of:
+      // a recovered meta keeps only the title it can read back (review).
+      meta = lost === undefined ? await init() : { ...(await init()), title: undefined, ...recoverMeta(lost) }
       if (lost !== undefined) Object.assign(meta, { private: true, memoryOff: true, recovered: new Date().toISOString() })
       if (!Number.isInteger(meta.cid)) meta.cid = await claimCid(dir)
     }

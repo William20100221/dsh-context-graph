@@ -92,14 +92,17 @@ To stop it in every chat, switch the plugin off on the Plugins page instead.
 
 Stops indexing, stops adding anything to your requests, and stops `recall` from reading other chats
 (this chat's own turns, `t7`, still work). The folder stays on disk, so `on` later resumes where it
-left off. Other chats keep seeing this chat if it is shared.
+left off. Other chats keep seeing what this chat shared before. What you type while memory is off is
+never indexed, shared or stored, also after `on`: that stretch is remembered as a gap, and nothing
+from it becomes the chat's title. `on` while a turn is still running, or while messages you typed
+are still queued, takes effect once the chat is idle, so they stay private too.
 
 ### `share` / `unshare` — keep a chat private, or share it again
 
 Every chat is shared by default: other chats with memory on can match and recall its topics.
 `unshare` makes this chat private; `share` undoes that. Nothing is copied or merged: the graph stays in its own folder with its own dates, and its
 ids carry the chat number (`c3n12`) so every hit traces back to where it came from. Both take
-effect at once. A chat shared
+effect at once. A fork is private from its first message when its parent is, and memory-off when memory was off where it was forked. A chat shared
 before its first index has nothing to offer yet; it fills in every 4 turns or with `build`.
 
 Card: `Shared with the workspace · 7 topics`
@@ -108,13 +111,15 @@ Card: `Shared with the workspace · 7 topics`
 
 First line: memory on/off, topics in this chat, shared/private, how many shared chats are
 visible, how many of this chat's turns are waiting to be indexed, and `update available` when a
-newer version is on npm. The second line says how the last index went (including the background
-one `on` starts). The body shows the version, the memory folder, and counters since the app
-started: builds and builder tokens, injected blocks and their size, recalls, the conversation's
-input split into uncached, cache-read and cache-write with the cache-hit rate, and other model
-calls (dsh compaction and titles) on their own line.
+newer version is on npm. The second line is what memory saved, in this chat and in the whole
+workspace (see [What memory saved](#what-memory-saved)); the third says how the last index went
+(including the background one `on` starts). The body shows each term of the savings estimate,
+the version, the memory folder, and counters since the app started: builds and builder tokens,
+injected blocks and their size, recalls, the conversation's input split into uncached, cache-read
+and cache-write with the cache-hit rate, and other model calls (dsh compaction and titles).
 
-Card: `Memory on · 7 topics in this chat · shared · 2 shared chats · 3 turns waiting to be indexed`
+Card: `Memory on · 7 topics in this chat · shared · 2 shared chats · 3 turns waiting to be indexed`,
+then `Savings (estimate): saved about 8,500 tokens in this chat · saved about 41,000 tokens in this workspace`
 
 ### `build` — index this chat now
 
@@ -132,7 +137,7 @@ Card: `3 topics indexed (2 new) · this chat has 7 topics`
 
 Lists all indexed chats newest first: chat id, start date, summary, topic count and flags (`this
 chat`, `memory on`, `shared`/`private`), each followed by its most connected topics with their ids.
-This is the text form of the graph; a visual page is planned.
+This is the text form of the graph; the picture is on the plugin's page (see below).
 
 ```
 2 chats in C:\Projects\site\.context-graph
@@ -150,6 +155,39 @@ Time words rank topics from then first: `find 524 timeout last week`. The curren
 are left out because they are already in its context.
 
 Card: `2 matching topics`, then `c3n12 builder timeout: ...` per line.
+
+## The plugin's page
+
+Plugins → Context Graph shows, for each workspace with memory: what memory saved, what it cost and
+the balance, and a map of the memory. Chats are circles (newest first), topics are dots inside them
+coloured by kind (decision, fact, task, artifact, open question) and sized by their links, and
+links are lines. Hover a dot for its label, click it for its gist, its chat, its links, the first
+lines of its sources and the id to paste into a message (`c3n12`). Search and the kind buttons
+fade everything else; drag to move, + and − to zoom.
+
+It is your own view, so private and memory-off chats are shown and marked. The data comes from
+read-only routes dsh only answers for the app's owner; the page adds nothing to any chat.
+
+## What memory saved
+
+Memory is not free: every note it adds is input, the notes stay in the chat and are sent again (as
+cheaper cached input) with every later request, the `recall` tool rides with every request, and
+indexing is a model call. What it saves is having to bring old context back by hand. The estimate
+counts both sides per chat and adds them up per workspace:
+
+| | Counted as |
+|---|---|
+| Saved | for each topic the model actually used (it recalled it, or its answer says two of the topic's words that your message did not), the stored text of its newest cited messages (three at most), each message counted once per chat however many topics cite it |
+| Cost | notes and recall results sent, their cached re-sends (x0.1) while they are still in the chat (also by a subagent forked from it), the recall tool on every request (x0.1), the indexing calls as dsh reported them (cached input x0.1, output x4) |
+| Balance | saved minus cost, in input-token equivalents; shown as a loss when it is one |
+
+It is an estimate: it cannot know what you would have pasted without memory. It errs low: a topic
+only counts when the answer shows it was used (an answer that only repeats your question does not
+count), what you would have pasted is counted once, at most a topic's three newest messages as
+stored (long ones keep only their head and tail), and never re-sent, and the time a model spends
+re-deriving old decisions is not counted at all. The counters live in `.context-graph/ledger.json`,
+one small entry per chat, written at most once per turn; while a sync tool holds that file, the
+card says the savings are unavailable for now instead of failing.
 
 ## How matching and recall work
 
@@ -196,11 +234,13 @@ to learn rust", "今天做了红烧肉") gets nothing.
 
 ## What it costs
 
-Measured by the tests with the plugin's own token estimate:
+Measured by the tests with the plugin's own token estimate (test/core/docs.test.js keeps these
+figures honest). For your own chats, `/context-graph` and the plugin's page show the live numbers:
+see [What memory saved](#what-memory-saved).
 
 | Moment | Added to the request |
 |---|---|
-| Every request | the `recall` tool definition, about 100 tokens |
+| Every request | the `recall` tool definition, about 80 tokens |
 | First message of a chat | one line per earlier chat with topics, about 200 tokens in all |
 | A message about something earlier | 1-5 topic lines, about 30 tokens each, plus a short source when one topic clearly answers it |
 | Any other message | nothing |
@@ -248,10 +288,11 @@ Remove with `dsh plugin --profile desktop remove dsh-context-graph`.
 ## On disk
 
 ```
-.context-graph/chats/<sessionId>/meta.json    cid, title (dsh's own), summary, firstPrompt, startedAt, lastActiveAt, builtSeq (how far the chat is indexed); memoryOff / private only after off / unshare
+.context-graph/chats/<sessionId>/meta.json    cid, title (dsh's own), summary, firstKey (a fingerprint of the first prompt), startedAt, lastActiveAt, builtSeq (how far the chat is indexed); memoryOff / private only after off / unshare
 .context-graph/chats/<sessionId>/topics.json  topics and links; every topic has its time and the seqs of its sources
 .context-graph/chats/<sessionId>/msgs.json    the messages topics cite, each stored once
 .context-graph/chats/.cid/                    one empty file per chat number in use
+.context-graph/ledger.json                    the savings estimate: a few counters per chat
 ```
 
 A chat gets its folder when it is first indexed; quick chats that never reach an index leave
@@ -301,7 +342,8 @@ Release: `npm test`, `npm version patch`, `npm publish`, `git push --follow-tags
   counts as more than one word.
 - A fork made by 0.4-0.6 of a chat that was later made private keeps offering the topics it
   inherited to matching until it is opened again or recalled once (#58).
-- The visual graph page is not built yet; `map` is the text version.
+- The savings figure is an estimate (see [What memory saved](#what-memory-saved)); token counts are the plugin's own estimate, except indexing, which is what dsh reported. A subagent started fresh (not forked from the chat) is not charged the recall tool's share.
+- A chat whose meta.json was damaged and whose off stretches could not be read back keeps its turns from before its next `on` closed to other chats (its topics still work), and forks made in that part start with memory off.
 
 Using Claude Code? The Claude version is a separate plugin built for Claude's app:
 [claude-context-graph](https://github.com/William20100221/claude-context-graph).

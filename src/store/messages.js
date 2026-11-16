@@ -7,20 +7,11 @@
 
 import { join } from 'node:path'
 
-import { cutAfter, cutBefore } from '../core/text.js'
+import { capText } from '../core/text.js'
 import { locked, readJson, readJsonCached, writeJson } from './files.js'
 
-const HEAD = 4500
-const TAIL = 1000
-
-/** Long messages keep their head and tail; the full text stays in dsh's own session log. */
-export function capText(text) {
-  const s = String(text ?? '')
-  if (s.length <= HEAD + TAIL + 200) return s
-  const head = cutBefore(s, HEAD)
-  const tail = cutAfter(s, s.length - TAIL)
-  return `${s.slice(0, head)}\n…[${tail - head} chars omitted; the full turn is in the chat's dsh log]…\n${s.slice(tail)}`
-}
+/** Long messages keep their head and tail (core/text.js); the full text stays in dsh's own session log. */
+export { capText }
 
 const file = (chat) => join(chat, 'msgs.json')
 

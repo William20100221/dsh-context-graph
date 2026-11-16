@@ -8,6 +8,9 @@ import { clipTokens, estimateTokens, sliceChars, textOf } from './text.js'
 
 export const isHuman = (event) => event?.type === 'user/message' && event.data?.source?.kind === 'user'
 
+/** The text of a user or assistant event, as the builder stores it. */
+export const eventText = (event) => textOf(event?.data?.content ?? event?.data?.message?.content)
+
 /**
  * The human/assistant exchange after `afterSeq`, read from the durable session log (seq 0, 1, 2 ...
  * until `eventAt` returns nothing). Not from the surface: dsh compaction replaces old turns on the
@@ -16,10 +19,15 @@ export const isHuman = (event) => event?.type === 'user/message' && event.data?.
  * Each message carries its turn number (t1 is the first human prompt of the log) and its time.
  * `completeOnly`: stop before a turn that is still running (a `turn/start` with no `turn/end` after
  * it), so a build started by a command mid-turn never splits that turn's question from its answer.
- * @returns { messages: [{ seq, role, text, turn, time }], lastSeq, userTurns, turns, title }
- *   `title`: the chat's latest dsh title (model-made, or the user's own rename), if any (#41).
+ * `gaps`: seq ranges `[from, to]` typed while memory was off; never read (#59).
+ * `titleFrom`: only dsh titles at or after this seq, and made only from prompts at or after it,
+ * count: a fork passes its first own prompt, so neither its parent's titles nor the rename dsh
+ * gives a new fork ("<parent's title> (1)") nor a title listing inherited prompts is used (#60, review).
+ * @returns { messages: [{ seq, role, text, turn, time }], lastSeq, userTurns, turns, title, open }
+ *   `title`: the chat's latest dsh title (model-made, or the user's own rename), if any (#41);
+ *   `open`: the span stopped before a running turn.
  */
-export function collectSpan(eventAt, afterSeq = -1, { completeOnly = false } = {}) {
+export function collectSpan(eventAt, afterSeq = -1, { completeOnly = false, gaps = [], titleFrom = 0 } = {}) {
   const all = []
   const humans = []
   let end = -1
@@ -31,7 +39,7 @@ export function collectSpan(eventAt, afterSeq = -1, { completeOnly = false } = {
     end = seq
     if (event.type === 'turn/start') openTurn = seq
     else if (event.type === 'turn/end') openTurn = -1
-    else if (event.type === 'session/title' && typeof event.data?.title === 'string' && event.data.title.trim()) title = event.data.title.trim()
+    else if (event.type === 'session/title' && seq >= titleFrom && typeof event.data?.title === 'string' && event.data.title.trim() && !titleFromGap(event, seq, gaps) && !madeBefore(event, titleFrom)) title = event.data.title.trim()
     if (isHuman(event)) {
       humans.push(seq)
       const text = textOf(event.data.content)
@@ -42,51 +50,103 @@ export function collectSpan(eventAt, afterSeq = -1, { completeOnly = false } = {
     }
   }
   const limit = completeOnly && openTurn >= 0 ? openTurn - 1 : end
-  const messages = all.filter((m) => m.seq <= limit)
+  // A turn whose prompt was typed while memory was off is private as a whole, also the part of its
+  // answer written after `on` (#59, review).
+  const gapped = (m) => inGap(m.seq, gaps) || (m.turn !== undefined && inGap(humans[m.turn - 1], gaps))
+  const messages = all.filter((m) => m.seq <= limit && !gapped(m))
   return {
     messages,
     lastSeq: Math.max(afterSeq, limit),
     userTurns: messages.filter((m) => m.role === 'user').length,
     turns: humans.filter((seq) => seq <= limit).length,
-    title
+    title,
+    open: completeOnly && openTurn >= 0
   }
 }
 
+/**
+ * A dsh title that comes from the off stretch: written there, or derived from a prompt typed there
+ * (`messageSeqs` names the prompts a generated title was made from). Never shown to other chats.
+ */
+const titleFromGap = (event, seq, gaps) => inGap(seq, gaps) || (Array.isArray(event.data?.messageSeqs) && event.data.messageSeqs.some((s) => inGap(s, gaps)))
+
+/** A dsh title made (in part) from prompts before `from`: in a fork, its parent's prompts. */
+const madeBefore = (event, from) => Array.isArray(event.data?.messageSeqs) && event.data.messageSeqs.some((s) => s < from)
+
+/** The seq of the first human prompt at or after `from`, or undefined (none yet). */
+export function firstPromptSeq(eventAt, from = 0) {
+  for (let seq = from; ; seq++) {
+    const event = eventAt(seq)
+    if (!event) return undefined
+    if (isHuman(event)) return seq
+  }
+}
+
+/** Whether a seq lies in one of the `[from, to]` ranges typed while memory was off (#59). */
+export const inGap = (seq, gaps = []) => (Array.isArray(gaps) ? gaps : []).some((g) => Array.isArray(g) && seq >= g[0] && seq <= g[1])
+
+/** The first gap that starts after `seq`, or undefined. */
+export const nextGap = (seq, gaps = []) => (Array.isArray(gaps) ? gaps : []).filter((g) => Array.isArray(g) && g[0] > seq).sort((a, b) => a[0] - b[0])[0]
+
 const TOPIC_LINE = /^\s*- (c\d+n\d+) /gm
 const RECALLED = /^(?:# |\s*- )(c\d+n\d+) /gm
+const RECALL_RESULT = /^(?:# [ct]\d|\[context-graph\])/
 
 /**
  * What this chat already holds in context, read from the surface (so after compaction drops a
  * block, its topics can be sent again):
- *   ids    topics listed in the plugin's blocks, or fetched with recall (#31). Only topic lines
- *          count, never ids inside prose, so an example id cannot hide a real topic (#51).
- *   texts  whole block texts (an identical day digest is not sent twice)
- *   list   whether the chat list (the top layer) is on the surface (#26)
+ *   ids     topics listed in the plugin's blocks, or fetched with recall (#31). Only topic lines
+ *           count, never ids inside prose, so an example id cannot hide a real topic (#51).
+ *   texts   whole block texts (an identical day digest is not sent twice)
+ *   list    whether the chat list (the top layer) is on the surface (#26)
+ *   tokens  the plugin's blocks and recall results still in context: what every request of the
+ *           chat re-sends as cached input (#35)
  */
 export function shownContext(nodes, eventAt) {
   const ids = new Set()
   const texts = new Set()
   let list = false
+  let tokens = 0
   for (const seq of nodes) {
     const event = eventAt(seq)
     if (event?.type === 'user/message' && event.data?.source?.kind === SOURCE_KIND) {
       const text = textOf(event.data.content)
       texts.add(text)
+      tokens += estimateTokens(text)
       if (event.data.source.layer === 'surface') list = true
       for (const m of text.matchAll(TOPIC_LINE)) ids.add(m[1])
     } else if (event?.type === 'tool/result') {
-      for (const m of textOf(event.data?.message?.content).matchAll(RECALLED)) ids.add(m[1])
+      const text = textOf(event.data?.message?.content)
+      if (RECALL_RESULT.test(text)) tokens += estimateTokens(text)
+      for (const m of text.matchAll(RECALLED)) ids.add(m[1])
     }
   }
-  return { ids, texts, list }
+  return { ids, texts, list, tokens }
 }
 
-/** First human prompt of the log, shortened: the chat's title until dsh names it, and the key fork detection uses. */
-export function titleOf(eventAt, width = 60) {
-  for (let seq = 0; ; seq++) {
+/**
+ * The answer of the newest turn: the assistant's text after the last human message on the
+ * surface. Used once per turn to see which shown topics the answer actually used (#35).
+ */
+export function lastAnswer(nodes, eventAt) {
+  const parts = []
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const event = eventAt(nodes[i])
+    if (isHuman(event)) break
+    if (event?.type === 'assistant/message') parts.unshift(textOf(event.data?.message?.content))
+  }
+  return parts.filter(Boolean).join('\n')
+}
+
+/**
+ * First human prompt of the log (at or after `from`), shortened: the chat's title until dsh names
+ * it; from seq 0 it is also the key fork detection uses, since a fork starts with its parent's log.
+ */
+export function titleOf(eventAt, width = 60, from = 0, gaps = []) {
+  for (let seq = from; ; seq++) {
     const event = eventAt(seq)
     if (!event) return undefined
-    if (isHuman(event)) {
+    if (isHuman(event) && !inGap(seq, gaps)) {
       const text = textOf(event.data.content).replace(/\s+/g, ' ')
       return text.length > width ? `${sliceChars(text, width - 1)}…` : text
     }

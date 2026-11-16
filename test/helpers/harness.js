@@ -25,7 +25,9 @@ export const wait = (ms = 50) => new Promise((resolve) => setTimeout(resolve, ms
  * plugin starts in the background (a build at turn end): a fixed wait was flaky under a full,
  * parallel test run. Fails after `timeout` ms.
  */
-export async function until(check, { timeout = 5000, every = 10 } = {}) {
+// 15 s, every 50 ms: with every test file writing at once, Windows can hold a file for seconds
+// (a scan on each open), and polling a file every few ms keeps it held; a real failure still fails.
+export async function until(check, { timeout = 15000, every = 50 } = {}) {
   const end = Date.now() + timeout
   for (;;) {
     const value = await Promise.resolve().then(check).catch(() => undefined)
@@ -115,7 +117,11 @@ export async function setup(config = {}, llm = scriptedLlm({ reply: DEFAULT_REPL
     on: (event, fn) => { listeners[event] = fn },
     get: (service) => (service === 'llm' ? llm : services[service]),
     tools: { register: (tool) => tools.push(tool) },
-    plugin: (nested) => nested.apply({ effect: (gen) => { for (const _ of gen()); }, commands: { register: (c) => { commands.push(c); return () => {} } } })
+    // Like cordis: a nested plugin starts only when every service it injects is there.
+    plugin: (nested) => {
+      const available = { commands: { register: (c) => { commands.push(c); return () => {} } }, ...services }
+      if ((nested.inject ?? []).every((name) => name in available)) nested.apply({ effect: (gen) => { for (const _ of gen()); }, ...available })
+    }
   }
   apply(ctx, { _updates: NO_UPDATES, ...config })
   const run = (agent, rawInput, extra = {}) => commands[0].handler({ rawInput, agent, ...extra })

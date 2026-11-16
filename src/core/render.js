@@ -48,12 +48,28 @@ export function fence(text) {
  * the ids carry their chat, so they never read like a turn of the current chat. A message over
  * `maxTokens` keeps its head and tail (#29); budgets are tokens, so Chinese is not 3.5x the cost.
  */
-export function formatSource(messages, { maxTokens = Infinity, turnId } = {}) {
-  return messages.map((m) => {
+export function formatSource(messages, { maxTokens = Infinity, budgets, turnId } = {}) {
+  return messages.map((m, i) => {
     const where = turnId && m.turn ? turnId(m.turn) : undefined
-    const body = clipTokens(String(m.text ?? '').trim(), maxTokens, where ? `recall("${where}") gives the whole turn` : '')
+    const body = clipTokens(String(m.text ?? '').trim(), budgets?.[i] ?? maxTokens, where ? `recall("${where}") gives the whole turn` : '')
     return `${m.role}${where ? ` (${where})` : ''}:\n${body}`
   }).join('\n\n')
+}
+
+/**
+ * A token budget shared by several messages (#67): each gets what it needs, up to a fair share of
+ * what is left, shortest first, so a short prompt's unused share goes to the long answer after it.
+ */
+export function shares(costs, budget) {
+  const out = new Array(costs.length)
+  let left = budget
+  let n = costs.length
+  for (const i of costs.map((_, i) => i).sort((a, b) => costs[a] - costs[b])) {
+    out[i] = Math.min(costs[i], Math.floor(left / n))
+    left -= out[i]
+    n--
+  }
+  return out
 }
 
 /**

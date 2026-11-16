@@ -71,7 +71,9 @@ test('#16 a fork starts its index after the inherited events and is not sent its
   const stats = await h.run(fork, '')
   assert.match(stats.text, /2 turns waiting to be indexed/, 'only the fork\'s own two turns are pending, not the 4 inherited ones')
   assert.equal(h.llm.calls, calls)
-  await assert.rejects(metaOf(cwd, 'sF'), 'not indexed yet, so no folder')
+  // A fork gets its meta when first seen, so inherited flags hold from its first message (#60).
+  const early = await metaOf(cwd, 'sF')
+  assert.deepEqual([early.forkSeq, early.builtSeq], [parentEvents.length, parentEvents.length - 1], 'nothing indexed yet')
   assert.equal((await h.run(fork, 'build')).kind, 'success')
   const prompt = h.llm.options.at(-1).messages[0].content[0].text
   assert.match(prompt, /in the fork: what about gpg signing/)

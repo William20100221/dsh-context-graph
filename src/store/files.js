@@ -75,7 +75,10 @@ export async function readJson(path) {
 }
 
 const cache = new Map()
-const CACHE_MAX = 2000
+// Two or three entries per chat are read on every message, so the cap sits far above any real
+// workspace: at 2,000 a workspace of 1,500 chats evicted what the same pass needed next and took
+// about 1 s per message (#63). ponytail: entry count, not bytes; size by bytes if memory matters.
+const CACHE_MAX = 20000
 
 function deepFreeze(value) {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -119,15 +122,20 @@ export async function readJsonCached(path, prepare = (value) => value) {
   return value
 }
 
-/** Rename with a short retry: on Windows a rename fails for a moment while another process has the file open. */
+/**
+ * Rename with a retry: on Windows a rename over a file fails while anyone has that file open, even
+ * for a moment (another chat reading it, a sync tool, a virus scan, which can take seconds on a
+ * busy machine). Backing off for up to about 5 s outlasts such holds; the old 250 ms lost a meta
+ * write now and then under load (review). Writes are off the critical path, so waiting costs nothing.
+ */
 export async function renameRetry(from, to) {
   for (let attempt = 0; ; attempt++) {
     try {
       await rename(from, to)
       return
     } catch (error) {
-      if (attempt < 4 && (error?.code === 'EPERM' || error?.code === 'EBUSY' || error?.code === 'EACCES')) {
-        await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)))
+      if (attempt < 11 && (error?.code === 'EPERM' || error?.code === 'EBUSY' || error?.code === 'EACCES')) {
+        await new Promise((resolve) => setTimeout(resolve, Math.min(800, 25 * 2 ** attempt)))
         continue
       }
       throw error

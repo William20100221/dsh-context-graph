@@ -10,15 +10,13 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SOURCE_KIND, memoryOn } from '../core/chat.js'
 import { matchAcross } from '../core/match.js'
 import { formatSource, renderChats, renderHits, renderRange } from '../core/render.js'
-import { shownContext, titleOf } from '../core/session.js'
+import { eventText, shownContext, titleOf } from '../core/session.js'
 import { estimateTokens, textOf } from '../core/text.js'
 import { asksAboutPast, parseTimeRange } from '../core/time.js'
 import { capText, sourceOf } from '../store/messages.js'
 
 const TOPIC_LINE = /^\s*- (c\d+n\d+) /gm
 
-/** The text of a user or assistant event, as the builder stored it. */
-const eventText = (event) => textOf(event?.data?.content ?? event?.data?.message?.content)
 
 export function registerMemory(ctx, rt, meter) {
   const { cfg } = rt
@@ -28,8 +26,21 @@ export function registerMemory(ctx, rt, meter) {
     const prompt = payload.messages.filter((m) => m.source?.kind === 'user').map((m) => textOf(m.content)).join('\n')
     const decision = await next()
     if (decision.kind !== 'enter') return decision
+    refreshContext(agent)
     return addMemory(agent, prompt, decision)
   })
+
+  /**
+   * After a compaction, blocks no longer on the surface stop being charged as re-sent (#35, review):
+   * checked on every step, memory on or off; read again only when dsh's replace count moved.
+   */
+  function refreshContext(agent) {
+    const st = rt.isSubagent(agent) ? undefined : rt.tracked(rt.sidOf(agent))
+    const generation = agent.session.surface.replaceGeneration
+    if (!st || st.generation === generation) return
+    st.generation = generation
+    st.inContext = shownContext(agent.session.surface.nodes, (seq) => agent.session.eventAt(seq)).tokens
+  }
 
   /**
    * Whether a fork already holds a topic (#16, #52). A fork carries its ancestors' events under the
@@ -52,7 +63,7 @@ export function registerMemory(ctx, rt, meter) {
    * so only chats with that first prompt need their stored messages compared. This keeps a fork's
    * first message from parsing every chat's msgs.json (review of #52).
    */
-  const ancestorLike = (view, first) => first !== undefined && (view.meta.firstPrompt ?? view.meta.title) === first
+  const ancestorLike = (view, first) => rt.startsWith(view.meta, first)
 
   /** The hits a fork already holds. */
   async function inherited(agent, forkSeq, hits) {
@@ -82,11 +93,19 @@ export function registerMemory(ctx, rt, meter) {
   async function addMemory(agent, prompt, decision) {
     try {
       if (rt.isSubagent(agent) || !prompt) return decision
-      if (!memoryOn(await rt.metaFor(agent))) return decision
       const st = rt.state(rt.sidOf(agent))
+      // From now on the savings estimate follows this chat (meter.js), memory on or off: the recall
+      // tool rides with its requests either way.
+      st.chat = true
+      rt.noteDir(agent)
+      // An off whose write is still waiting for the file already holds here (runtime.js withPending).
+      if (!memoryOn(await rt.metaFor(agent))) return decision
       const views = await rt.loadViews(agent)
       // What this chat already holds: blocks and recalls still on its surface.
       const shown = shownContext(agent.session.surface.nodes, (seq) => agent.session.eventAt(seq))
+      // Read from the surface on every human turn, so a compaction that dropped old blocks is seen.
+      st.inContext = shown.tokens
+      st.generation = agent.session.surface.replaceGeneration
       const forkSeq = rt.forkSeqOf(agent.session)
       const parts = []
       let layer
@@ -115,8 +134,9 @@ export function registerMemory(ctx, rt, meter) {
         const ids = [...block.matchAll(TOPIC_LINE)].map((m) => m[1])
         const seen = shown.texts.has(block) || (ids.length > 0 && ids.every((id) => shown.ids.has(id)))
         if (!seen) parts.push(block)
-      } else if (hits.length > 0) {
-        let inline
+      }
+      let inline
+      if (hits.length > 0) {
         // Only a hit that clearly answers the message has its source inlined, within a token budget (#39).
         if (lead && hits[0] === lead) {
           const text = formatSource(sourceOf(await rt.messagesOf(agent, lead.view), lead.node))
@@ -126,8 +146,14 @@ export function registerMemory(ctx, rt, meter) {
       }
       if (parts.length === 0) return decision
       const text = parts.join('\n\n')
+      const tokens = estimateTokens(text)
       meter.injected++
-      meter.injectedTokens += estimateTokens(text)
+      meter.injectedTokens += tokens
+      st.delta.sent += tokens
+      st.inContext += tokens
+      st.justSent += tokens
+      // Checked against the answer at turn end: a topic the answer uses counts as saved (#35).
+      for (const hit of hits) st.pending.push({ id: hit.id, sid: hit.view.sid, cid: hit.view.cid, node: hit.node, prompt })
       const message = createUserMessage({ content: [{ type: 'text', text }], source: layer ? { kind: SOURCE_KIND, layer } : { kind: SOURCE_KIND } })
       return { ...decision, messages: [...decision.messages, message] }
     } catch (error) {

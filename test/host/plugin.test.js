@@ -61,10 +61,13 @@ function fakeCtx(llm) {
     on: (event, fn) => { listeners[event] = fn },
     get: (service) => (service === 'llm' ? llm : undefined),
     tools: { register: (tool) => registered.push(tool) },
-    plugin: (nested) => nested.apply({
-      effect: (gen) => { for (const _ of gen()) { /* registrations only */ } },
-      commands: { register: (command) => { commands.push(command); return () => {} } }
-    })
+    plugin: (nested) => {
+      if ((nested.inject ?? []).some((name) => name !== 'commands')) return
+      nested.apply({
+        effect: (gen) => { for (const _ of gen()) { /* registrations only */ } },
+        commands: { register: (command) => { commands.push(command); return () => {} } }
+      })
+    }
   }
   return ctx
 }
@@ -181,6 +184,7 @@ test('plugin: on by default; off/on + share; a second chat gets the list, hits, 
     assert.equal((await step(agentB, ask('gpg signed commits?'))).messages.length, 2, 'share makes it visible again')
     assert.match((await run(agentA, 'off')).text, /^Memory off/)
     assert.equal(ctx.listeners['agent/turn-stopping']({ agent: agentA, turn: 2 }), undefined)
+    await settle()
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }
@@ -205,6 +209,7 @@ test('plugin: builder failures are contained', { skip }, async () => {
     assert.match((await ctx.commands[0].handler({ rawInput: 'stats', agent })).text, /^Memory on · 0 topics[\s\S]*1 turn waiting to be indexed/)
     // turn-stopping never throws and never blocks
     assert.equal(ctx.listeners['agent/turn-stopping']({ agent, turn: 1 }), undefined)
+    await settle()
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }
@@ -220,7 +225,7 @@ test('plugin: an available update is shown in stats and never added to a chat (#
     const first = await ctx.listeners['agent/pre-step']({ agent, messages: ask('hello').messages }, async () => ask('hello'))
     assert.equal(first.messages.length, 1, 'no notice in model context')
     const stats = await ctx.commands[0].handler({ rawInput: 'stats', agent })
-    assert.match(stats.text, /update available\nLast index: none since the app started\nVersion \d+\.\d+\.\d+: dsh-context-graph 9\.9\.9 is available/)
+    assert.match(stats.text, /update available\nSavings: nothing measured yet\nLast index: none since the app started\nVersion \d+\.\d+\.\d+: dsh-context-graph 9\.9\.9 is available/)
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }

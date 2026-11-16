@@ -10,3 +10,16 @@ export const memoryOn = (meta) => meta?.memoryOff !== true
 
 /** Chats are shared with the rest of the workspace unless `/context-graph unshare` was run there. */
 export const sharedOn = (meta) => meta?.private !== true
+
+/**
+ * Where a chat's memory went off, or undefined while it is on: the point `off` recorded, else (off
+ * under 0.8.0, a meta recovered fail-closed, a fork that starts off) the chat's last index, so all
+ * of what came after counts as typed while off (#59).
+ */
+export const offPoint = (meta) => (Number.isInteger(meta?.offSeq) ? meta.offSeq : memoryOn(meta) ? undefined : Number.isInteger(meta?.builtSeq) ? meta.builtSeq : -1)
+
+/**
+ * Whether `seq` of a chat lies where its off stretches were lost: a meta recovered after damage
+ * (turnsClosed) cannot tell, up to where memory was turned on again (`closedThrough`, set by on).
+ */
+export const closedAt = (meta, seq) => meta?.turnsClosed === true && seq <= (Number.isInteger(meta.closedThrough) ? meta.closedThrough : Infinity)

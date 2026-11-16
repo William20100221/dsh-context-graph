@@ -65,7 +65,8 @@ test('#41 dsh\'s own title and #27 the builder\'s summary are kept; the list sho
   await h.run(agentOf('sT', cwd, events), 'build')
   const meta = await metaOf(cwd, 'sT')
   assert.equal(meta.title, 'SSH commit signing')
-  assert.match(meta.firstPrompt, /^We decided to sign commits/, 'the first prompt is kept for fork matching')
+  assert.match(meta.firstKey, /^[0-9a-f]{16}$/, 'the first prompt is kept for fork matching, as a fingerprint')
+  assert.equal(meta.firstPrompt, undefined)
   assert.equal(meta.summary, 'Commit signing setup with SSH keys')
   const out = await h.step(agentOf('sU', cwd, [system()]), ask('hello'))
   assert.match(out.messages[1].content[0].text, /\nc1 Commit signing setup with SSH keys$/)
@@ -135,7 +136,8 @@ test('#34 another chat\'s turn comes from dsh\'s log, only inside what that chat
 }))
 
 test('#29 a topic recall gives its newest cited messages, capped, each naming its turn', { skip }, () => inWorkspace(async (cwd) => {
-  const h = await setup({ sourceMaxTokens: 120 }, scriptedLlm({ reply: topic('commit signing', ['gpg'], [0, 1, 2, 3, 4, 5, 6, 7]) }))
+  // A budget the long prompt cannot fit even with the short answers' unused share (#67).
+  const h = await setup({ sourceMaxTokens: 50 }, scriptedLlm({ reply: topic('commit signing', ['gpg'], [0, 1, 2, 3, 4, 5, 6, 7]) }))
   await h.run(agentOf('sA', cwd, chatEvents(4)), 'build')
   const text = (await h.recall(agentOf('sB', cwd, [system()]), 'c1n1')).text
   assert.equal((text.match(/^(user|assistant) \(c1t\d\):$/gm) ?? []).length, 3, 'three messages')
