@@ -9,7 +9,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
+import { counters } from '../../src/core/ledger.js'
 import { updateMeta } from '../../src/store/chats.js'
+import { loadLedger } from '../../src/store/ledger.js'
 import { DEFAULT_REPLY, agentOf, ask, assistant, chatEvents, quietly, scriptedLlm, setup, skip, system, until, user, wait } from '../helpers/harness.js'
 
 async function inWorkspace(fn) {
@@ -17,7 +19,8 @@ async function inWorkspace(fn) {
   try { await fn(cwd) } finally { await wait(30); await rm(cwd, { recursive: true, force: true }) }
 }
 const metaOf = async (cwd, sid) => JSON.parse(await readFile(join(cwd, '.context-graph', 'chats', sid, 'meta.json'), 'utf8'))
-const ledgerOf = async (cwd) => JSON.parse(await readFile(join(cwd, '.context-graph', 'ledger.json'), 'utf8'))
+// One file per chat since #83, zero counters left out (#78): read back with every counter.
+const ledgerOf = async (cwd) => ({ chats: Object.fromEntries(Object.entries((await loadLedger(join(cwd, '.context-graph'))).chats).map(([sid, e]) => [sid, { ...e, c: counters(e.c) }])) })
 const buildNow = (h, agent) => until(async () => { const out = await quietly(() => h.run(agent, 'build')); return !/^Build busy/.test(out.text) && out })
 const listOf = async (h, cwd) => (await h.step(agentOf(`sL${Math.random()}`, cwd, [system()]), ask('hello'))).messages.at(-1).content[0].text
 /** A chat whose first prompt was typed while memory was off, then indexed with memory on. */

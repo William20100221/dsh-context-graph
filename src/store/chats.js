@@ -1,6 +1,6 @@
 /**
  * On-disk layout under `<dir>` (default `<workspace>/.context-graph`), one folder per chat:
- *   chats/<sessionId>/meta.json    { cid, title, workspace, startedAt, lastActiveAt, turns, builtSeq,
+ *   chats/<sessionId>/meta.json    { cid, title, startedAt, lastActiveAt, turns, builtSeq,
  *                                    memoryOff?, private?, parent?, forkSeq?, legacyRoot? }
  *   chats/<sessionId>/topics.json  the chat's topic graph (src/core/graph.js, version 2)
  *   chats/<sessionId>/msgs.json    the verbatim messages its topics cite, each once (messages.js)
@@ -222,7 +222,7 @@ export function migrateRootLayout(dir) {
     if (await exists(join(dir, 'src'))) await cp(join(dir, 'src'), join(chat, 'src'), { recursive: true })
     const times = nodes.flatMap((n) => [n.updated, ...(Array.isArray(n.src) ? n.src : []).map((s) => s?.at)]).filter(Boolean).sort()
     const now = new Date().toISOString()
-    await updateMeta(dir, sid, (meta) => ({ ...meta, legacyRoot: true }), () => ({ title: 'Memory from before v0.4', workspace: dir, startedAt: times[0] ?? now, lastActiveAt: times.at(-1) ?? now, turns: 0 }))
+    await updateMeta(dir, sid, (meta) => ({ ...meta, legacyRoot: true }), () => ({ title: 'Memory from before v0.4', startedAt: times[0] ?? now, lastActiveAt: times.at(-1) ?? now, turns: 0 }))
     await upgradeChat(chat)
     await rm(root, { force: true })
     await rm(join(dir, 'src'), { recursive: true, force: true })

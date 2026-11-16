@@ -1,31 +1,46 @@
 /**
- * The savings ledger of a workspace (#35): `<dir>/ledger.json`, one small entry per chat, so the
- * estimate survives restarts and the workspace total is one read. Written at most once per turn
- * per chat, off the critical path; a chat needs no folder of its own to have an entry.
- * Format: `{ v: 1, chats: { "<sessionId>": { c: counters, used: [topic ids], msgs: ["<cid>:<seq>"], at: time } } }`:
- * `msgs` are the source messages already counted as stood in for, so each counts once per chat.
+ * The savings ledger of a workspace (#35): one small file per chat, `<dir>/ledger/<sessionId>.json`,
+ * so the estimate survives restarts and a turn end writes only its own chat's entry, not the whole
+ * workspace's (#83). Written at most once per turn per chat, off the critical path; a chat needs no
+ * folder of its own to have an entry.
+ * Format: `{ c: counters, used: [topic ids], msgs: ["<cid>:<seq>"] }`, zero counters and empty lists
+ * left out (#78): `msgs` are the source messages already counted as stood in for, so each counts
+ * once per chat. `<dir>/ledger.json`, the one file 0.9.0 kept (`{ v: 1, chats: { "<sessionId>":
+ * entry } }`), is only read: a chat's entry there is where its own file starts.
  */
 
+import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { addCounters, counters, emptyCounters } from '../core/ledger.js'
 import { locked, readJson, readJsonCached, writeJson } from './files.js'
 
-const file = (dir) => join(dir, 'ledger.json')
+const folder = (dir) => join(dir, 'ledger')
+const file = (dir, sid) => join(folder(dir), `${sid}.json`)
 
 /** Topic ids remembered per chat as used, so each counts once; the newest are kept. */
 const USED_MAX = 500
 const MSGS_MAX = 1000
 
-/** The ledger, read-only (cached); empty when there is none. */
+/** The entries 0.9.0 kept in one file, read-only (cached: nothing writes that file any more). */
+async function oldEntries(dir) {
+  const value = await readJsonCached(join(dir, 'ledger.json'))
+  return value && typeof value.chats === 'object' && value.chats !== null ? value.chats : {}
+}
+
+/** Every chat's entry, read-only (cached per file): `{ v: 1, chats: { "<sessionId>": entry } }`. */
 export async function loadLedger(dir) {
-  const value = await readJsonCached(file(dir))
-  return value && typeof value.chats === 'object' && value.chats !== null ? value : { v: 1, chats: {} }
+  const chats = { ...(await oldEntries(dir)) }
+  let names = []
+  try { names = (await readdir(folder(dir))).filter((name) => name.endsWith('.json')) } catch (error) { if (error?.code !== 'ENOENT') throw error }
+  const entries = await Promise.all(names.map((name) => readJsonCached(join(folder(dir), name))))
+  names.forEach((name, i) => { if (entries[i]) chats[name.slice(0, -'.json'.length)] = entries[i] })
+  return { v: 1, chats }
 }
 
 /** One chat's counters, used topic ids and credited source messages. */
 export async function chatEntry(dir, sid) {
-  const entry = (await loadLedger(dir)).chats[String(sid)]
+  const entry = (await readJsonCached(file(dir, sid))) ?? (await oldEntries(dir))[String(sid)]
   return { c: counters(entry?.c), used: Array.isArray(entry?.used) ? entry.used : [], msgs: Array.isArray(entry?.msgs) ? entry.msgs : [] }
 }
 
@@ -36,17 +51,15 @@ export async function workspaceTotal(dir) {
 
 /**
  * Add `delta` to a chat's counters and remember newly used topic ids. Locked read-modify-write of
- * the one file, so two chats ending a turn together cannot undo each other.
+ * the chat's own file, so two writes for one chat (a slow turn end, then the next) cannot undo each other.
  */
 export function addToLedger(dir, sid, delta, usedIds = [], msgKeys = []) {
-  return locked(`${dir}#ledger`, async () => {
-    const ledger = (await readJson(file(dir))) ?? { v: 1, chats: {} }
-    if (typeof ledger.chats !== 'object' || ledger.chats === null) ledger.chats = {}
-    const key = String(sid)
-    const prev = ledger.chats[key] ?? {}
+  const path = file(dir, sid)
+  return locked(path, async () => {
+    const prev = (await readJson(path)) ?? (await oldEntries(dir))[String(sid)] ?? {}
     const used = [...new Set([...(Array.isArray(prev.used) ? prev.used : []), ...usedIds])].slice(-USED_MAX)
     const msgs = [...new Set([...(Array.isArray(prev.msgs) ? prev.msgs : []), ...msgKeys])].slice(-MSGS_MAX)
-    ledger.chats[key] = { c: addCounters(counters(prev.c), delta), used, ...(msgs.length ? { msgs } : {}), at: new Date().toISOString() }
-    await writeJson(file(dir), ledger)
+    const c = Object.fromEntries(Object.entries(addCounters(counters(prev.c), delta)).filter(([, n]) => n !== 0))
+    await writeJson(path, { c, ...(used.length ? { used } : {}), ...(msgs.length ? { msgs } : {}) })
   })
 }

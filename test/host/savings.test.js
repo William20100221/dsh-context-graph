@@ -4,19 +4,21 @@
  *   DSH_NODE_MODULES=<dsh install>/node_modules node --import ./test/helpers/resolve-dsh.mjs --test test/host/savings.test.js
  */
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { addToLedger, chatEntry, workspaceTotal } from '../../src/store/ledger.js'
+import { counters } from '../../src/core/ledger.js'
+import { addToLedger, chatEntry, loadLedger, workspaceTotal } from '../../src/store/ledger.js'
 import { agentOf, ask, assistant, chatEvents, setup, skip, system, until, wait } from '../helpers/harness.js'
 
 async function inWorkspace(fn) {
   const cwd = await mkdtemp(join(tmpdir(), 'cg-savings-'))
   try { await fn(cwd) } finally { await wait(30); await rm(cwd, { recursive: true, force: true }) }
 }
-const ledgerOf = async (cwd) => JSON.parse(await readFile(join(cwd, '.context-graph', 'ledger.json'), 'utf8'))
+// One file per chat since #83, zero counters left out (#78): read back with every counter.
+const ledgerOf = async (cwd) => ({ chats: Object.fromEntries(Object.entries((await loadLedger(join(cwd, '.context-graph'))).chats).map(([sid, e]) => [sid, { ...e, c: counters(e.c) }])) })
 
 test('the ledger adds every write, even concurrent ones, and keeps used ids once', () => inWorkspace(async (cwd) => {
   const dir = join(cwd, '.context-graph')

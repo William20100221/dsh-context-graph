@@ -19,6 +19,9 @@ import { USAGE, version } from './config.js'
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
 
+/** Chats `/context-graph map` lists: about 40 KB at most, whatever the workspace's size (#82). */
+const MAP_MAX_CHATS = 40
+
 export function registerCommand(ctx, rt, { build, turnOn, onAtIdle, meter, updates }) {
   const { cfg } = rt
   ctx.plugin({
@@ -90,7 +93,10 @@ export function registerCommand(ctx, rt, { build, turnOn, onAtIdle, meter, updat
             if (sub === 'map') {
               // Every chat of the workspace, private ones too: this is the user's own view. Loaded once (#49).
               const all = await rt.loadViews(agent, { all: true })
-              return { kind: 'success', text: `${plural(all.length, 'chat')} in ${rt.dirFor(agent)}\n${renderMap(all)}` }
+              // dsh keeps the card's whole text in the chat's session log, at every call: the newest
+              // chats only (loadViews keeps listChats' order, newest first), the page has the rest (#82).
+              const more = all.length > MAP_MAX_CHATS ? `\n… ${plural(all.length - MAP_MAX_CHATS, 'more chat')}; Plugins → Context Graph has the full map` : ''
+              return { kind: 'success', text: `${plural(all.length, 'chat')} in ${rt.dirFor(agent)}\n${renderMap(all.slice(0, MAP_MAX_CHATS))}${more}` }
             }
             const views = await rt.loadViews(agent)
             if (sub === 'find') {

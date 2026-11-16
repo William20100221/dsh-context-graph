@@ -35,14 +35,10 @@ export function registerRecall(ctx, rt, meter) {
 
   /**
    * Learn the fork point of a chat whose meta has none (written by v0.4-v0.6) before serving it,
-   * so its inherited topics and sources are held back like any fork's (second review).
+   * so its inherited topics and sources are held back like any fork's (second review). A meta
+   * written since 0.8.0 says whether its chat is a fork: that chat's log is not read (#72).
    */
-  async function learnForkPoint(view, signal) {
-    if (Number.isInteger(view.meta.forkSeq) || rt.forkPoints.has(view.sid)) return false
-    const observation = await observe(view.sid, signal)
-    if (!observation) return false
-    try { return noteForkPoint(view.sid, observation) > 0 } finally { observation[Symbol.dispose]?.() }
-  }
+  const learnForkPoint = (view, signal) => rt.learnForkPoint(view.sid, view.meta, signal)
 
   /**
    * Turn `n` of another chat from dsh's log, within that chat's shared span. `undefined` when the

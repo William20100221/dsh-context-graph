@@ -8,8 +8,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
+import { counters } from '../../src/core/ledger.js'
 import { titleOf } from '../../src/core/session.js'
 import { loadMeta, updateMeta } from '../../src/store/chats.js'
+import { loadLedger } from '../../src/store/ledger.js'
 import { DEFAULT_REPLY, agentOf, ask, assistant, chatEvents, quietly, scriptedLlm, setup, skip, system, until, user, wait } from '../helpers/harness.js'
 
 async function inWorkspace(fn) {
@@ -325,7 +327,8 @@ test('stats while off: nothing after off waits to be indexed; flags shown even w
   assert.match(text, /^Memory off · topics of this chat could not be read · private/)
 }))
 
-const ledgerOf = async (cwd) => JSON.parse(await readFile(join(cwd, '.context-graph', 'ledger.json'), 'utf8'))
+// One file per chat since #83, zero counters left out (#78): read back with every counter.
+const ledgerOf = async (cwd) => ({ chats: Object.fromEntries(Object.entries((await loadLedger(join(cwd, '.context-graph'))).chats).map(([sid, e]) => [sid, { ...e, c: counters(e.c) }])) })
 const requestFor = (h, sid) => async () => {
   const { markAgentLoopRequest } = await import('@deepseek-ai/dsh-llm')
   const request = markAgentLoopRequest({ provider: 'p', model: 'm', messages: [], sessionId: sid })
