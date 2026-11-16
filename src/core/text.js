@@ -110,18 +110,57 @@ function isCode(word) {
 }
 
 /**
+ * A plural and its singular as one search word (#75): tests and test, queries and query, branches
+ * and branch. Plain lowercase words of 4+ letters only, and never into a stopword ("times" stays).
+ * Singulars the rules would cut wrongly are folded the same way: cache = caches, cookie = cookies.
+ * No dictionary: irregular plurals (indices, aliases, statuses) still differ, as before.
+ */
+function singular(word) {
+  if (word.length < 4 || !/^[a-z]+$/.test(word)) return word
+  let s = word
+  if (s.endsWith('s')) {
+    if (s.endsWith('ies') && s.length > 4) s = `${s.slice(0, -3)}y`
+    else if (/(?:ch|sh|ss|x)es$/.test(s)) s = s.slice(0, -2)
+    else if (!/[su]s$/.test(s)) s = s.slice(0, -1)
+  }
+  if (s.endsWith('che')) s = s.slice(0, -1)
+  else if (s.endsWith('ie') && s.length > 3) s = `${s.slice(0, -2)}y` // ties stays tie, like tie itself
+  return s !== word && STOPWORDS.has(s) ? word : s
+}
+
+/** A word's tokens: `word`, then each of its parts that is a search word (plurals folded), once. */
+function withParts(word, parts) {
+  const tokens = [word]
+  for (const part of parts) if (part.length >= 2 && !STOPWORDS.has(part) && !tokens.includes(singular(part))) tokens.push(singular(part))
+  return tokens
+}
+
+/**
+ * A lowerCamel identifier (loadViews, isAgentLoopRequest) is code, as snake_case is (#74): the
+ * word counts double where a topic has it, its humps are its parts (unless `humps` is false). 7+
+ * characters with a first hump of 2+, so iPhone, eCommerce or macOS stay plain words; PascalCase
+ * (GitHub) does too. The word folds like a plain word: loadViews, LoadViews and loadviews are one.
+ */
+function camelUnit(word, humps) {
+  if (word.length < 7 || !/^[a-z][a-z\d]+[A-Z][A-Za-z\d]*$/.test(word)) return undefined
+  const parts = humps ? word.split(/(?<=[a-z\d])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/).map((h) => h.toLowerCase()) : []
+  return { kind: 'word', tokens: withParts(singular(word.toLowerCase()), parts), code: true }
+}
+
+/**
  * A text's search words, grouped by the word they came from, so evidence can be counted per word:
  *   { kind: 'word', tokens, code }  one word in any alphabet (NFKC, so full-width "ＡＰＩ" is "api"),
- *                                   then its identifier parts; `code`: see isCode
+ *                                   then its identifier parts; `code`: see isCode and camelUnit
  *   { kind: 'cjk', bigrams, one }   one run of CJK text as its bigrams in order, null where a bigram
  *                                   is not a search word; `one` when the run is a single word
  *                                   (katakana or Hangul)
  * Stopwords are dropped, and so are CJK bigrams made only of particles/pronouns or only of
- * hiragana, which match everything (#23, #25).
+ * hiragana, which match everything (#23, #25). `humps: false` leaves out the humps of lowerCamel.
  */
-export function searchUnits(text) {
+export function searchUnits(text, { humps = true } = {}) {
   const units = []
-  const lower = String(text ?? '').normalize('NFKC').toLowerCase()
+  const nfkc = String(text ?? '').normalize('NFKC')
+  const lower = nfkc.toLowerCase()
   for (const cjk of lower.match(CJK_RUN) ?? []) {
     for (const run of cjk.match(SINGLE_WORD_SCRIPT) ?? []) {
       if (run.length === 1) {
@@ -136,29 +175,31 @@ export function searchUnits(text) {
       if (bigrams.some(Boolean)) units.push({ kind: 'cjk', bigrams, one: isSingleWordScript(run) })
     }
   }
-  for (const raw of lower.replace(CJK_RUN, ' ').match(/[\p{L}\p{N}_./-]{2,}/gu) ?? []) {
+  // Words are cut before lowercasing, so a lowerCamel identifier can be told from a plain word (#74).
+  for (const raw of nfkc.replace(CJK_RUN, ' ').match(/[\p{L}\p{N}_./-]{2,}/gu) ?? []) {
+    const cased = raw.replace(/[./-]+$/, '')
+    const word = cased.toLowerCase()
     // Most words have no separator: one plain word, no parts (#66).
-    if (!/[_./-]/.test(raw)) {
-      if (!STOPWORDS.has(raw)) units.push({ kind: 'word', tokens: [raw], code: false })
+    if (!/[_./-]/.test(word)) {
+      if (word.length >= 2 && !STOPWORDS.has(word)) units.push(camelUnit(cased, humps) ?? { kind: 'word', tokens: [singular(word)], code: false })
       continue
     }
-    const word = raw.replace(/[./-]+$/, '')
-    if (word.length < 2 || !/[\p{L}\p{N}]/u.test(word) || STOPWORDS.has(word)) continue
-    const tokens = [word]
-    if (/[_./-]/.test(word)) for (const part of word.split(/[_./-]+/)) if (part.length >= 2 && !STOPWORDS.has(part) && !tokens.includes(part)) tokens.push(part)
-    units.push({ kind: 'word', tokens, code: isCode(word) })
+    if (!/[\p{L}\p{N}]/u.test(word) || STOPWORDS.has(word)) continue
+    // The compound itself stays exact (user_ids is not user_id); only its parts fold plurals (#75).
+    units.push({ kind: 'word', tokens: withParts(word, word.split(/[_./-]+/)), code: isCode(word) })
   }
   return units
 }
 
 /**
- * Every search word of a text, once.
+ * Every search word of a text, once (`options`: see searchUnits).
  * "clear_conversation tool" -> ["clear_conversation", "clear", "conversation", "tool"]
+ * "matchAcross tests" -> ["matchacross", "match", "across", "test"]
  * "清除上下文" -> ["清除", "除上", "上下", "下文"]
  */
-export function tokenize(text) {
+export function tokenize(text, options) {
   const out = new Set()
-  for (const unit of searchUnits(text)) for (const t of unit.kind === 'cjk' ? unit.bigrams : unit.tokens) if (t) out.add(t)
+  for (const unit of searchUnits(text, options)) for (const t of unit.kind === 'cjk' ? unit.bigrams : unit.tokens) if (t) out.add(t)
   return [...out]
 }
 

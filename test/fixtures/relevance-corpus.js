@@ -156,17 +156,96 @@ export const HELD_U = [
   'my release date for the novel is next month'
 ]
 
+// Cycle 4 (#74, #75), written before the fix was measured. CODE_CHAT is a JS chat whose labels keep
+// identifiers exact, as the builder asks; corpusViews({ code: true }) adds it as chat 7.
+export const CODE_CHAT = { cid: 7, title: 'Plugin host code review', lang: 'en', topics: [
+  T('matchAcross word index', 'One inverted index per loaded graph, so a long paste only visits topics sharing a word', ['word index', '倒排索引'], 'decision', 900),
+  T('sessionQuery turn reads', 'Turns are read from the dsh session log by seq through sessionQuery; the plugin never writes it', ['turn recall', 'session log'], 'fact', 700),
+  T('createUserMessage source kind', 'Appended blocks need source.kind set to memory, or dsh shows them as typed text', ['memory block', 'source kind'], 'fact', 600),
+  T('onTurnStopping indexing hook', 'The builder runs after agent/turn-stopping, off the critical path, at the lowest effort', ['turn stopping', 'indexing hook'], 'decision', 800),
+  T('fetchWithTimeout for update check', 'The npm registry fetch aborts after 5 seconds via AbortSignal.timeout', ['update check', 'registry timeout'], 'decision', 500),
+  T('writeJsonAtomic rename retry', 'Write a temp file, then rename; retry EPERM while antivirus holds the file on Windows', ['atomic write', 'rename retry'], 'fact', 900),
+  T('parseTimeRange calendar days', 'Last week is Monday to Monday; 3 days ago is that calendar day in local time', ['time range', 'calendar days'], 'decision', 700),
+  T('useSyncExternalStore map state', 'The page reads the map store through useSyncExternalStore, so zooming never tears', ['map store', 'page state'], 'decision', 600),
+  T('setInterval meter flush', 'The usage meter flushes every 30 s via setInterval, unref so it never keeps dsh alive', ['meter flush', 'usage meter'], 'artifact', 500),
+  T('isSubagent owner lookup', 'A subagent follows the chat that started it, at any depth', ['subagent owner', 'owner chat'], 'open-question', 450)
+] }
+
+// Questions worded in the other number than their topic (#75), or naming an identifier of chat 7 (#74).
+export const REWORDED = [
+  ['do the tests still run on three node versions?', ['c1n2']],
+  ['how are our docker images built', ['c1n4']],
+  ['how many gpu runners do we need', ['c1n10']],
+  ['are the pnpm caches shared between runs?', ['c1n1']],
+  ['where do we keep the deploy secret', ['c1n6']],
+  ['can I edit migrations that were already applied', ['c2n1']],
+  ['is there an index on the order table', ['c2n2']],
+  ['how many connections does each pool allow', ['c2n3']],
+  ['what type is a timestamp column', ['c2n5']],
+  ['which replicas serve the report queries', ['c2n7']],
+  ['how do soft deletes work', ['c2n8']],
+  ['why did the bundle sizes grow again', ['c3n3']],
+  ['how do virtual lists render ten thousand rows', ['c3n1']],
+  ['the memory leaks from event listeners are back', ['c3n7']],
+  ['what rate limits apply to logins', ['c4n4']],
+  ['why does safari drop our cookies', ['c4n5']],
+  ['is every origin in the cors list', ['c4n6']],
+  ['which permission does the admin role have', ['c4n10']],
+  ['how are tokens counted for billing', ['c5n3']],
+  ['which arguments do the recall tools accept', ['c5n4']],
+  ['where are the builder prompts', ['c5n9']],
+  ['how big is each pandas chunk', ['c6n1']],
+  ['what schedule do our dags follow', ['c6n2']],
+  ['what backoff do failed tasks use', ['c6n3']],
+  ['are s3 uploads encrypted', ['c6n4']],
+  ['is there a pytest fixture with sample csv files', ['c6n8']],
+  ['what do we do with a late event', ['c6n10']],
+  ['where do we call matchAcross', ['c7n1']],
+  ['why does sessionQuery return nothing for an old turn', ['c7n2']],
+  ['createUserMessage blocks show up as typed text.', ['c7n3']],
+  ['what runs in onTurnStopping?', ['c7n4']],
+  ['fetchWithTimeout never aborts', ['c7n5']],
+  ['writeJsonAtomic fails with EPERM again', ['c7n6']],
+  ['parseTimeRange thinks the week starts on Sunday', ['c7n7']],
+  ['the page flickers while zooming, is useSyncExternalStore wired right', ['c7n8']],
+  ['does the setInterval keep dsh alive', ['c7n9']],
+  ['isSubagent 怎么判断子代理的主聊天', ['c7n10']]
+]
+
+// Everyday messages with plurals and words that look like identifiers: none may get a block.
+export const EVERYDAY = [
+  'can you share a file url to my phone',
+  'my kids have tests every friday',
+  'the cookies I baked came out too dry',
+  'which sizes do these running shoes come in',
+  'my iPhone keeps dropping wifi connections',
+  'is JavaScript a good first language for kids',
+  'how do I sell my old books on eBay',
+  'my macBook battery drains in two hours',
+  'what are good names for two cats',
+  'how many calories are in two eggs',
+  'are there any good movies this weekend',
+  'my plants keep losing their leaves',
+  'how do I clear the caches on my phone',
+  'the tables in our living room are too small',
+  'how do I store photos from my trips',
+  '我的 iPhone 照片怎么备份到电脑',
+  'my sessions at the gym keep getting cancelled',
+  'which flags fly at the stadium',
+  'recommend some keys for a beginner piano'
+]
+
 /**
  * Views (`{ sid, cid, meta, graph, own }`) and stored messages (`{ [sid]: { [seq]: { r, t, a, x } } }`)
  * for the corpus. Each topic cites one user and one assistant message, sized srcChars together.
  * `copies` repeats every chat under new chat numbers (cid + 10k): a user returning to the same
- * projects in new chats (#43).
+ * projects in new chats (#43). `code` adds CODE_CHAT.
  */
-export function corpusViews({ copies = 1 } = {}) {
+export function corpusViews({ copies = 1, code = false } = {}) {
   const views = [{ sid: 'own', cid: 99, own: true, meta: { title: 'new chat', startedAt: '2026-11-15T09:00:00Z' }, graph: { version: 2, nextId: 1, nodes: {}, edges: [] } }]
   const messages = {}
   for (let k = 0; k < copies; k++) {
-    CHATS.forEach((chat, ci) => {
+    (code ? [...CHATS, CODE_CHAT] : CHATS).forEach((chat, ci) => {
       const cid = chat.cid + 10 * k
       const nodes = {}
       const edges = []
