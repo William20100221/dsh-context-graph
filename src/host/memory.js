@@ -10,20 +10,28 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SOURCE_KIND, memoryOn } from '../core/chat.js'
 import { matchAcross } from '../core/match.js'
 import { formatSource, renderChats, renderHits, renderRange } from '../core/render.js'
-import { eventText, shownContext, titleOf } from '../core/session.js'
-import { estimateTokens, textOf } from '../core/text.js'
+import { PROMPT_KINDS, eventText, promptText, shownContext, titleOf } from '../core/session.js'
+import { estimateTokens } from '../core/text.js'
 import { asksAboutPast, parseTimeRange } from '../core/time.js'
 import { capText, sourceOf } from '../store/messages.js'
 
 const TOPIC_LINE = /^\s*- (c\d+n\d+) /gm
 
+/** A goal round of a revision that already had one on the surface: its objective was matched then (#69). */
+const roundSeen = (agent, source) => source?.kind === 'goal' && agent.session.surface.nodes.some((seq) => {
+  const event = agent.session.eventAt(seq)
+  const s = event?.type === 'user/message' ? event.data?.source : undefined
+  return s?.kind === 'goal' && s.goalId === source.goalId && s.revision === source.revision
+})
 
 export function registerMemory(ctx, rt, meter) {
   const { cfg } = rt
 
   ctx.on('agent/pre-step', async (payload, next) => {
     const agent = payload.agent
-    const prompt = payload.messages.filter((m) => m.source?.kind === 'user').map((m) => textOf(m.content)).join('\n')
+    // The user's input however dsh drove it: typed, a /goal round (its objective, once per goal
+    // revision), a reminder, a late answer to a question (#69).
+    const prompt = payload.messages.filter((m) => PROMPT_KINDS.has(m.source?.kind) && !roundSeen(agent, m.source)).map(promptText).filter(Boolean).join('\n')
     const decision = await next()
     if (decision.kind !== 'enter') return decision
     refreshContext(agent)
@@ -116,11 +124,7 @@ export function registerMemory(ctx, rt, meter) {
       // Chats this fork holds word for word (its ancestors): listed nowhere, neither in the list nor in a day digest.
       let heldViews
       const held = async () => (heldViews ??= await heldChats(agent, forkSeq, views))
-      if ((firstTurn || st.announce) && !st.listed && !shown.list) {
-        const skipped = await held()
-        const list = renderChats(views.filter((v) => !skipped.has(v)), { prompt, maxTokens: cfg.listMaxTokens, maxChats: cfg.listMaxChats })
-        if (list) { parts.push(list); layer = 'surface' }
-      }
+      const listing = (firstTurn || st.announce) && !st.listed && !shown.list
       st.listed = true
       st.announce = false
       const range = parseTimeRange(prompt)
@@ -143,6 +147,13 @@ export function registerMemory(ctx, rt, meter) {
           if (text && estimateTokens(text) <= cfg.inlineMaxTokens) inline = { id: lead.id, text }
         }
         parts.push(renderHits(hits, { inline }))
+      }
+      if (listing) {
+        // Evidence before tokens (#76): the list rides with the chat's first block or a question
+        // about earlier work; alone, never with a message whose words are in no earlier chat.
+        const skipped = await held()
+        const list = renderChats(views.filter((v) => !skipped.has(v)), { prompt, maxTokens: cfg.listMaxTokens, maxChats: cfg.listMaxChats, related: parts.length === 0 && !asksAboutPast(prompt) })
+        if (list) { parts.unshift(list); layer = 'surface' }
       }
       if (parts.length === 0) return decision
       const text = parts.join('\n\n')
