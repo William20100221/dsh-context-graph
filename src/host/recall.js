@@ -175,7 +175,8 @@ export function registerRecall(ctx, rt, meter) {
       if (/^\d{4}-\d{2}-\d{2}$/.test(id)) {
         const range = parseTimeRange(id)
         if (!range) return unknown(`"${id}" is not a valid date.`)
-        return ok(renderRange((await rt.loadViews(agent)).filter((v) => !v.own), range))
+        // A day shares a topic recall's budget, fairly among its chats; what does not fit is named (#77).
+        return ok(renderRange((await rt.loadViews(agent)).filter((v) => !v.own), range, { maxTopics: Infinity, maxTokens: cfg.sourceMaxTokens }))
       }
       const m = ID.exec(id)
       if (!m || (!m[1] && !m[2] && !m[3]) || (!m[1] && m[3])) return unknown(`"${id}" is not an id. Use c3n12, c3, c3t7, t7 or 2026-11-01, and only ids you were shown.`)
