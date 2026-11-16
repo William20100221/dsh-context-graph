@@ -61,3 +61,35 @@ independent review (and a second one on its fixes) finds nothing it can reproduc
 - Do not add anything to a chat's context for the display; no extra model calls.
 - Do not write on every message; do not block a message on the ledger.
 - Do not ask the owner questions; choose by: fewer tokens, then speed and quality, then storage.
+
+## RESULT (2026-11-17)
+- Released as v0.9.0. Issues #35-#37 and #59-#68 closed by the fix commit; #42 (index chats
+  shorter than 4 turns) and #58 (legacy forks never reopened) stay for cycle 4.
+- What the user sees now: the card's second line ("Savings (estimate): saved about N tokens in this
+  chat · … in this workspace") with every term in its body, and Plugins → Context Graph with each
+  workspace's totals and a map of its memory (chats, topics by kind, links; hover, click, search,
+  kind filters, drag, zoom; en and zh; light and dark). Nothing is added to any chat; an ordinary
+  message costs about 8 ms at 150 chats (a 16 KB paste about 35 ms); the recall tool definition is
+  about 80 tokens.
+- The audit of 0.8.0 (2 lenses, 13 findings, 11 confirmed) gave #59-#68, all fixed with tests.
+- Four independent reviews of this change, each finding verified by reproduction before it was
+  fixed: 22 findings (21 confirmed), then 16 on those fixes (14), then 10 (9), then 4 (3, all
+  minor), plus 3 found while fixing and 3 by a review of the page fix; a last adversarial check of
+  the fourth round's fixes found 5 more, all minor. All fixed, each with a regression test.
+- Design changes made because of the reviews: memory off became a set of gaps that also covers
+  whole turns begun while off, titles, the first prompt (kept only as a fingerprint), queued input
+  (`on` waits for an idle chat, with every way a turn can end) and the moment before an `off` is
+  written; forks take their flags at the fork point, walking dsh's parent chain; a damaged meta
+  fails closed only up to the next `on`; the estimate credits a used topic with at most its three
+  newest messages as stored, each once per chat, judges use on words the prompt did not bring
+  (counted as matching counts them), charges forked subagents, and keeps uses until they can be
+  written; the page ignores stale answers and draws the view in the box's proportions. An `off`
+  holds in the app run from the moment it is given, for every check (runtime.js withPending).
+- Found in my own process: the tests' 10 ms polling of meta.json made Windows refuse the plugin's
+  rename now and then (EPERM); the real fix was a longer rename back-off (~5 s), which a sync tool
+  or scanner needs too, and slower polling in the tests. Mutation anchors moved with every round:
+  re-anchored, and the ones whose behaviour was replaced retired in favour of newer ones.
+- Final check: 216 tests in three zones; each of the 168 mutants (the fixes of cycles 1-3, broken
+  on purpose) makes the suite fail.
+- Carried forward: #42, #58 (cycle 4); a real-dsh end-to-end test; per-chat savings on the map are
+  sent but not drawn yet; a subagent started fresh is not charged the recall tool's share.

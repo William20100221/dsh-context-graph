@@ -4,6 +4,131 @@ All notable changes to dsh-context-graph. Versions follow semver; each minor ver
 is one development cycle (audit, issues, fixes, independent review), documented in
 [docs/cycles](docs/cycles).
 
+## 0.9.0 — 2026-11-17 — see what memory does
+
+Cycle 3. You can now see what memory does without reading code: a savings line on the
+`/context-graph` card, and a page in Plugins with each workspace's totals and a map of its memory.
+Nothing here adds tokens to a chat or slows a message.
+
+**What memory saved, and what it cost** (#35)
+- Every chat keeps a small ledger: notes and recall results sent, their cached re-sends with every
+  later request, the recall tool's share of each request, and the indexing calls as dsh reported
+  them, against what used topics stood in for (their newest messages as stored, each once per
+  chat). A topic counts as used when the model recalled it or its answer says two of the topic's
+  words that the prompt did not bring, once per chat. Cached input is weighed at 0.1 and output at 4, in input-token equivalents; a loss
+  is shown as a loss.
+- The card's second line: `Savings (estimate): saved about 8,500 tokens in this chat · saved about
+  41,000 tokens in this workspace`; its body shows every term, so the number can be checked.
+- `.context-graph/ledger.json` holds a few counters per chat, written at most once per turn, off
+  the critical path; it survives restarts.
+
+**The plugin's page** (#36)
+- Plugins → Context Graph: each workspace with memory (from dsh's workspace registry and the
+  folders used in this run), its saved / cost / net, and a map: chats as circles, topics as dots
+  coloured by kind and sized by links, links as lines; hover for a label, click for the gist, the
+  chat, the links, the first lines of the sources and the id to paste; search and kind filters;
+  drag and zoom. Light and dark follow dsh's own theme; English and Chinese.
+- Data comes from three read-only routes registered through dsh's connection registry, which only
+  answers the app's owner; a workspace is named by a key, never a path, so nothing outside the
+  known memory folders can be read. The map is laid out by the host (deterministic), so the
+  browser only draws; it sends labels only, gists and sources load when a topic is opened.
+
+**Docs** (#37)
+- README: the page, how the estimate works and where it errs, the ledger on disk; the cost table
+  points at the live numbers, and test/core/docs.test.js fails when the code and the README's
+  figures disagree.
+
+**Found by the cycle-3 audit of 0.8.0, and fixed** (2 lenses, 13 findings, 11 confirmed by reproduction; #59-#68)
+- What you type while memory is off is never indexed or shared, also after `on`: `off` remembers
+  where memory went off, and `on` turns that stretch into a gap the builder never reads and turn
+  recall never serves. Turns from before `off` that were not indexed yet still are. (#59)
+- A fork of a private or memory-off chat starts private or memory-off, and is titled from its own
+  first prompt and its own dsh titles, never the parent's. (#60)
+- A topic id the indexing model invents for a new topic can no longer overwrite another new topic
+  of the same answer (and take its source). (#61)
+- One chat whose topics file cannot be read (locked by a sync tool, no permission) is skipped
+  instead of taking memory away from the whole workspace. (#62)
+- The read cache holds far more than any workspace needs: at 1,500 chats a message went from about
+  1 s to under 150 ms. (#63)
+- The `on` card says whether the chat is shared or stays private. (#64)
+- A turn that was running when `on` ran is indexed when it ends. (#65)
+- Matching uses a word index per chat and counts a topic's evidence only over the words it holds
+  (same results): a 16 KB paste at 150 chats takes about 35 ms instead of up to 1.3 s, and an
+  ordinary message about 8 ms instead of 15. (#66)
+- A topic recall shares its budget: a short prompt leaves its unused share to the long answer, so
+  answers that fit are not cut. (#67)
+- The recall tool definition is about 80 tokens instead of 106, sent with every request. (#68)
+
+**Found by the independent reviews of this change, and fixed** (first review: 3 angles, 22 findings, 21 confirmed by reproduction and the 22nd fixed as well, plus 3 found while fixing them and 3 by a review of the page fix; second review, of those fixes: 3 angles, 16 findings, 14 confirmed and the other 2 fixed as well; third review, of the second round's fixes: 3 angles, 10 findings, 9 confirmed and the 10th fixed as well; fourth review, of the third round's fixes: 2 angles, 4 findings, 3 confirmed, all minor, and the 4th fixed as well; a last adversarial check of those fixes: 5 findings, all minor, fixed)
+
+Privacy (#59, #60)
+- A turn begun while memory was off stays private as a whole, also the part of its answer written
+  after `on`. `on` while a turn is still running, or while messages you typed during off are
+  still queued in dsh's inbox, takes effect when the chat is idle: at the turn's end, after a
+  stopped or failed turn, after an app restart, or when the queued message is removed. A later
+  `off`, even one sent as the turn ends, cancels it; dsh's own notices in the inbox do not hold it.
+  `off` itself holds at once, also while its write waits for a file another program holds: a
+  turn that ends meanwhile is not indexed, and a fork made, a recall asked or an `on` sent
+  meanwhile sees memory off; a second `off` keeps it held if the first one cannot write.
+- Nothing from an off stretch becomes a chat's title: not a prompt typed there, not a dsh title
+  made from one, not after a damaged meta is repaired (it keeps the title it can read back and
+  takes none from the log). The first prompt, used only to match forks to their ancestors, is kept
+  as a 16-character fingerprint instead of text; metas from 0.8.0 are converted on their next write.
+- Memory turned off under 0.8.0 (no off point recorded) or a meta recovered after damage: `on`
+  treats everything after the last index as typed while off, and a second `off` no longer moves
+  the off point forward. A damaged meta keeps its off stretches or, when they cannot be read back,
+  serves none of its turns to other chats, up to where memory is turned on again (forks made and
+  turns typed after that are not held back); a second damage keeps what the first one closed. Past 50 off stretches the two oldest merge; none is
+  dropped.
+- A fork is private from its first message when its parent is, and memory-off when memory was off
+  at the fork point: its parent was off then, or the point lies in one of its off stretches (for a
+  fork of a fork, also its grandparent's), or the parent's damaged meta lost its stretches. It then
+  has no title until `on`. Its parent is the one dsh names, followed up dsh's chain of forks, so a
+  look-alike chat (a sibling fork, another chat that starts with "hi") no longer passes its flags
+  on. A fork takes no title from its parent: not dsh's "<title> (1)" rename of a new fork, not a
+  title made from inherited prompts, and a fork indexed by 0.8.0 or earlier drops the title it got
+  then at its next write (keeping the one that write gives it). A fork gets its folder when first seen (a few hundred bytes).
+- While memory is off, the card no longer counts the turns typed since as waiting to be indexed,
+  and it shows the chat's own flags even when its topics cannot be read.
+
+The savings estimate (#35)
+- "Used" means the answer says two of the topic's words that the prompt did not bring, counted as
+  matching counts words: one Chinese word once (also when it sits next to the prompt's words), an
+  exact identifier of the label twice. An answer that only repeats the question no longer counts,
+  and one that states the topic's fact does.
+- A used topic stands in for its newest cited messages (three at most) at their stored size (a
+  source an older version kept whole counts as if cut the same way), each message once per chat
+  however many topics cite it; what memory sent instead (the note, the recall result) is counted
+  once, as cost. Counting every cited message at its full length could show one recall as 78,000
+  tokens saved.
+- A turn is judged by its own answer, also when the next message arrives while it is being
+  indexed; a stopped turn's topics are not judged against the next turn's answer; uses survive a
+  failed index or an unreadable ledger and are credited at the next turn end. Blocks a compaction
+  removed stop being charged as re-sent, also mid-turn and with memory off. A subagent forked from
+  a chat is charged to it: the blocks it carries and the recall tool.
+- An unreadable ledger.json (a sync tool holding it) costs the savings figures, not the card or
+  the page: both say the savings are unavailable for now instead of showing zeros.
+
+The page (#36, #62, #65)
+- A late map or topic answer no longer replaces the one you asked for since, and Close drops a
+  topic still on its way; each topic opens a fresh panel (no leftover link or "Copied"), "Copied"
+  shows only when something was copied, and a topic that cannot be read says so.
+- A large workspace's map fills its box (the view takes the box's proportions, from the newest
+  row) and drags at the pointer's speed; a map that failed to load can be asked again. Chat labels
+  fit their slot: the chat number, marks and hidden-topic count stay whole (the marks as 🔒 private
+  and ⏸ memory off where words do not fit) and hover shows the full text. The page states the rule
+  the estimate follows.
+- The page skips a chat or a whole workspace it cannot read and leaves out chats without a chat
+  number (an unreadable meta); a repeated number (a copied folder) reaches the same chat, the one
+  with topics, on the map, on a topic and through recall (a copy that cannot be read is skipped,
+  and the asking chat never answers in its place);
+  a topic whose sources cannot be read still opens.
+- A turn-end build that finds the chat busy keeps the running turn for the next one.
+
+Files
+- On Windows a write waits up to about 5 s for a file another program holds open (a sync tool, a
+  virus scan) instead of failing after 250 ms.
+
 ## 0.8.0 — 2026-11-16 — lean memory tree
 
 Cycle 2. A six-angle audit of 0.7.0 (new chat, relevance, indexing call, drill-down, speed,
