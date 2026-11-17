@@ -8,7 +8,7 @@ import { basename, isAbsolute, join } from 'node:path'
 
 import { closedAt, memoryOn, offPoint, sharedOn } from '../core/chat.js'
 import { emptyCounters, standIn } from '../core/ledger.js'
-import { eventText, inGap, shownContext, titleOf } from '../core/session.js'
+import { eventText, inGap, isPrompt, mergeGaps, promptText, shownContext, titleOf } from '../core/session.js'
 import { chatDir, listChats, loadGraph, loadMeta, updateMeta } from '../store/chats.js'
 import { chatEntry } from '../store/ledger.js'
 import { capText, loadMessages } from '../store/messages.js'
@@ -20,6 +20,21 @@ const ownParts = new WeakMap()
  * and the text, which may have been typed while memory was off, is never stored (#59, review).
  */
 const firstKey = (text) => (text === undefined ? undefined : createHash('sha1').update(text).digest('hex').slice(0, 16))
+
+/**
+ * What a chat's fingerprint is made from: its first typed prompt (titleOf), or while it has none,
+ * its first prompt of any kind, such as a /goal chat's objective, so that its meta too says it is
+ * no 0.4-0.7 meta (forkUnknown; review of #69).
+ */
+function keyPrompt(eventAt) {
+  const typed = titleOf(eventAt)
+  if (typed !== undefined) return typed
+  for (let seq = 0; ; seq++) {
+    const event = eventAt(seq)
+    if (!event) return undefined
+    if (isPrompt(event)) return promptText(event.data)
+  }
+}
 
 /** Whether a chat's first prompt is `first`; metas written before 0.9.0 keep it as text, or only a title. */
 const startsWith = (meta, first) => first !== undefined && (meta?.firstKey !== undefined ? meta.firstKey === firstKey(first) : (meta?.firstPrompt ?? meta?.title) === first)
@@ -233,7 +248,9 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
    * fork of a private chat starts private (#60). A fork made where its parent's memory was off (the
    * parent was off then, or the fork point lies in one of its off stretches) starts memory-off and
    * has no title until `on`, its own prompts so far being typed while off (review). The inherited
-   * first prompt is kept as `firstKey`, the fingerprint ancestors are matched by.
+   * first prompt is kept as `firstKey`, the fingerprint ancestors are matched by. Its ancestors'
+   * off stretches become its first gaps: a goal set in one and resumed in the fork stays private
+   * (#69, review); the fork never indexes or serves its inherited part anyway.
    */
   async function initialMeta(agent) {
     const session = agent.session
@@ -247,6 +264,7 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
     const from = await parentMetaOf(agent, forkSeq, first)
     const point = forkSeq - 1
     const offAtFork = await offAt(dirFor(agent), from, point)
+    const inherited = await offUpTo(dirFor(agent), from, point)
     return {
       ...base,
       title: offAtFork ? undefined : titleOf(eventAt, 60, forkSeq),
@@ -254,6 +272,7 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
       forkSeq,
       ...(parent ? { parent: String(parent) } : {}),
       ...(from?.private === true ? { private: true } : {}),
+      ...(inherited.length > 0 ? { gaps: inherited } : {}),
       // Off from its first message: `on` turns all of the fork's own part so far into a gap (#59).
       ...(offAtFork ? { memoryOff: true } : {})
     }
@@ -277,6 +296,24 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
   }
 
   /**
+   * The off stretches up to `point` of the chat whose meta is `meta` and of its ancestors, as gaps,
+   * by the same rules as offAt: its gaps; while it is off, all after where it went off; for a meta
+   * whose stretches were lost, all up to where memory was turned on again (review of #69).
+   */
+  async function offUpTo(dir, meta, point) {
+    const out = []
+    for (let hops = 0; meta && point >= 0 && hops < 16; hops++) {
+      for (const g of Array.isArray(meta.gaps) ? meta.gaps : []) if (Array.isArray(g) && g[0] <= point) out.push([g[0], Math.min(g[1], point)])
+      if (!memoryOn(meta) && offPoint(meta) < point) out.push([offPoint(meta) + 1, point])
+      if (meta.turnsClosed === true) out.push([0, Number.isInteger(meta.closedThrough) ? Math.min(meta.closedThrough, point) : point])
+      if (!(Number.isInteger(meta.forkSeq) && meta.parent)) break
+      point = Math.min(point, meta.forkSeq - 1)
+      meta = await metaOf(dir, meta.parent)
+    }
+    return mergeGaps([], out)
+  }
+
+  /**
    * A fork whose meta was written before forks had a fork point (v0.4-v0.6) gets one the next time
    * it is written, from dsh's own count, so its inherited topics can be held back (second review).
    */
@@ -292,14 +329,18 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
    * versions not at all) is brought up to date the next time it is written: the first prompt becomes
    * its fingerprint, and a fork drops the title it got then (often its parent's: dsh's "<title> (1)",
    * or the inherited first prompt), so its next index titles it from its own prompts (reviews).
+   * A new meta passes here too: one of a chat with no typed prompt gets its fingerprint here.
    */
   function upToDate(agent, meta) {
     if (!meta) return meta
+    const eventAt = (seq) => agent.session.eventAt(seq)
     // An absolute local path that nothing reads, in a folder users may sync: dropped (#78).
     const { workspace, ...current } = meta
-    if (current.firstKey !== undefined) return current
+    // A fingerprint made while no prompt was typed (keyPrompt) gives way to the first typed one, the
+    // prompt memory.js matches forks by (review of #69).
+    if (current.firstKey !== undefined) return { ...current, firstKey: firstKey(titleOf(eventAt)) ?? current.firstKey }
     const { firstPrompt, ...rest } = current
-    const first = firstPrompt ?? titleOf((seq) => agent.session.eventAt(seq))
+    const first = firstPrompt ?? keyPrompt(eventAt)
     return { ...rest, ...(first !== undefined ? { firstKey: firstKey(first) } : {}), ...(Number.isInteger(rest.forkSeq) ? { title: undefined } : {}) }
   }
 
@@ -334,7 +375,8 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
 
   /**
    * Ids of the dsh sessions that are forks (header.isSeeded), from one listing of session headers
-   * per app run (#58); undefined while dsh cannot list them here.
+   * per app run (#58); undefined while dsh cannot list them here. A listing that failed is not
+   * tried again in this run: every message would wait for it (review of #58).
    */
   let seeded
   function seededIds() {
@@ -343,7 +385,7 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
     seeded ??= Promise.resolve()
       .then(() => query.listSessions())
       .then((records) => new Set(records.filter((r) => r?.header?.isSeeded === true).map((r) => String(r.header.id))))
-      .catch(() => { seeded = undefined })
+      .catch(() => undefined)
     return seeded
   }
   const learning = new Map()
