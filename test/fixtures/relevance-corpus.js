@@ -232,7 +232,10 @@ export const EVERYDAY = [
   '我的 iPhone 照片怎么备份到电脑',
   'my sessions at the gym keep getting cancelled',
   'which flags fly at the stadium',
-  'recommend some keys for a beginner piano'
+  'recommend some keys for a beginner piano',
+  // Review of v0.10.0 (K6): a window is not Windows (c5n7 'Windows 路径 bug').
+  'there is a bug where the modal window does not close on escape',
+  'why does the popup window flash white on open? looks like a bug'
 ]
 
 /**

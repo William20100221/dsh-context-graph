@@ -23,12 +23,13 @@ const oneDay = (d) => ({ from: d, to: dayAt(d, 1), label: iso(d) })
 
 // Chinese time words count only where they are words: 目前天气 is not 前天, 登上月球 is not 上月,
 // 这周期 is not 这周 (#25). 大前天 is not 前天, 上上周 is not 上周, 二十天前 is not 十天前 (#84).
+// 两天前端 is frontend and 三天前后 about three days, not 2 or 3 days ago (review of #84).
 const ZH = {
   threeDaysAgo: /大前天/,
   dayBefore: /(?<![目之以提从先此日])前天(?!气)/,
   yesterday: /昨天|昨日|昨晚/,
   today: /今天|今早|今日|今晚/,
-  ago: /(?<![一两二三四五六七八九十\d])(\d+|[一两二三四五六七八九十])\s*(天|周|个?星期|个?礼拜)前/,
+  ago: /(?<![一两二三四五六七八九十\d])(\d+|[一两二三四五六七八九十])\s*(天|周|个?星期|个?礼拜)前(?![端台后面])/,
   weekBeforeLast: /上上(?:周|个?星期|个?礼拜)/,
   lastWeek: /上周(?![期边围])|上星期|上个星期|上礼拜/,
   thisWeek: /(?:本|这)周(?![期边围到全正长])|这星期|这个星期|本星期/,
@@ -38,9 +39,9 @@ const ZH = {
 }
 
 // "two days ago", "a week ago", "nov 3", "on monday" (#84). Whole month names only: "market 5" and
-// "decided 3" are not dates.
+// "decided 3" are not dates. "1.5 weeks ago" is not 5 weeks ago (review of #84).
 const NUMBER = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, 一: 1, 两: 2, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 }
-const AGO = /\b(\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten) (day|week)s? ago\b/
+const AGO = /\b((?<!\.)\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten) (day|week)s? ago\b/
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
 const MONTH_DAY = /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.? (\d{1,2})(?:st|nd|rd|th)?(?:,? (\d{4}))?\b/
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
@@ -68,10 +69,6 @@ export function parseTimeRange(text, now = new Date()) {
     const d = pastDate(now, m[1], +m[2], +m[3])
     if (d) return oneDay(d)
   }
-  if ((m = MONTH_DAY.exec(s))) {
-    const d = pastDate(now, m[3], MONTHS.indexOf(m[1].slice(0, 3)) + 1, +m[2])
-    if (d) return oneDay(d)
-  }
   if (ZH.threeDaysAgo.test(s)) return days(-3, '3 days ago')
   if (/\bday before yesterday\b/.test(s) || ZH.dayBefore.test(s)) return days(-2, 'the day before yesterday')
   if (/\b(?:yesterday|last night)\b/.test(s) || ZH.yesterday.test(s)) return days(-1, 'yesterday')
@@ -87,8 +84,13 @@ export function parseTimeRange(text, now = new Date()) {
   if (ZH.monthBeforeLast.test(s)) return monthsAgo(2, '2 months ago')
   if (/\blast month\b/.test(s) || ZH.lastMonth.test(s)) return monthsAgo(1, 'last month')
   if (/\bthis month\b/.test(s) || ZH.thisMonth.test(s)) return monthsAgo(0, 'this month')
-  // Last: "on monday last week" is last week. The weekday is the latest one before today.
+  // After the phrases above: "on monday last week" is last week. The weekday is the latest one before today.
   if ((m = ON_WEEKDAY.exec(s))) return oneDay(dayAt(now, -((now.getDay() - WEEKDAYS.indexOf(m[1]) + 7) % 7 || 7)))
+  // Last: a month date is often what the talk was about, "the may 1 launch last week" (review of #84).
+  if ((m = MONTH_DAY.exec(s))) {
+    const d = pastDate(now, m[3], MONTHS.indexOf(m[1].slice(0, 3)) + 1, +m[2])
+    if (d) return oneDay(d)
+  }
   return undefined
 }
 
@@ -97,12 +99,19 @@ export function parseTimeRange(text, now = new Date()) {
 // Every phrase names "we"/"you" or the conversation itself: "did we win", "the last time I smoked",
 // 和朋友聊过 are about life, not about this memory (second review of #24).
 const MEMORY_VERB = '(?:decide|decided|discuss|discussed|talk|talked|agree|agreed|choose|chose|pick|picked|fix|fixed|change|changed|try|tried|build|built|write|wrote|set up|settle|settled|say|said|do|did|done|plan|planned|use|used|work on|worked on)'
+// "what did I do wrong" asks for a diagnosis, not for this memory (review of #80).
+const PAST_EN = new RegExp(`\\b(?:(?:did|have|had) we (?:already |ever )?${MEMORY_VERB}|what (?:did|have) (?:we|you|i) (?:just |already )?${MEMORY_VERB}(?! wrong)|last time (?:we|you)|where were we|remind me (?:what|how|why|where|when|which) (?:we|you)|you (?:said|mentioned|suggested))\\b`)
 // A bare "we <verb>" counts only in the past and after a relative word: "the port we picked", "how
 // we fixed" name earlier work; "what should we do tonight", "yesterday we tried a new route" do not.
-// Nor does a plan in Chinese: 我们要讨论的, 我们打算定的 (#80); 我们主要讨论了 still counts.
+// Nor does a story that says how the thing went (review of #80, #84): its clause goes on with is or
+// was ("the restaurant we tried last night was amazing, find me a similar one"), or it opens the
+// message and asks nothing ("the hotel we picked two days ago cancelled"). "the port we picked?" asks.
 const PAST_VERB = '(?:decided|discussed|talked|agreed|chose|picked|fixed|changed|tried|built|wrote|set up|settled|said|did|done|planned|used|worked on|left off)'
-const PAST_EN = new RegExp(`\\b(?:(?:did|have|had) we (?:already |ever )?${MEMORY_VERB}|(?:what|which|how|why|where|when|that|the [\\w-]+) we (?:already |just )?${PAST_VERB}|what (?:did|have) (?:we|you|i) (?:just |already )?${MEMORY_VERB}|last time (?:we|you)|where were we|remind me (?:what|how|why|where|when|which) (?:we|you)|you (?:said|mentioned|suggested))\\b`)
-const PAST_ZH = /上次(?:我们|咱们|你|聊|说|讨论|提|定|做|改)|之前(?:我们|咱们|你|说|聊|讨论|提|定|做)|(?:我们|咱们)(?:之前|刚才|上次)|(?:我们|咱们)(?:(?!(?<!主)要|将|会|想|打算|准备)[^。？?！!]){0,8}(?:聊|讨论|定|决定|说|谈)(?:过|了|的)|刚才(?:说|聊|提|讨论)|(?:说|聊|讨论|提到)的那个|(?:聊|讨论|做|干)了(?:什么|哪些|啥)|那天(?:我们|聊|说)/
+const RELATIVE_EN = new RegExp(`\\b(?:what|which|how|why|where|when|that|the [\\w-]+) we (?:already |just )?${PAST_VERB}\\b(?![^,.;!?]*\\b(?:is|are|was|were|looks?|seems?)\\b)`)
+const STORY_EN = new RegExp(`^the [\\w-]+ we (?:already |just )?${PAST_VERB}\\b[^?]*$`)
+// Nor does a plan in Chinese: 我们要讨论的, 我们打算定的 (#80); 我们主要讨论了 still counts, and so
+// do 会话, 会议, 开会 and 想法, which are no plans (review of #80).
+const PAST_ZH = /上次(?:我们|咱们|你|聊|说|讨论|提|定|做|改)|之前(?:我们|咱们|你|说|聊|讨论|提|定|做)|(?:我们|咱们)(?:之前|刚才|上次)|(?:我们|咱们)(?:(?!(?<!主)要|将|(?<!开)会(?![话议上])|想(?!法)|打算|准备)[^。？?！!]){0,8}(?:聊|讨论|定|决定|说|谈)(?:过|了|的)|刚才(?:说|聊|提|讨论)|(?:说|聊|讨论|提到)的那个|(?:聊|讨论|做|干)了(?:什么|哪些|啥)|那天(?:我们|聊|说)/
 
 /**
  * Whether a message asks about earlier work in this memory ("what did we do", "last time", 之前我们,
@@ -111,7 +120,7 @@ const PAST_ZH = /上次(?:我们|咱们|你|聊|说|讨论|提|定|做|改)|之�
  */
 export function asksAboutPast(text) {
   const s = String(text ?? '').normalize('NFKC').toLowerCase()
-  return PAST_EN.test(s) || PAST_ZH.test(s)
+  return PAST_EN.test(s) || (RELATIVE_EN.test(s) && !STORY_EN.test(s)) || PAST_ZH.test(s)
 }
 
 export const inRange = (iso, range) => Boolean(iso) && new Date(iso) >= range.from && new Date(iso) < range.to
