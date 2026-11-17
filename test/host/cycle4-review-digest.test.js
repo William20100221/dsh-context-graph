@@ -42,7 +42,9 @@ test('review K4 K5 K8: a story or 前端 gets no day digest; a question about an
     // Later in a chat.
     const agent = agentOf('sLater', cwd, [system()])
     await h.step(agent, ask('hello'))
-    for (const p of [STORY, FRONTEND]) assert.equal(added(await h.step(agent, ask(p))), '', p)
+    assert.equal(added(await h.step(agent, ask(STORY))), '', STORY)
+    // 之前我们说的方案 asks about earlier work, so the chat list may ride along (K3); no day digest.
+    assert.doesNotMatch(added(await h.step(agent, ask(FRONTEND))), /Chats from|No indexed chats/, FRONTEND)
     assert.match(added(await h.step(agent, ask('我们昨天在那个会话里说的方案是哪个'))), /^\[context-graph\] Chats from yesterday /)
     // The day talked about, not the launch date talked about.
     const launch = added(await h.step(agent, ask('what did we decide about the may 1 launch last week?')))
