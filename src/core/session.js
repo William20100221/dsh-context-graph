@@ -67,10 +67,21 @@ export function promptText(message) {
 
 const argsOf = (block) => (typeof block?.arguments === 'string' ? parse(block.arguments) : block?.arguments) ?? {}
 
-/** An assistant message's text, with any plan it handed to exit_plan_mode: dsh keeps the plan only as that call's argument (#70). */
-function assistantText(blocks) {
-  const plans = blocks.filter((b) => b?.type === 'tool-call' && b.name === 'exit_plan_mode').map((b) => argsOf(b).plan).filter((p) => typeof p === 'string' && p.trim())
-  return [textOf(blocks), ...plans.map((p) => `Plan:\n${p.trim()}`)].filter(Boolean).join('\n\n')
+// How dsh-plan-mode's exit_plan_mode result words the user's review: approved, or sent back to
+// planning with the user's own words (review of #70).
+const APPROVED = /^Plan approved\b/
+const SENT_BACK = /^(?:Error: )?The user chose to keep planning; their feedback: ([^]+)$/
+
+const planText = (plan) => (typeof plan === 'string' && plan.trim() ? `Plan:\n${plan.trim()}` : '')
+
+/**
+ * An assistant message's text, with each plan it handed to exit_plan_mode that the user approved
+ * (`approved(callId)`): dsh keeps the plan only as that call's argument (#70), and a plan the user
+ * sent back is not the plan (review).
+ */
+function assistantText(blocks, approved) {
+  const plans = blocks.filter((b) => b?.type === 'tool-call' && b.name === 'exit_plan_mode' && approved(b.id)).map((b) => planText(argsOf(b).plan))
+  return [textOf(blocks), ...plans].filter(Boolean).join('\n\n')
 }
 
 /**
@@ -83,15 +94,44 @@ function assistantText(blocks) {
  * there, the answer to a question asked there (one whose goal or question is unknown, too).
  * Each step: { seq, event, turn, start, prompt, hidden, from, role, text }, `from` being where the
  * private stretch of a hidden step starts (a turn made private by its prompt, from its turn/start).
+ * Tool calls count however the model made them: as blocks of its message, or under dsh's ptc
+ * preset from its run_code program, which dsh logs as tool/ptc-dispatch-start, then (settled, with
+ * the result) tool/ptc-dispatch (review of #69, #70). `limit`: the last seq a call's result is
+ * looked for at.
  */
-function* walk(eventAt, gaps = []) {
+function* walk(eventAt, gaps = [], limit = Infinity) {
   const goals = new Map()
   const reminders = new Set()
   const asks = new Map()
+  const plans = new Set()
   const drivenFromGap = ({ source, content }) => {
     if (source.kind === 'goal') return goals.get(source.goalId) ?? true
     if (source.kind === 'schedule') return reminderPrompts(textOf(content)).some((p) => reminders.has(p))
     if (source.kind === 'user-question-reply') return asks.get(source.callId)?.hidden ?? true
+    return false
+  }
+  // A tool call, `isHidden` when made in a private stretch.
+  const called = (name, args, id, isHidden) => {
+    if (name === 'ask_user_question') asks.set(id, { questions: args.questions, hidden: isHidden })
+    else if (name === 'exit_plan_mode') plans.add(id)
+    // A reminder scheduled in a private stretch stays private when it comes back (#69).
+    else if ((name === 'schedule_create' || name === 'schedule_update') && isHidden && typeof args.prompt === 'string') reminders.add(args.prompt.trim())
+  }
+  // What a call's result holds of the user's own: the answers to ask_user_question (#70), the
+  // words a plan was sent back with (review). The only tool output read (#47).
+  const answerIn = (id, content) => {
+    const ask = asks.get(id)
+    if (ask) return answersText(parse(textOf(content))?.answers, ask.questions)
+    return plans.has(id) ? SENT_BACK.exec(textOf(content))?.[1].trim() ?? '' : ''
+  }
+  // Whether the result of exit_plan_mode call `id` (made at `seq`) approves the plan: looked for in
+  // the call's turn, up to `limit` and outside the gaps (review of #70).
+  const approvedAfter = (seq, id) => {
+    for (let s = seq + 1; s <= limit; s++) {
+      const e = eventAt(s)
+      if (!e || e.type === 'turn/start' || e.type === 'turn/end') return false
+      if (e.type === 'tool/result' && e.data?.message?.toolCallId === id) return !inGap(s, gaps) && APPROVED.test(textOf(e.data.message.content))
+    }
     return false
   }
   let numbered = false
@@ -122,22 +162,22 @@ function* walk(eventAt, gaps = []) {
     } else if (event.type === 'assistant/message') {
       const blocks = Array.isArray(event.data?.message?.content) ? event.data.message.content : []
       role = 'assistant'
-      text = assistantText(blocks)
-      for (const b of blocks) {
-        if (b?.type !== 'tool-call') continue
-        if (b.name === 'ask_user_question') asks.set(b.id, { questions: argsOf(b).questions, hidden: gap || hidden })
-        else if ((b.name === 'schedule_create' || b.name === 'schedule_update') && (gap || hidden)) {
-          // A reminder scheduled in a private stretch stays private when it comes back (#69).
-          const scheduled = argsOf(b).prompt
-          if (typeof scheduled === 'string') reminders.add(scheduled.trim())
-        }
-      }
+      text = assistantText(blocks, (id) => approvedAfter(seq, id))
+      for (const b of blocks) if (b?.type === 'tool-call') called(b.name, argsOf(b), b.id, gap || hidden)
     } else if (event.type === 'tool/result') {
-      // The user's answers to ask_user_question: the only tool output read (#47, #70).
-      const ask = event.data?.message?.toolCallId === undefined ? undefined : asks.get(event.data.message.toolCallId)
-      if (ask) {
-        role = 'user'
-        text = answersText(parse(textOf(event.data.message.content))?.answers, ask.questions)
+      const id = event.data?.message?.toolCallId
+      text = id === undefined ? '' : answerIn(id, event.data.message.content)
+      if (text) role = 'user'
+    } else if (event.type === 'tool/ptc-dispatch-start') {
+      called(event.data?.name, argsOf(event.data), event.data?.subCallId, gap || hidden)
+    } else if (event.type === 'tool/ptc-dispatch') {
+      const { name, subCallId, content } = event.data ?? {}
+      if (name === 'exit_plan_mode' && APPROVED.test(textOf(content))) {
+        role = 'assistant'
+        text = planText(argsOf(event.data).plan)
+      } else {
+        text = answerIn(subCallId, content)
+        if (text) role = 'user'
       }
     } else if (event.type === 'goal/change') {
       const id = event.data?.goal?.id ?? event.data?.cleared?.id
@@ -157,8 +197,8 @@ function* walk(eventAt, gaps = []) {
  * Within one session the log is never edited, so nothing outside the conversation is read.
  * Each message carries its dsh turn number (see walk) and its time. Prompts are what the user
  * typed or dsh drove (a goal round's objective once per goal revision, #69); assistant text
- * includes the plans handed to exit_plan_mode, and the user's answers to ask_user_question are
- * user text (#70).
+ * includes the plans handed to exit_plan_mode that the user approved, and the user's answers to
+ * ask_user_question, or the words a plan was sent back with, are user text (#70, review).
  * `completeOnly`: stop before a turn that is still running (a `turn/start` with no `turn/end` after
  * it), so a build started by a command mid-turn never splits that turn's question from its answer.
  * `gaps`: seq ranges `[from, to]` typed while memory was off; never read, nor what they drove (#59, #69).
@@ -368,9 +408,9 @@ const DRIVEN = { goal: 'goal', schedule: 'reminder' }
 
 /**
  * Turn `n` as dsh numbers it (#71: from its turn/start to the next one), lean (#47): its prompts,
- * the assistant's text and plans, the user's answers to its questions (#70), and its tool use as
- * one line; tool output is left out (it averaged 9,000 tokens on real logs). Capped at about
- * `maxTokens`.
+ * the assistant's text and approved plans, the user's answers to its questions and to its plans
+ * (#70, review), and its tool use as one line; tool output is left out (it averaged 9,000 tokens
+ * on real logs). Capped at about `maxTokens`.
  * @param limitSeq last seq that may be read: another chat's turn stops at its indexed position.
  * @returns { text, seq, endSeq } or undefined when the log has nothing of turn n at or before `limitSeq`.
  */
@@ -383,7 +423,8 @@ export function turnTranscript(eventAt, n, { maxTokens = 2000, limitSeq = Infini
   }
   let start = -1
   let end = -1
-  for (const step of walk(eventAt)) {
+  // A plan's approval past `limitSeq` is not read either.
+  for (const step of walk(eventAt, [], limitSeq)) {
     if (step.seq > limitSeq || (start >= 0 && step.start)) break
     if (start < 0 && !(step.start && step.turn === n)) continue
     if (start < 0) start = step.seq
