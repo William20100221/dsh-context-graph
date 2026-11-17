@@ -12,7 +12,7 @@ import { test } from 'node:test'
 import { emptyGraph, mergeDelta } from '../../src/core/index.js'
 import { chatDir, listChats, loadGraph, loadMeta, migrateRootLayout, saveGraph, updateMeta } from '../../src/store/chats.js'
 import { writeJson } from '../../src/store/files.js'
-import { capText, loadMessages, saveMessages, sourceOf } from '../../src/store/messages.js'
+import { capText, loadMessages, oldTurns, saveMessages, sourceOf } from '../../src/store/messages.js'
 import { BACKUP_DAYS, parseSourceFile, upgradeChat } from '../../src/store/migrate.js'
 
 const exists = (path) => stat(path).then(() => true, () => false)
@@ -111,6 +111,8 @@ test('#12 each message is stored once, by seq, capped; topics point at it', () =
   const stored = await loadMessages(chat)
   assert.deepEqual(Object.keys(stored), ['5', '6'])
   assert.equal(stored['5'].x, 'hello', 'writing a seq twice is a no-op')
+  assert.equal(JSON.parse(await readFile(join(chat, 'msgs.json'), 'utf8')).v, 2, 'a new store numbers turns as dsh does (#71)')
+  assert.equal(await oldTurns(chat), false)
   assert.deepEqual(sourceOf(stored, { refs: [6, 5, 99] }).map((m) => [m.seq, m.role, m.text]), [[6, 'assistant', 'hi'], [5, 'user', 'hello']])
   const long = 'a'.repeat(4500) + 'MIDDLE' + 'b'.repeat(5000)
   const capped = capText(long)
