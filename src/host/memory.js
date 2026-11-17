@@ -1,8 +1,8 @@
 /**
  * Memory injection: on every human turn, match the prompt against the other shared chats of the
  * workspace and append one short `[context-graph]` block at the END of the request, so the
- * provider's prefix cache survives. The first message of a chat also gets the top layer: one line
- * per earlier chat. Unrelated messages get nothing (#23). Nothing else is ever added to a chat.
+ * provider's prefix cache survives. A chat's first block also carries the top layer: one line per
+ * earlier chat. Unrelated messages get nothing (#23). Nothing else is ever added to a chat.
  */
 
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -117,16 +117,9 @@ export function registerMemory(ctx, rt, meter) {
       const forkSeq = rt.forkSeqOf(agent.session)
       const parts = []
       let layer
-      // The top layer, once per chat (#26): on its first turn (no answer on the surface yet), or
-      // after /context-graph on. Never while a list is still on the surface, and an app restart or a
-      // compaction does not bring it back: the chat has its own work in context by then.
-      const firstTurn = !agent.session.surface.nodes.some((seq) => agent.session.eventAt(seq)?.type === 'assistant/message')
       // Chats this fork holds word for word (its ancestors): listed nowhere, neither in the list nor in a day digest.
       let heldViews
       const held = async () => (heldViews ??= await heldChats(agent, forkSeq, views))
-      const listing = (firstTurn || st.announce) && !st.listed && !shown.list
-      st.listed = true
-      st.announce = false
       const range = parseTimeRange(prompt)
       const { hits: found, lead, total } = matchAcross(views, prompt, { max: cfg.maxHits, range, skip: shown.ids })
       const holds = await inherited(agent, forkSeq, found)
@@ -149,13 +142,24 @@ export function registerMemory(ctx, rt, meter) {
         }
         parts.push(renderHits(hits, { inline }))
       }
-      if (listing && (parts.length > 0 || asksAboutPast(prompt))) {
-        // Evidence before tokens (#76): the list rides with the chat's first block or a question
-        // about earlier work. A first message about something else gets nothing: the list would
-        // also be re-sent with every later request of the chat.
+      // The top layer, once per chat (#26). Evidence before tokens (#76): it rides with the chat's
+      // first block or a question about earlier work, on whichever turn that comes (a chat that
+      // opens with a greeting gets it later, review); a message about something else gets nothing,
+      // as the list would be re-sent with every later request. The first block is the one sent
+      // while no block is on the surface: an app restart, which leaves the blocks there, does not
+      // bring the list back, nor a compaction in the same run (listed: only once it is sent). A fork
+      // carries its parent's context: like any chat it gets the list once more after
+      // /context-graph on, not before. Never while a list is still on the surface.
+      const due = st.announce || (!forkSeq && shown.texts.size === 0)
+      if (due && !st.listed && !shown.list && (parts.length > 0 || asksAboutPast(prompt))) {
         const skipped = await held()
         const list = renderChats(views.filter((v) => !skipped.has(v)), { prompt, maxTokens: cfg.listMaxTokens, maxChats: cfg.listMaxChats })
-        if (list) { parts.unshift(list); layer = 'surface' }
+        if (list) {
+          parts.unshift(list)
+          layer = 'surface'
+          st.listed = true
+          st.announce = false
+        }
       }
       if (parts.length === 0) return decision
       const text = parts.join('\n\n')

@@ -126,7 +126,8 @@ test('plugin: on by default; off/on + share; a second chat gets the list, hits, 
     // and no question about earlier work, a new chat gets no chat list either (#76).
     const untouched = await step(agentB, ask('how do we sign commits?'))
     assert.equal(untouched.messages.length, 1, 'nothing at all')
-    assert.match((await step(agentB, ask('how do we sign commits with gpg?'))).messages[1].content[0].text, /^\[context-graph\] Notes from other chats[^\n]*\n- c1n1 commit signing: commits are signed[^\n]*$/, 'listed, not inlined: two label words')
+    // Its first block, whatever turn it comes on, carries the chat list (#76, review).
+    assert.match((await step(agentB, ask('how do we sign commits with gpg?'))).messages[1].content[0].text, /^\[context-graph\] Earlier chats in this workspace[^\n]*\nc1 [^\n]*\n\n\[context-graph\] Notes from other chats[^\n]*\n- c1n1 commit signing: commits are signed[^\n]*$/, 'listed, not inlined: two label words')
     assert.match((await run(agentB, 'on')).text, /^Memory on · indexing this chat now · 1 shared chat to draw on/)
     await settle()
     // First human turn after on: chat list + hit, inline because three label words lead and the source is short.
