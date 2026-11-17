@@ -14,6 +14,7 @@ import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promi
 import { join } from 'node:path'
 
 import { GRAPH_VERSION, emptyGraph, normalizeGraph } from '../core/graph.js'
+import { mergeGaps } from '../core/session.js'
 import { locked, readJson, readJsonCached, readJsonDetailed, writeJson } from './files.js'
 import { TOPICS, upgradeChat } from './migrate.js'
 
@@ -145,7 +146,11 @@ export function updateMeta(dir, sid, change = (meta) => meta, init = () => ({}))
       const lost = read.state === 'quarantined' ? read.raw : await setAside(chatDir(dir, sid), 'meta.json')
       // A fresh meta's title comes from the log, which may hold an off stretch the lost file knew of:
       // a recovered meta keeps only the title it can read back (review).
-      meta = lost === undefined ? await init() : { ...(await init()), title: undefined, ...recoverMeta(lost) }
+      // A fork's fresh meta holds its ancestors' off stretches (offsInherited): they join the ones
+      // read back, never give way to them (second review of #69).
+      const fresh = await init()
+      const back = lost === undefined ? undefined : recoverMeta(lost)
+      meta = back === undefined ? fresh : { ...fresh, title: undefined, ...back, ...(Array.isArray(fresh?.gaps) && Array.isArray(back.gaps) ? { gaps: mergeGaps(fresh.gaps, back.gaps) } : {}) }
       if (lost !== undefined) Object.assign(meta, { private: true, memoryOff: true, recovered: new Date().toISOString() })
       if (!Number.isInteger(meta.cid)) meta.cid = await claimCid(dir)
     }

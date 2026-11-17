@@ -15,7 +15,7 @@ import { addToLedger, chatEntry, loadLedger, workspaceTotal } from '../../src/st
 
 async function workspace(fn) {
   const dir = await mkdtemp(join(tmpdir(), 'cg-store4-'))
-  try { await fn(dir) } finally { await rm(dir, { recursive: true, force: true }) }
+  try { await fn(dir) } finally { await rm(dir, { recursive: true, force: true, maxRetries: 10 }) }
 }
 
 test('#83 #78 a turn end writes only its own chat\'s small file; 0.9.0\'s ledger.json is read, kept as it was, and counts the same', () => workspace(async (dir) => {
@@ -53,4 +53,15 @@ test('#78 the meta of memory moved from v0.1-v0.3 holds no local path', () => wo
   const sid = await migrateRootLayout(dir)
   assert.equal((await loadMeta(dir, sid)).title, 'Memory from before v0.4')
   assert.equal((await loadMeta(dir, sid)).workspace, undefined)
+}))
+
+test('second review: a damaged fork meta keeps its ancestors\' off stretches next to the ones read back', () => workspace(async (dir) => {
+  const { updateMeta } = await import('../../src/store/chats.js')
+  await mkdir(join(dir, 'chats', 'sF'), { recursive: true })
+  // Cut off mid-write after its own gaps, so they can be read back.
+  await writeFile(join(dir, 'chats', 'sF', 'meta.json'), '{"cid":3,"forkSeq":30,"parent":"sP","gaps":[[40,45]],"summary":"the fork', 'utf8')
+  const fresh = () => ({ forkSeq: 30, parent: 'sP', gaps: [[5, 11]], offsInherited: true, startedAt: 'T', lastActiveAt: 'T' })
+  const meta = await updateMeta(dir, 'sF', (m) => m, fresh)
+  assert.deepEqual(meta.gaps, [[5, 11], [40, 45]])
+  assert.equal(meta.memoryOff, true, 'a recovered meta reads as off until on')
 }))

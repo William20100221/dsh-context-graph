@@ -75,7 +75,8 @@ test('#69 a goal set while memory was off stays private, rounds included, also w
   assert.doesNotMatch(h.llm.prompts.at(-1), /SECRET-VAULT|Moved the rest/, 'the model never sees the rounds')
   assert.match(h.llm.prompts.at(-1), /CI cache key is now v2/)
   assert.doesNotMatch(JSON.stringify(await storedOf(cwd, 'sA')), /SECRET-VAULT/)
-  assert.deepEqual((await metaOf(cwd, 'sA')).gaps, [[5, 14]], 'the rounds join the stretch they come from')
+  // The rounds are found from the log by every reader, not stored as gaps (second review): one gap per off stretch.
+  assert.deepEqual((await metaOf(cwd, 'sA')).gaps, [[5, 6]])
   const b = agentOf('sB', cwd, [system()])
   assert.equal((await h.recall(b, 'c1t2')).status, 'unknown', 'nor are they served to other chats')
   assert.match((await h.recall(b, 'c1t4')).text, /CI cache key is now v2/)

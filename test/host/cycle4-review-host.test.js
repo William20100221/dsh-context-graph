@@ -159,3 +159,43 @@ test('R0 a chat with pauses is indexed once quiet at most once between two regul
   assert.equal(timers.length, 2)
   assert.ok(timers[1].live)
 }))
+
+test('second review: after its quiet index a chat\'s last turns are still indexed when a new chat starts, and only a flush that indexed counts', { skip }, () => inWorkspace(async (cwd) => {
+  const timers = []
+  const timer = { timeout(fn, ms) { const t = { fn, ms, live: true }; timers.push(t); return () => { t.live = false } } }
+  const h = await setup({}, scriptedLlm({ reply: DEFAULT_REPLY }), { timer })
+  const a = agentOf('sA', cwd, chatEvents(2))
+  h.listeners['agent/turn-stopping']({ agent: a })
+  const [armed] = await until(() => timers.length === 1 && timers)
+  armed.live = false
+  armed.fn()
+  await until(() => h.llm.calls === 1)
+  await until(async () => (await metaOf(cwd, 'sA')).builtSeq === a.session.log.length - 1)
+  // The user comes back for the conclusion, then moves on to a new chat of the workspace.
+  const OLD = '2026-01-01T00:00:00.000Z'
+  await updateMeta(join(cwd, '.context-graph'), 'sA', (m) => ({ ...m, lastActiveAt: OLD }))
+  a.session.append(user('Decision: the staging proxy listens on port 8443. '.repeat(10)))
+  a.session.append(assistant('ok'))
+  h.listeners['agent/turn-stopping']({ agent: a })
+  await until(async () => (await metaOf(cwd, 'sA')).lastActiveAt !== OLD)
+  assert.equal(timers.length, 1, 'no second timer before a regular build (R0)')
+  h.listeners['agent/status']({ agent: agentOf('sB', cwd, [system()]), status: 'running' })
+  await until(() => h.llm.calls === 2)
+  assert.match(h.llm.prompts.at(-1), /port 8443/)
+
+  // A timer that fires while memory is off indexes nothing, so it does not use up the chat's quiet index.
+  const c = agentOf('sC', cwd, chatEvents(2))
+  h.listeners['agent/turn-stopping']({ agent: c })
+  const second = await until(() => timers.length === 2 && timers[1])
+  await h.run(c, 'off')
+  second.live = false
+  second.fn()
+  await h.run(c, 'on')
+  await until(() => h.llm.calls === 3)
+  await until(async () => (await metaOf(cwd, 'sC')).builtSeq === c.session.log.length - 1)
+  c.session.append(user('We also rotate the deploy key every 90 days. '.repeat(12)))
+  c.session.append(assistant('ok'))
+  h.listeners['agent/turn-stopping']({ agent: c })
+  await until(() => timers.length === 3)
+  assert.ok(timers[2].live)
+}))

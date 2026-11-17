@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { day } from '../../src/core/index.js'
+import { until } from '../helpers/harness.js'
 import { markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 60))
@@ -103,7 +104,10 @@ test('plugin: on by default; off/on + share; a second chat gets the list, hits, 
     const on = await run(agentA, 'on')
     assert.equal(on.kind, 'success', on.text)
     assert.match(on.text, /^Memory on · indexing this chat now · 0 shared chats to draw on/)
-    await settle()
+    // The background index is done once the meta records where it got to (not a fixed wait: a
+    // loaded machine takes longer).
+    const metaPath = join(cwd, '.context-graph', 'chats', 'sA', 'meta.json')
+    await until(() => readFile(metaPath, 'utf8').then((t) => Number.isInteger(JSON.parse(t).builtSeq) && JSON.parse(t).title !== undefined, () => false))
     assert.equal(llm.calls.length, 1)
     assert.equal(llm.calls[0].purpose, 'context-graph')
     assert.equal(llm.calls[0].model, 'deepseek-chat')

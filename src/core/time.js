@@ -23,13 +23,14 @@ const oneDay = (d) => ({ from: d, to: dayAt(d, 1), label: iso(d) })
 
 // Chinese time words count only where they are words: 目前天气 is not 前天, 登上月球 is not 上月,
 // 这周期 is not 这周 (#25). 大前天 is not 前天, 上上周 is not 上周, 二十天前 is not 十天前 (#84).
-// 两天前端 is frontend and 三天前后 about three days, not 2 or 3 days ago (review of #84).
+// 两天前端 is frontend and 三天前后 about three days, not 2 or 3 days ago (review of #84); 3天前端口
+// and 3天前后端 still are (second review).
 const ZH = {
   threeDaysAgo: /大前天/,
   dayBefore: /(?<![目之以提从先此日])前天(?!气)/,
   yesterday: /昨天|昨日|昨晚/,
   today: /今天|今早|今日|今晚/,
-  ago: /(?<![一两二三四五六七八九十\d])(\d+|[一两二三四五六七八九十])\s*(天|周|个?星期|个?礼拜)前(?![端台后面])/,
+  ago: /(?<![一两二三四五六七八九十\d])(\d+|[一两二三四五六七八九十])\s*(天|周|个?星期|个?礼拜)前(?!端(?!口)|后(?![端台]))/,
   weekBeforeLast: /上上(?:周|个?星期|个?礼拜)/,
   lastWeek: /上周(?![期边围])|上星期|上个星期|上礼拜/,
   thisWeek: /(?:本|这)周(?![期边围到全正长])|这星期|这个星期|本星期/,
@@ -44,6 +45,7 @@ const NUMBER = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6
 const AGO = /\b((?<!\.)\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten) (day|week)s? ago\b/
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
 const MONTH_DAY = /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.? (\d{1,2})(?:st|nd|rd|th)?(?:,? (\d{4}))?\b/
+const ON_MONTH_DAY = new RegExp(`\\bon ${MONTH_DAY.source.slice(2)}`)
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
 const ON_WEEKDAY = new RegExp(`\\b(?:on|last) (${WEEKDAYS.join('|')})\\b`)
 
@@ -67,6 +69,11 @@ export function parseTimeRange(text, now = new Date()) {
   }
   if ((m = /(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]/.exec(s))) {
     const d = pastDate(now, m[1], +m[2], +m[3])
+    if (d) return oneDay(d)
+  }
+  // "on nov 10" is the day asked about, also in "... on nov 10? I need it for today's standup" (second review).
+  if ((m = ON_MONTH_DAY.exec(s))) {
+    const d = pastDate(now, m[3], MONTHS.indexOf(m[1].slice(0, 3)) + 1, +m[2])
     if (d) return oneDay(d)
   }
   if (ZH.threeDaysAgo.test(s)) return days(-3, '3 days ago')
@@ -104,11 +111,15 @@ const PAST_EN = new RegExp(`\\b(?:(?:did|have|had) we (?:already |ever )?${MEMOR
 // A bare "we <verb>" counts only in the past and after a relative word: "the port we picked", "how
 // we fixed" name earlier work; "what should we do tonight", "yesterday we tried a new route" do not.
 // Nor does a story that says how the thing went (review of #80, #84): its clause goes on with is or
-// was ("the restaurant we tried last night was amazing, find me a similar one"), or it opens the
-// message and asks nothing ("the hotel we picked two days ago cancelled"). "the port we picked?" asks.
+// was and a word of how it went ("the restaurant we tried last night was amazing, find me a similar
+// one"), or it opens the message and asks nothing ("the hotel we picked two days ago cancelled").
+// "the bug we fixed yesterday is back", "the port we picked?" and "the config we changed, show it"
+// ask about earlier work (second review of #80). Within the clause: a pasted transcript with no
+// punctuation must not cost a scan to its end at every clause.
 const PAST_VERB = '(?:decided|discussed|talked|agreed|chose|picked|fixed|changed|tried|built|wrote|set up|settled|said|did|done|planned|used|worked on|left off)'
-const RELATIVE_EN = new RegExp(`\\b(?:what|which|how|why|where|when|that|the [\\w-]+) we (?:already |just )?${PAST_VERB}\\b(?![^,.;!?]*\\b(?:is|are|was|were|looks?|seems?)\\b)`)
-const STORY_EN = new RegExp(`^the [\\w-]+ we (?:already |just )?${PAST_VERB}\\b[^?]*$`)
+const STORY_WORDS = '(?:so |too |really |very |pretty |quite )?(?:amazing|awesome|great|good|nice|lovely|fun|delicious|beautiful|perfect|boring|bad|awful|terrible|horrible|crazy|torn|steep|dry|cancell?ed|expensive)'
+const RELATIVE_EN = new RegExp(`\\b(?:what|which|how|why|where|when|that|the [\\w-]+) we (?:already |just )?${PAST_VERB}\\b(?![^,.;!?]{0,40}\\b(?:is|are|was|were|looks?|seems?) ${STORY_WORDS}\\b)`)
+const STORY_EN = new RegExp(`^the [\\w-]+ we (?:already |just )?${PAST_VERB}\\b(?![^?]*\\b(?:what|which|show|remind|recap|summari[sz]e|list|again|back|still|anymore|(?:is|are|was|were) broken|failing|fails|failed|wrong|errors?)\\b)[^?]*$`)
 // Nor does a plan in Chinese: 我们要讨论的, 我们打算定的 (#80); 我们主要讨论了 still counts, and so
 // do 会话, 会议, 开会 and 想法, which are no plans (review of #80).
 const PAST_ZH = /上次(?:我们|咱们|你|聊|说|讨论|提|定|做|改)|之前(?:我们|咱们|你|说|聊|讨论|提|定|做)|(?:我们|咱们)(?:之前|刚才|上次)|(?:我们|咱们)(?:(?!(?<!主)要|将|(?<!开)会(?![话议上])|想(?!法)|打算|准备)[^。？?！!]){0,8}(?:聊|讨论|定|决定|说|谈)(?:过|了|的)|刚才(?:说|聊|提|讨论)|(?:说|聊|讨论|提到)的那个|(?:聊|讨论|做|干)了(?:什么|哪些|啥)|那天(?:我们|聊|说)/

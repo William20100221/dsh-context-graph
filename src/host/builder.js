@@ -83,13 +83,10 @@ export function registerBuilder(ctx, rt, meter) {
       if (['built', 'failed', 'cancelled'].includes(result.status)) st.lastBuild = { ...result, at: new Date().toISOString() }
       return result
     }
-    // What dsh drove from an off stretch up to `to` (rounds of a goal set there, a reminder
-    // scheduled there) joins its gaps where the index moves past it, so turn recall never serves
-    // it either (#69).
-    const gapsTo = (latest, to) => {
-      const gaps = mergeGaps(latest.gaps, span.hidden.filter(([from]) => from <= to).map(([from, end]) => [from, Math.min(end, to)]))
-      return gaps.length > 0 ? { gaps } : {}
-    }
+    // What dsh drove from an off stretch (rounds of a goal set there, a reminder scheduled there)
+    // is not stored as gaps: every reader walks the log with the off stretches and finds it there
+    // (session.js walk), so meta.gaps stays one entry per off stretch however often a reminder
+    // fires (second review of #69).
     const failed = (reason, { half = false } = {}) => {
       if (span) {
         st.retryAt = span.userTurns + cfg.buildEveryTurns
@@ -180,7 +177,7 @@ export function registerBuilder(ctx, rt, meter) {
           st.failedAnswers = 0
           st.pin = undefined
           st.retryAt = 0
-          await rt.updateFor(agent, (latest) => ({ ...latest, ...gapsTo(latest, endSeq), builtSeq: Math.max(latest.builtSeq ?? -1, endSeq) }))
+          await rt.updateFor(agent, (latest) => ({ ...latest, builtSeq: Math.max(latest.builtSeq ?? -1, endSeq) }))
           return finish({ status: 'failed', reason: `${why}; skipped these turns after ${MAX_FAILED_ANSWERS} unusable answers in a row; raw output saved to ${saved}` })
         }
         return failed(`${why}; raw output saved to ${saved}`, { half: cutOff })
@@ -199,14 +196,12 @@ export function registerBuilder(ctx, rt, meter) {
       await relabelTurns(chat, span.turnAt).catch((error) => console.error('context-graph: stored turn ids not relabelled (non-fatal)', error))
       await saveGraph(chat, graph)
       await rt.updateFor(agent, (latest) => {
-        const gaps = gapsTo(latest, endSeq)
         return {
           ...latest,
-          ...gaps,
           // dsh's own title (model-made or the user's rename) once there is one (#41). A meta whose
           // off stretches were lost (recovered, turnsClosed) takes no new title from the log (review).
           // (Its first-prompt fingerprint is set by runtime.js upToDate before this change runs.)
-          title: latest.turnsClosed === true ? latest.title : span.title ?? latest.title ?? titleOf(eventAt, 60, forkSeq, gaps.gaps),
+          title: latest.turnsClosed === true ? latest.title : span.title ?? latest.title ?? titleOf(eventAt, 60, forkSeq, latest.gaps),
           ...(delta.summary ? { summary: delta.summary } : {}),
           lastActiveAt: now,
           builtSeq: endSeq
@@ -322,9 +317,10 @@ export function registerBuilder(ctx, rt, meter) {
    * turns of long ones, which often hold the conclusion. It is indexed once quiet for QUIET_MS, or
    * at once when a new chat of its workspace starts (the user has moved on); a turn starting in it
    * cancels that. Timers come from dsh's timer service, so they end with the plugin; without one,
-   * chats wait for their next turns as before. A chat cannot tell paused from left, so it is indexed
-   * once quiet at most once between two regular builds: one resumed after every pause would
-   * otherwise be indexed at every turn end (review of #42). ponytail: an app quit before the timer
+   * chats wait for their next turns as before. A chat cannot tell paused from left, so its timer runs at most once
+   * between two regular builds: one resumed after every pause would otherwise be indexed at every
+   * turn end (review of #42). A new chat still flushes it every time (the user has moved on, once
+   * per new chat), and only a flush that indexed counts as the one (second review). ponytail: an app quit before the timer
    * fires leaves the tail until that chat's next turn; a startup scan (sessionQuery.listSessions)
    * if it matters.
    */
@@ -335,19 +331,19 @@ export function registerBuilder(ctx, rt, meter) {
     const sid = rt.sidOf(agent)
     if (result?.status === 'built') flushed.delete(sid)
     const timer = ctx.get('timer')
-    if (!timer || flushed.has(sid) || result?.status !== 'skipped' || !(result.userTurns >= 1 && result.chars >= cfg.buildMinChars)) return
+    if (!timer || result?.status !== 'skipped' || !(result.userTurns >= 1 && result.chars >= cfg.buildMinChars)) return
     quiet.get(sid)?.cancel()
-    const entry = { agent, dir: rt.dirFor(agent) }
-    entry.cancel = timer.timeout(() => { if (quiet.get(sid) === entry) flush(sid) }, QUIET_MS)
+    const entry = { agent, dir: rt.dirFor(agent), cancel: () => {} }
+    if (!flushed.has(sid)) entry.cancel = timer.timeout(() => { if (quiet.get(sid) === entry) flush(sid) }, QUIET_MS)
     quiet.set(sid, entry)
   }
   function flush(sid, { early = false } = {}) {
     const entry = quiet.get(sid)
     quiet.delete(sid)
-    flushed.add(sid)
     if (early) entry.cancel()
-    // Stops before a running turn, so a flush that comes late never splits one.
-    void build(entry.agent, { force: true, completeOnly: true })
+    // Stops before a running turn, so a flush that comes late never splits one. Memory off, a busy
+    // chat or an unusable answer leave the timer to the next turn end.
+    void build(entry.agent, { force: true, completeOnly: true }).then((result) => { if (result?.status === 'built') flushed.add(sid) })
   }
   function started(agent) {
     if (rt.isSubagent(agent)) return

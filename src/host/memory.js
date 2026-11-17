@@ -10,10 +10,10 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SOURCE_KIND, memoryOn } from '../core/chat.js'
 import { matchAcross } from '../core/match.js'
 import { formatSource, renderChats, renderHits, renderRange } from '../core/render.js'
-import { PROMPT_KINDS, eventText, promptText, shownContext, titleOf } from '../core/session.js'
+import { PROMPT_KINDS, promptText, shownContext } from '../core/session.js'
 import { estimateTokens } from '../core/text.js'
 import { asksAboutPast, parseTimeRange } from '../core/time.js'
-import { capText, sourceOf } from '../store/messages.js'
+import { sourceOf } from '../store/messages.js'
 
 const TOPIC_LINE = /^\s*- (c\d+n\d+) /gm
 
@@ -59,11 +59,7 @@ export function registerMemory(ctx, rt, meter) {
   function holds(agent, forkSeq, stored, node) {
     const refs = node.refs ?? []
     if (refs.length === 0 || !refs.every((seq) => seq < forkSeq)) return false
-    return refs.every((seq) => {
-      const x = stored[String(seq)]?.x
-      const own = eventText(agent.session.eventAt(seq))
-      return x !== undefined && own !== '' && (x === own || x === capText(own))
-    })
+    return refs.every((seq) => stored[String(seq)]?.x !== undefined && rt.sameText(stored[String(seq)].x, agent, forkSeq, seq))
   }
 
   /**
@@ -71,15 +67,14 @@ export function registerMemory(ctx, rt, meter) {
    * so only chats with that first prompt need their stored messages compared. This keeps a fork's
    * first message from parsing every chat's msgs.json (review of #52).
    */
-  const ancestorLike = (view, first) => rt.startsWith(view.meta, first)
+  const ancestorLike = (view, agent) => rt.ancestorOf(view.meta, (seq) => agent.session.eventAt(seq))
 
   /** The hits a fork already holds. */
   async function inherited(agent, forkSeq, hits) {
     const out = new Set()
     if (!forkSeq) return out
-    const first = titleOf((seq) => agent.session.eventAt(seq))
     for (const hit of hits) {
-      if (ancestorLike(hit.view, first) && holds(agent, forkSeq, await rt.messagesOf(agent, hit.view), hit.node)) out.add(hit)
+      if (ancestorLike(hit.view, agent) && holds(agent, forkSeq, await rt.messagesOf(agent, hit.view), hit.node)) out.add(hit)
     }
     return out
   }
@@ -88,10 +83,9 @@ export function registerMemory(ctx, rt, meter) {
   async function heldChats(agent, forkSeq, views) {
     const out = new Set()
     if (!forkSeq) return out
-    const first = titleOf((seq) => agent.session.eventAt(seq))
     for (const view of views) {
       const nodes = Object.values(view.graph.nodes)
-      if (view.own || nodes.length === 0 || !ancestorLike(view, first) || !nodes.every((n) => (n.refs ?? []).every((seq) => seq < forkSeq))) continue
+      if (view.own || nodes.length === 0 || !ancestorLike(view, agent) || !nodes.every((n) => (n.refs ?? []).every((seq) => seq < forkSeq))) continue
       const stored = await rt.messagesOf(agent, view)
       if (nodes.every((node) => holds(agent, forkSeq, stored, node))) out.add(view)
     }

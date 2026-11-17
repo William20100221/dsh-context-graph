@@ -412,9 +412,12 @@ const DRIVEN = { goal: 'goal', schedule: 'reminder' }
  * (#70, review), and its tool use as one line; tool output is left out (it averaged 9,000 tokens
  * on real logs). Capped at about `maxTokens`.
  * @param limitSeq last seq that may be read: another chat's turn stops at its indexed position.
+ * @param gaps another chat's off stretches: the turn ends at its first private step, typed there or
+ *   driven from there (a goal's round, a reminder, a late answer), judged from the log as the
+ *   builder judges it (second review of #69).
  * @returns { text, seq, endSeq } or undefined when the log has nothing of turn n at or before `limitSeq`.
  */
-export function turnTranscript(eventAt, n, { maxTokens = 2000, limitSeq = Infinity } = {}) {
+export function turnTranscript(eventAt, n, { maxTokens = 2000, limitSeq = Infinity, gaps = [] } = {}) {
   const parts = []
   let tools = []
   const flush = () => {
@@ -424,9 +427,10 @@ export function turnTranscript(eventAt, n, { maxTokens = 2000, limitSeq = Infini
   let start = -1
   let end = -1
   // A plan's approval past `limitSeq` is not read either.
-  for (const step of walk(eventAt, [], limitSeq)) {
+  for (const step of walk(eventAt, gaps, limitSeq)) {
     if (step.seq > limitSeq || (start >= 0 && step.start)) break
     if (start < 0 && !(step.start && step.turn === n)) continue
+    if (step.hidden) break
     if (start < 0) start = step.seq
     end = step.seq
     const { event } = step

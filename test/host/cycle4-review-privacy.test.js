@@ -121,10 +121,51 @@ test('K0 a fork whose own meta came before this fix takes its ancestors\' off st
   assert.equal((await h.recall(b, `c${meta.cid}t${t + 1}`)).status, 'unknown', 'nor does recall serve them')
 }))
 
+test('second review: in a chat indexed by 0.9.0, the rounds of a goal set while off and resumed after on are never served by turn recall', { skip }, () => inWorkspace(async (cwd) => {
+  const logs = new Map()
+  const h = await setup({ buildMinChars: 1 }, citesAll(), { sessionQuery: queryOf(logs) })
+  const log = [system(), ...turn(1, user('We deploy on Fridays, decided.'), assistant('ok'))]
+  const offFrom = log.length
+  log.push({ type: 'command/run', data: { name: 'goal', args: SECRET, source: { kind: 'user' } } }, goal(SECRET, 'create'), ...turn(2, round(SECRET, 1), assistant('Moved one SECRET-VAULT key.')), goal(SECRET, 'pause'))
+  const offTo = log.length - 1
+  log.push(goal(SECRET, 'resume', 2), ...turn(3, round(SECRET, 2, 2), assistant('Moved more SECRET-VAULT keys.')), ...turn(4, user('Unrelated: the CI cache key is now v2.'), assistant('ok')))
+  logs.set('sA', log)
+  // As 0.9.0 left it: indexed past everything, its gaps only the off stretch (it knew no goals).
+  const dir = join(cwd, '.context-graph')
+  const { cid } = await updateMeta(dir, 'sA', (m) => m, () => ({ title: 'deploys', startedAt: 'T', lastActiveAt: new Date().toISOString(), builtSeq: log.length - 1, gaps: [[offFrom, offTo]] }))
+  await saveGraph(chat(cwd, 'sA'), { version: 2, nextId: 2, nodes: { n1: { label: 'deploy day', gist: 'Fridays', aliases: [], kind: 'decision', refs: [2], at: 'T', updated: 'T' } }, edges: [] })
+  const b = agentOf('sB', cwd, [system()])
+  for (const t of [2, 3]) assert.equal((await h.recall(b, `c${cid}t${t}`)).status, 'unknown', `t${t}`)
+  assert.match((await h.recall(b, `c${cid}t4`)).text, /CI cache key is now v2/)
+  assert.match((await h.recall(b, `c${cid}t1`)).text, /deploy on Fridays/)
+}))
+
+test('second review: a fork from 0.9.0 that resumed a goal set in its parent\'s off stretch serves none of its rounds', { skip }, () => inWorkspace(async (cwd) => {
+  const logs = new Map()
+  const h = await setup({ buildMinChars: 1 }, citesAll(), { sessionQuery: queryOf(logs) })
+  const parent = [system(), ...turn(1, user('We deploy on Fridays, decided.'), assistant('ok'))]
+  const offFrom = parent.length
+  parent.push({ type: 'command/run', data: { name: 'goal', args: SECRET, source: { kind: 'user' } } }, goal(SECRET, 'create'), ...turn(2, round(SECRET, 1), assistant('Moved one SECRET-VAULT key.')), goal(SECRET, 'pause'))
+  const offTo = parent.length - 1
+  const forkSeq = parent.length
+  const fork = [...parent, goal(SECRET, 'resume', 2), ...turn(3, round(SECRET, 2, 2), assistant('Moved more SECRET-VAULT keys.')), ...turn(4, user('Fork: the CI cache key is now v2.'), assistant('ok'))]
+  logs.set('sA', parent)
+  logs.set('sF', fork)
+  const dir = join(cwd, '.context-graph')
+  const node = { label: 'deploy day', gist: 'Fridays', aliases: [], kind: 'decision', refs: [2], at: 'T', updated: 'T' }
+  await updateMeta(dir, 'sA', (m) => m, () => ({ title: 'deploys', startedAt: 'T', lastActiveAt: 'T', builtSeq: parent.length - 1, gaps: [[offFrom, offTo]] }))
+  // The fork as 0.9.0 left it: its fork point and parent, no gaps of its parent's, indexed past the rounds.
+  const { cid } = await updateMeta(dir, 'sF', (m) => m, () => ({ title: 'fork', startedAt: 'T', lastActiveAt: new Date().toISOString(), forkSeq, parent: 'sA', builtSeq: fork.length - 1 }))
+  await saveGraph(chat(cwd, 'sF'), { version: 2, nextId: 2, nodes: { n1: { ...node, refs: [fork.length - 3] } }, edges: [] })
+  const b = agentOf('sB', cwd, [system()])
+  assert.equal((await h.recall(b, `c${cid}t3`)).status, 'unknown')
+  assert.match((await h.recall(b, `c${cid}t4`)).text, /CI cache key is now v2/)
+}))
+
 const OBJECTIVE = 'move the CI cache to the new bucket'
 const work = (i) => `Round ${i}: moved part ${i} of the CI cache to the new bucket and checked the hit rate, which held at 92 percent.`
 
-test('K10 a chat driven only by /goal gets a fingerprint, so the next run lists no dsh sessions for it; a typed prompt takes the fingerprint over', { skip }, () => inWorkspace(async (cwd) => {
+test('K10 a chat driven only by /goal gets a fingerprint, so the next run lists no dsh sessions for it; a typed prompt later keeps it', { skip }, () => inWorkspace(async (cwd) => {
   let listings = 0
   const sessionQuery = { async listSessions() { listings++; return [] }, async observeSession() { return { header: {}, inheritedEventCount: 0, events: [], [Symbol.dispose]() {} } } }
   const h = await setup({}, scriptedLlm({ reply: DEFAULT_REPLY }), { sessionQuery })
@@ -136,13 +177,10 @@ test('K10 a chat driven only by /goal gets a fingerprint, so the next run lists 
   const next = await setup({}, scriptedLlm({ reply: DEFAULT_REPLY }), { sessionQuery })
   await next.step(agentOf('sB', cwd, [system()]), ask('how did we move the CI cache to the new bucket?'))
   assert.equal(listings, 0)
-  // Typed later: the fingerprint is the one a chat that began with that prompt has, which forks are matched by.
+  // Typed later: the fingerprint stays, so a fork made before that prompt still finds this chat (second review).
   for (const e of turn(5, user('Also purge the old bucket once the cache is warm.'), assistant('Purged.'))) g.session.append(e)
   await next.run(g, 'build')
-  await next.run(agentOf('sT', cwd, [system(), ...turn(1, user('Also purge the old bucket once the cache is warm.'), assistant('ok'))]), 'build')
-  const after = (await metaOf(cwd, 'sG')).firstKey
-  assert.notEqual(after, before)
-  assert.equal(after, (await metaOf(cwd, 'sT')).firstKey)
+  assert.equal((await metaOf(cwd, 'sG')).firstKey, before)
 }))
 
 test('K10 a listing of dsh\'s sessions that failed is not tried again on every message', { skip }, () => inWorkspace(async (cwd) => {

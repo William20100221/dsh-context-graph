@@ -8,7 +8,7 @@ import { basename, isAbsolute, join } from 'node:path'
 
 import { closedAt, memoryOn, offPoint, sharedOn } from '../core/chat.js'
 import { emptyCounters, standIn } from '../core/ledger.js'
-import { eventText, inGap, isPrompt, mergeGaps, promptText, shownContext, titleOf } from '../core/session.js'
+import { collectSpan, eventText, inGap, isPrompt, mergeGaps, promptText, shownContext, titleOf } from '../core/session.js'
 import { chatDir, listChats, loadGraph, loadMeta, updateMeta } from '../store/chats.js'
 import { chatEntry } from '../store/ledger.js'
 import { capText, loadMessages } from '../store/messages.js'
@@ -26,9 +26,10 @@ const firstKey = (text) => (text === undefined ? undefined : createHash('sha1').
  * its first prompt of any kind, such as a /goal chat's objective, so that its meta too says it is
  * no 0.4-0.7 meta (forkUnknown; review of #69).
  */
-function keyPrompt(eventAt) {
-  const typed = titleOf(eventAt)
-  if (typed !== undefined) return typed
+const keyPrompt = (eventAt) => titleOf(eventAt) ?? firstPromptOf(eventAt)
+
+/** A chat's first prompt of any kind (typed, a /goal round's objective, a reminder). */
+function firstPromptOf(eventAt) {
   for (let seq = 0; ; seq++) {
     const event = eventAt(seq)
     if (!event) return undefined
@@ -36,8 +37,17 @@ function keyPrompt(eventAt) {
   }
 }
 
+/**
+ * What an ancestor's fingerprint can be made from, as a fork's log shows it (keyPrompt, when the
+ * ancestor's meta was written): its first typed prompt, or its first prompt of any kind for a chat
+ * begun with /goal (second review of #52).
+ */
+const ancestorKeys = (eventAt) => [...new Set([titleOf(eventAt), firstPromptOf(eventAt)].filter((p) => p !== undefined))]
+
 /** Whether a chat's first prompt is `first`; metas written before 0.9.0 keep it as text, or only a title. */
 const startsWith = (meta, first) => first !== undefined && (meta?.firstKey !== undefined ? meta.firstKey === firstKey(first) : (meta?.firstPrompt ?? meta?.title) === first)
+/** Whether a chat may be an ancestor of the chat whose log is `eventAt` (same first prompt). */
+const ancestorOf = (meta, eventAt) => ancestorKeys(eventAt).some((first) => startsWith(meta, first))
 
 /**
  * Whether a chat's meta cannot say if the chat is a fork: written by 0.4-0.7 and not since (#58).
@@ -207,6 +217,24 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
   }
 
   /**
+   * Whether `stored`, a message an ancestor stored at `seq`, is word for word this fork's own event
+   * there. Compared with what the builder read at that seq (a goal round's objective, an approved
+   * plan, the user's answers), not with the raw event, as that is what was stored (second review of
+   * #52); a fork's inherited part never changes, so it is read once per session.
+   */
+  const readCache = new WeakMap()
+  function sameText(stored, agent, forkSeq, seq) {
+    const session = agent.session
+    let read = readCache.get(session)
+    if (!read) {
+      read = new Map()
+      for (const m of collectSpan((s) => session.eventAt(s)).messages) if (m.seq < forkSeq) read.set(m.seq, m.text)
+      readCache.set(session, read)
+    }
+    return [read.get(seq), eventText(session.eventAt(seq))].some((own) => own && (stored === own || stored === capText(own)))
+  }
+
+  /**
    * The meta of the chat a fork was made from, for the flags it carries over. dsh names the parent;
    * a named parent with no meta is an ordinary chat with no flags to carry over, unless dsh says it
    * is itself a fork (one never seen here), whose own parent is asked in turn (review of #60). Only
@@ -214,7 +242,7 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
    * for (same first prompt, its stored messages word for word in this log); a candidate with
    * nothing stored to compare counts (fail closed).
    */
-  async function parentMetaOf(agent, forkSeq, first) {
+  async function parentMetaOf(agent, forkSeq) {
     const dir = dirFor(agent)
     let named = agent.session.header?.parentSession
     for (let hops = 0; named && hops < 16; hops++) {
@@ -229,14 +257,11 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
     }
     const eventAt = (seq) => agent.session.eventAt(seq)
     for (const chat of await listChats(dir)) {
-      if (chat.sid === sidOf(agent) || !startsWith(chat.meta, first)) continue
+      if (chat.sid === sidOf(agent) || !ancestorOf(chat.meta, eventAt)) continue
       if (chat.meta.private !== true && chat.meta.memoryOff !== true) continue
       const stored = await loadMessages(chatDir(dir, chat.sid))
       const inherited = Object.keys(stored).map(Number).filter((seq) => seq < forkSeq)
-      const same = inherited.every((seq) => {
-        const own = eventText(eventAt(seq))
-        return own !== '' && (stored[String(seq)].x === own || stored[String(seq)].x === capText(own))
-      })
+      const same = inherited.every((seq) => sameText(stored[String(seq)].x, agent, forkSeq, seq))
       if (same) return chat.meta
     }
     return undefined
@@ -261,7 +286,7 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
     const first = titleOf(eventAt)
     const base = { title: first, firstKey: firstKey(first), startedAt: now, lastActiveAt: now }
     if (!forkSeq) return base
-    const from = await parentMetaOf(agent, forkSeq, first)
+    const from = await parentMetaOf(agent, forkSeq)
     const point = forkSeq - 1
     const offAtFork = await offAt(dirFor(agent), from, point)
     const inherited = await offUpTo(dirFor(agent), from, point)
@@ -315,6 +340,17 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
   }
 
   /**
+   * The off stretches another chat's log is judged by (turn recall): its gaps, and for a fork whose
+   * meta came before forks took their ancestors' (offsInherited), theirs too, read-only (second
+   * review of #69).
+   */
+  async function offsOf(dir, meta) {
+    const own = Array.isArray(meta?.gaps) ? meta.gaps : []
+    if (!Number.isInteger(meta?.forkSeq) || !meta.parent || meta.offsInherited === true) return own
+    return mergeGaps(own, await offUpTo(dir, await metaOf(dir, meta.parent), meta.forkSeq - 1))
+  }
+
+  /**
    * A fork whose meta was written before forks took their ancestors' off stretches (up to 0.9.0, or
    * a meta repaired after damage) gets them once, before it is next indexed: a goal set in one of
    * them and resumed in the fork stays private there too (second review of #69). Fails closed: a
@@ -323,7 +359,7 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
   async function inheritOffs(agent, meta) {
     const forkSeq = forkSeqOf(agent.session)
     if (!meta || !forkSeq || meta.offsInherited === true) return meta
-    const from = await parentMetaOf(agent, forkSeq, titleOf((seq) => agent.session.eventAt(seq)))
+    const from = await parentMetaOf(agent, forkSeq)
     const inherited = await offUpTo(dirFor(agent), from, forkSeq - 1)
     const updated = await updateFor(agent, (m) => {
       const gaps = mergeGaps(Array.isArray(m.gaps) ? m.gaps : [], inherited)
@@ -355,9 +391,9 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
     const eventAt = (seq) => agent.session.eventAt(seq)
     // An absolute local path that nothing reads, in a folder users may sync: dropped (#78).
     const { workspace, ...current } = meta
-    // A fingerprint made while no prompt was typed (keyPrompt) gives way to the first typed one, the
-    // prompt memory.js matches forks by (review of #69).
-    if (current.firstKey !== undefined) return { ...current, firstKey: firstKey(titleOf(eventAt)) ?? current.firstKey }
+    // Kept once made: forks are matched by either key a chat can have (ancestorKeys), and a fork
+    // made before a /goal chat's first typed prompt has only its objective (second review of #69).
+    if (current.firstKey !== undefined) return current
     const { firstPrompt, ...rest } = current
     const first = firstPrompt ?? keyPrompt(eventAt)
     return { ...rest, ...(first !== undefined ? { firstKey: firstKey(first) } : {}), ...(Number.isInteger(rest.forkSeq) ? { title: undefined } : {}) }
@@ -394,8 +430,8 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
 
   /**
    * Ids of the dsh sessions that are forks (header.isSeeded), from one listing of session headers
-   * per app run (#58); undefined while dsh cannot list them here. A listing that failed is not
-   * tried again in this run: every message would wait for it (review of #58).
+   * per app run (#58); undefined while dsh cannot list them here, null when the listing failed. A
+   * listing that failed is not tried again in this run: every message would wait for it (review of #58).
    */
   let seeded
   function seededIds() {
@@ -404,7 +440,7 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
     seeded ??= Promise.resolve()
       .then(() => query.listSessions())
       .then((records) => new Set(records.filter((r) => r?.header?.isSeeded === true).map((r) => String(r.header.id))))
-      .catch(() => undefined)
+      .catch(() => null)
     return seeded
   }
   const learning = new Map()
@@ -419,10 +455,12 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
   async function withoutUnknownForks(sid, chats) {
     const unsure = chats.filter((c) => c.sid !== sid && forkUnknown(c.meta) && !forkPoints.has(c.sid))
     const forks = unsure.length > 0 ? await seededIds() : undefined
-    if (!forks) return chats
+    if (forks === undefined) return chats
     const waiting = new Set()
     for (const c of unsure) {
-      if (!forks.has(c.sid)) { forkPoints.set(c.sid, 0); continue }
+      // A listing that failed tells nothing: each such chat is learned from its own log and held
+      // back meanwhile (fail closed, second review of #58).
+      if (forks && !forks.has(c.sid)) { forkPoints.set(c.sid, 0); continue }
       waiting.add(c.sid)
       if (!learning.has(c.sid)) learning.set(c.sid, learnForkPoint(c.sid, c.meta).catch(() => false))
     }
@@ -539,5 +577,5 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
   }
 
   // toolTokens: what the recall tool's definition costs per request (set by recall.js).
-  return { cfg, state, tracked, seenDirs, noteDir, sidOf, isSubagent, pendingInput, dirFor, metaFor, inheritOffs, ownerMeta, forkedFrom, updateFor, setFlags, loadViews, viewOf, messagesOf, resolveTarget, forkSeqOf, indexStart, forkPoints, learnForkPoint, startsWith, observe, creditUse, toolTokens: 0 }
+  return { cfg, state, tracked, seenDirs, noteDir, sidOf, isSubagent, pendingInput, dirFor, metaFor, inheritOffs, offsOf, ancestorOf, sameText, ownerMeta, forkedFrom, updateFor, setFlags, loadViews, viewOf, messagesOf, resolveTarget, forkSeqOf, indexStart, forkPoints, learnForkPoint, observe, creditUse, toolTokens: 0 }
 }
