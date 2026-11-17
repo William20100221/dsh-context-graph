@@ -17,7 +17,7 @@ import { DEFAULT_REPLY, agentOf, ask, assistant, chatEvents, quietly, scriptedLl
 
 async function inWorkspace(fn) {
   const cwd = await mkdtemp(join(tmpdir(), 'cg-review2-'))
-  try { await fn(cwd) } finally { await wait(30); await rm(cwd, { recursive: true, force: true }) }
+  try { await fn(cwd) } finally { await wait(30); await rm(cwd, { recursive: true, force: true, maxRetries: 10 }) }
 }
 const metaOf = async (cwd, sid) => JSON.parse(await readFile(join(cwd, '.context-graph', 'chats', sid, 'meta.json'), 'utf8'))
 const topic = (label, aliases, msgs = [0], gist = `${label}, decided`) => JSON.stringify({ nodes: [{ id: null, label, gist, aliases, kind: 'decision', msgs }], edges: [] })

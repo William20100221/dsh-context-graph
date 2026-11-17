@@ -95,7 +95,7 @@ test('#1 a fresh chat builds without running any command first', { skip }, async
     assert.equal(h.llm.calls, 1, 'the same span is not sent to the model twice')
     const msgs = JSON.parse(await readFile(join(cwd, '.context-graph/chats/sA/msgs.json'), 'utf8')).m
     assert.deepEqual(Object.keys(msgs), ['1'], 'one copy of the cited message')
-  } finally { await rm(cwd, { recursive: true, force: true }) }
+  } finally { await rm(cwd, { recursive: true, force: true, maxRetries: 10 }) }
 })
 
 test('#2 the index position survives an app restart', { skip }, async () => {
@@ -110,7 +110,7 @@ test('#2 the index position survives an app restart', { skip }, async () => {
     await wait()
     assert.equal(restarted.llm.calls, 0)
     assert.equal(Object.keys(JSON.parse(await readFile(join(cwd, '.context-graph/chats/sB/msgs.json'), 'utf8')).m).length, 1)
-  } finally { await rm(cwd, { recursive: true, force: true }) }
+  } finally { await rm(cwd, { recursive: true, force: true, maxRetries: 10 }) }
 })
 
 test('#3 a failed build waits for new turns before trying again', { skip }, async () => {
@@ -124,7 +124,7 @@ test('#3 a failed build waits for new turns before trying again', { skip }, asyn
     assert.equal(h.llm.calls, before, 'no retry without new turns')
     assert.equal((await quietly(() => h.run(agent, 'build'))).kind, 'error', 'an explicit build still runs')
     assert.equal(h.llm.calls, before + 1)
-  } finally { await rm(cwd, { recursive: true, force: true }) }
+  } finally { await rm(cwd, { recursive: true, force: true, maxRetries: 10 }) }
 })
 
 test('#4 #46 a long chat is indexed in calls of bounded size, oldest turns first, nothing skipped', { skip }, async () => {
@@ -141,7 +141,7 @@ test('#4 #46 a long chat is indexed in calls of bounded size, oldest turns first
     for (let i = 0; i < 5 && (await waiting()) > 0; i++) await h.run(agent, 'build')
     assert.equal(await waiting(), 0, 'every turn is indexed in the end')
     assert.ok(h.llm.calls <= 4, `${h.llm.calls} calls`)
-  } finally { await rm(cwd, { recursive: true, force: true }) }
+  } finally { await rm(cwd, { recursive: true, force: true, maxRetries: 10 }) }
 })
 
 test('#5 a topic already sent to this chat is not sent again', { skip }, async () => {
@@ -156,7 +156,7 @@ test('#5 a topic already sent to this chat is not sent again', { skip }, async (
     assert.equal(again.messages.length, 1, 'nothing new to add')
     const today = await h.step(b, ask('what did we do today?'))
     assert.equal(today.messages.length, 1, 'a day list of topics already shown is not sent')
-  } finally { await rm(cwd, { recursive: true, force: true }) }
+  } finally { await rm(cwd, { recursive: true, force: true, maxRetries: 10 }) }
 })
 
 test('#6 recall and the on card say the right thing', { skip }, async () => {
@@ -171,7 +171,7 @@ test('#6 recall and the on card say the right thing', { skip }, async () => {
     assert.ok(!/share lets other chats/.test(on.text), on.text)
     assert.match(on.text, /unshare keeps it private/)
     await wait(100)
-  } finally { await rm(cwd, { recursive: true, force: true }) }
+  } finally { await rm(cwd, { recursive: true, force: true, maxRetries: 10 }) }
 })
 
 test('#7 off or unshare during a build is not undone when the build finishes', { skip }, async () => {
@@ -191,7 +191,7 @@ test('#7 off or unshare during a build is not undone when the build finishes', {
     const meta = JSON.parse(await readFile(join(cwd, '.context-graph/chats/sR/meta.json'), 'utf8'))
     assert.equal(meta.memoryOff, true)
     assert.equal(meta.private, true)
-  } finally { await rm(cwd, { recursive: true, force: true }) }
+  } finally { await rm(cwd, { recursive: true, force: true, maxRetries: 10 }) }
 })
 
 test('shownContext reads ids and block texts from plugin messages only', () => {
@@ -240,5 +240,5 @@ test('a time word with no topic match sends a small capped day list; recall give
     assert.ok(after * 4 < before, `capped ${after} vs uncapped ${before}`)
     const full = await h.tools[0].execute({ id: day(now) }, { agent })
     assert.equal((full.text.match(/^- c\d+ /gm) ?? []).length, 10, 'recall by day lists every chat')
-  } finally { await rm(cwd, { recursive: true, force: true }) }
+  } finally { await rm(cwd, { recursive: true, force: true, maxRetries: 10 }) }
 })

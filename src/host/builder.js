@@ -103,6 +103,8 @@ export function registerBuilder(ctx, rt, meter) {
       let meta = await rt.metaFor(agent)
       // An off whose write has not landed yet already holds here (runtime.js withPending).
       if (!memoryOn(meta)) return { status: 'off', reason: 'memory is off for this chat; /context-graph on resumes it' }
+      // A fork from before 0.10.0 takes its ancestors' off stretches first (runtime.js inheritOffs).
+      meta = await rt.inheritOffs(agent, meta)
       // Read from the durable log after the last indexed seq, so compacted turns are not lost (#13).
       const forkSeq = rt.forkSeqOf(session) ?? 0
       // A fork's own titles start at its own first prompt (review of #60).

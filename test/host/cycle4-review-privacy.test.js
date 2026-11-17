@@ -15,7 +15,7 @@ import { DEFAULT_REPLY, agentOf, ask, assistant, scriptedLlm, setup, skip, syste
 
 async function inWorkspace(fn) {
   const cwd = await mkdtemp(join(tmpdir(), 'cg-c4review-'))
-  try { await fn(cwd) } finally { await wait(30); await rm(cwd, { recursive: true, force: true }) }
+  try { await fn(cwd) } finally { await wait(30); await rm(cwd, { recursive: true, force: true, maxRetries: 10 }) }
 }
 const chat = (cwd, sid) => join(cwd, '.context-graph', 'chats', sid)
 const metaOf = (cwd, sid) => readFile(join(chat(cwd, sid), 'meta.json'), 'utf8').then(JSON.parse)
@@ -98,6 +98,28 @@ for (const [name, ancestorOf] of ancestors) {
     assert.match((await h.recall(b, `c${cid}t${t + 2}`)).text, /CI cache key is now v2/)
   }))
 }
+
+test('K0 a fork whose own meta came before this fix takes its ancestors\' off stretches before its next index (second review)', { skip }, () => inWorkspace(async (cwd) => {
+  const logs = new Map()
+  const h = await setup({ buildMinChars: 1 }, citesAll(), { sessionQuery: queryOf(logs) })
+  const a = await offStretchGoal(h, cwd, logs)
+  await h.run(a, 'on')
+  // The fork's meta as 0.9.0 wrote it when the fork was first seen: no gaps, no offsInherited.
+  const n = a.session.log.length
+  await updateMeta(join(cwd, '.context-graph'), 'sF', (m) => m, () => ({ builtSeq: n - 1, forkSeq: n, parent: 'sA', startedAt: 'T', lastActiveAt: 'T' }))
+  const f = agentOf('sF', cwd, a.session.log.slice(), { header: { isSeeded: true, parentSession: 'sA' }, inheritedEventCount: n })
+  logs.set('sF', f.session.log)
+  const t = lastTurn(f.session.log)
+  for (const e of [goal(SECRET, 'resume', 2), ...turn(t + 1, round(SECRET, 2, 2), assistant('Moved more SECRET-VAULT keys.')), ...turn(t + 2, user('Unrelated: the CI cache key is now v2.'), assistant('ok'))]) f.session.append(e)
+  assert.equal((await index(h, f)).kind, 'success')
+  assert.match(h.llm.prompts.at(-1), /CI cache key is now v2/, 'the fork\'s own typed turn is indexed')
+  assert.doesNotMatch(h.llm.prompts.join('\n'), /SECRET-VAULT/, 'no build reads the goal\'s rounds')
+  assert.doesNotMatch(await storedOf(cwd, 'sF'), /SECRET-VAULT/)
+  const meta = await metaOf(cwd, 'sF')
+  assert.equal(meta.offsInherited, true)
+  const b = agentOf('sR', cwd, [system()])
+  assert.equal((await h.recall(b, `c${meta.cid}t${t + 1}`)).status, 'unknown', 'nor does recall serve them')
+}))
 
 const OBJECTIVE = 'move the CI cache to the new bucket'
 const work = (i) => `Round ${i}: moved part ${i} of the CI cache to the new bucket and checked the hit rate, which held at 92 percent.`

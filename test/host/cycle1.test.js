@@ -13,7 +13,7 @@ import { agentOf, ask, assistant, chatEvents, quietly, scriptedLlm, setup, skip,
 
 async function inWorkspace(fn) {
   const cwd = await mkdtemp(join(tmpdir(), 'cg-cycle1-'))
-  try { await fn(cwd) } finally { await wait(30); await rm(cwd, { recursive: true, force: true }) }
+  try { await fn(cwd) } finally { await wait(30); await rm(cwd, { recursive: true, force: true, maxRetries: 10 }) }
 }
 const metaOf = async (cwd, sid) => JSON.parse(await readFile(join(cwd, '.context-graph', 'chats', sid, 'meta.json'), 'utf8'))
 

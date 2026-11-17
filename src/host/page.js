@@ -22,7 +22,7 @@ import { addCounters, balance, counters, emptyCounters } from '../core/ledger.js
 import { chatSummary } from '../core/render.js'
 import { chatDir, listChats, loadGraph } from '../store/chats.js'
 import { loadLedger } from '../store/ledger.js'
-import { loadMessages, sourceOf } from '../store/messages.js'
+import { loadMessages, oldTurns, sourceOf } from '../store/messages.js'
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } })
 const keyOf = (dir) => createHash('sha1').update(dir).digest('hex').slice(0, 12)
@@ -141,7 +141,10 @@ export function registerPage(ctx, rt) {
     const node = graph.nodes[m[2]]
     // Sources that cannot be read leave the topic itself readable (review).
     const stored = await loadMessages(chatDir(w.dir, chat.sid)).catch(() => ({}))
-    const sources = sourceOf(stored, node).slice(-3).map((s) => ({ role: s.role, turn: s.turn, text: String(s.text ?? '').slice(0, 600) }))
+    // Turn numbers stored by 0.9.0 counted typed prompts, not dsh's turns: not shown until a
+    // recall or a build of that chat converts them; the page never writes (second review of #71).
+    const named = !(await oldTurns(chatDir(w.dir, chat.sid)))
+    const sources = sourceOf(stored, node).slice(-3).map((s) => ({ role: s.role, turn: named ? s.turn : undefined, text: String(s.text ?? '').slice(0, 600) }))
     return {
       id,
       label: node.label,

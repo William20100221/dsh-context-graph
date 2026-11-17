@@ -82,7 +82,7 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
    * In-memory state of one chat for this app run:
    *   building       an indexing call is running
    *   announce       /context-graph on asked for the chat list again
-   *   listed         the chat list was already considered in this run (see memory.js)
+   *   listed         the chat list was already sent in this run (see memory.js)
    *   retryAt        after a failed build, wait for this many unindexed human turns
    *   pin            after a failed build, the last seq the retry may read (#45)
    *   failedAnswers  unusable answers in a row for the pinned span
@@ -273,6 +273,7 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
       ...(parent ? { parent: String(parent) } : {}),
       ...(from?.private === true ? { private: true } : {}),
       ...(inherited.length > 0 ? { gaps: inherited } : {}),
+      offsInherited: true,
       // Off from its first message: `on` turns all of the fork's own part so far into a gap (#59).
       ...(offAtFork ? { memoryOff: true } : {})
     }
@@ -311,6 +312,24 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
       meta = await metaOf(dir, meta.parent)
     }
     return mergeGaps([], out)
+  }
+
+  /**
+   * A fork whose meta was written before forks took their ancestors' off stretches (up to 0.9.0, or
+   * a meta repaired after damage) gets them once, before it is next indexed: a goal set in one of
+   * them and resumed in the fork stays private there too (second review of #69). Fails closed: a
+   * write that cannot land stops the build.
+   */
+  async function inheritOffs(agent, meta) {
+    const forkSeq = forkSeqOf(agent.session)
+    if (!meta || !forkSeq || meta.offsInherited === true) return meta
+    const from = await parentMetaOf(agent, forkSeq, titleOf((seq) => agent.session.eventAt(seq)))
+    const inherited = await offUpTo(dirFor(agent), from, forkSeq - 1)
+    const updated = await updateFor(agent, (m) => {
+      const gaps = mergeGaps(Array.isArray(m.gaps) ? m.gaps : [], inherited)
+      return { ...m, ...(gaps.length > 0 ? { gaps } : {}), offsInherited: true }
+    })
+    return withPending(sidOf(agent), updated)
   }
 
   /**
@@ -520,5 +539,5 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
   }
 
   // toolTokens: what the recall tool's definition costs per request (set by recall.js).
-  return { cfg, state, tracked, seenDirs, noteDir, sidOf, isSubagent, pendingInput, dirFor, metaFor, ownerMeta, forkedFrom, updateFor, setFlags, loadViews, viewOf, messagesOf, resolveTarget, forkSeqOf, indexStart, forkPoints, learnForkPoint, startsWith, observe, creditUse, toolTokens: 0 }
+  return { cfg, state, tracked, seenDirs, noteDir, sidOf, isSubagent, pendingInput, dirFor, metaFor, inheritOffs, ownerMeta, forkedFrom, updateFor, setFlags, loadViews, viewOf, messagesOf, resolveTarget, forkSeqOf, indexStart, forkPoints, learnForkPoint, startsWith, observe, creditUse, toolTokens: 0 }
 }

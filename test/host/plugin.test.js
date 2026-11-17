@@ -186,7 +186,7 @@ test('plugin: on by default; off/on + share; a second chat gets the list, hits, 
     assert.equal(ctx.listeners['agent/turn-stopping']({ agent: agentA, turn: 2 }), undefined)
     await settle()
   } finally {
-    await rm(cwd, { recursive: true, force: true })
+    await rm(cwd, { recursive: true, force: true, maxRetries: 10 })
   }
 })
 
@@ -211,7 +211,7 @@ test('plugin: builder failures are contained', { skip }, async () => {
     assert.equal(ctx.listeners['agent/turn-stopping']({ agent, turn: 1 }), undefined)
     await settle()
   } finally {
-    await rm(cwd, { recursive: true, force: true })
+    await rm(cwd, { recursive: true, force: true, maxRetries: 10 })
   }
 })
 
@@ -227,6 +227,6 @@ test('plugin: an available update is shown in stats and never added to a chat (#
     const stats = await ctx.commands[0].handler({ rawInput: 'stats', agent })
     assert.match(stats.text, /update available\nSavings: nothing measured yet\nLast index: none since the app started\nVersion \d+\.\d+\.\d+: dsh-context-graph 9\.9\.9 is available/)
   } finally {
-    await rm(cwd, { recursive: true, force: true })
+    await rm(cwd, { recursive: true, force: true, maxRetries: 10 })
   }
 })

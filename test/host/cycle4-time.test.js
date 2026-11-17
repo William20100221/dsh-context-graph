@@ -14,7 +14,7 @@ import { agentOf, ask, setup, skip, system, wait } from '../helpers/harness.js'
 
 async function inWorkspace(fn) {
   const cwd = await mkdtemp(join(tmpdir(), 'cg-cycle4-time-'))
-  try { await fn(cwd) } finally { await wait(30); await rm(cwd, { recursive: true, force: true }) }
+  try { await fn(cwd) } finally { await wait(30); await rm(cwd, { recursive: true, force: true, maxRetries: 10 }) }
 }
 
 /** `chats` shared chats active today, each with `topics` topics written now. */

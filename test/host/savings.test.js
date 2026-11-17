@@ -15,7 +15,7 @@ import { agentOf, ask, assistant, chatEvents, setup, skip, system, until, wait }
 
 async function inWorkspace(fn) {
   const cwd = await mkdtemp(join(tmpdir(), 'cg-savings-'))
-  try { await fn(cwd) } finally { await wait(30); await rm(cwd, { recursive: true, force: true }) }
+  try { await fn(cwd) } finally { await wait(30); await rm(cwd, { recursive: true, force: true, maxRetries: 10 }) }
 }
 // One file per chat since #83, zero counters left out (#78): read back with every counter.
 const ledgerOf = async (cwd) => ({ chats: Object.fromEntries(Object.entries((await loadLedger(join(cwd, '.context-graph'))).chats).map(([sid, e]) => [sid, { ...e, c: counters(e.c) }])) })

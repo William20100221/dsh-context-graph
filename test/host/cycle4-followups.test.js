@@ -14,7 +14,7 @@ import { DEFAULT_REPLY, agentOf, ask, assistant, chatEvents, scriptedLlm, setup,
 
 async function inWorkspace(fn) {
   const cwd = await mkdtemp(join(tmpdir(), 'cg-c4f-'))
-  try { await fn(cwd) } finally { await wait(30); await rm(cwd, { recursive: true, force: true }) }
+  try { await fn(cwd) } finally { await wait(30); await rm(cwd, { recursive: true, force: true, maxRetries: 10 }) }
 }
 
 test('a late answer to a question, still queued when on runs, holds the on like a typed message (#70, #59)', { skip }, () => inWorkspace(async (cwd) => {

@@ -3,7 +3,7 @@
  *   DSH_NODE_MODULES=<dsh install>/node_modules node --import ./test/helpers/resolve-dsh.mjs --test test/host/page.test.js
  */
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -13,7 +13,7 @@ import { agentOf, chatEvents, scriptedLlm, setup, skip, wait } from '../helpers/
 
 async function inWorkspace(fn) {
   const cwd = await mkdtemp(join(tmpdir(), 'cg-page-'))
-  try { await fn(cwd) } finally { await wait(30); await rm(cwd, { recursive: true, force: true }) }
+  try { await fn(cwd) } finally { await wait(30); await rm(cwd, { recursive: true, force: true, maxRetries: 10 }) }
 }
 
 /** The plugin with a fake connection (routes captured) and a fake workspace registry. */
@@ -89,3 +89,17 @@ test('the layout is deterministic, keeps chats apart and topics inside their cha
   const many = layoutMap(Array.from({ length: 30 }, (_, i) => chat(i + 1, 40, `2026-10-${String(i + 1).padStart(2, '0')}`)))
   for (const c of many.chats) assert.ok(c.x - c.r >= 0 && c.x + c.r <= many.width && c.y + c.r <= many.height, `chat ${c.cid} outside the picture`)
 })
+
+test('the topic route shows a source\'s turn only where the store numbers turns as dsh does (second review of #71)', { skip }, () => inWorkspace(async (cwd) => {
+  const { h, get } = await withPage([cwd])
+  await h.run(agentOf('sA', cwd, chatEvents(4)), 'build')
+  const [w] = (await get('overview')).body.workspaces
+  assert.ok(Number.isInteger((await get('topic', `?w=${w.key}&id=c1n1`)).body.sources[0].turn))
+  // The same store as 0.9.0 wrote it: its turn ids counted typed prompts.
+  const file = join(cwd, '.context-graph', 'chats', 'sA', 'msgs.json')
+  const store = JSON.parse(await readFile(file, 'utf8'))
+  await writeFile(file, JSON.stringify({ ...store, v: 1 }))
+  const old = (await get('topic', `?w=${w.key}&id=c1n1`)).body.sources[0]
+  assert.equal(old.turn, undefined)
+  assert.match(old.text, /We decided to sign commits/)
+}))
