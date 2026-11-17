@@ -143,24 +143,24 @@ test('#42 a chat left below the build threshold is indexed once quiet, or when a
   const a = agentOf('sA', cwd, chatEvents(2))
   h.listeners['agent/turn-stopping']({ agent: a })
   const [armed] = await until(() => live().length === 1 && live())
-  assert.equal(armed.ms, 600000)
+  assert.equal(armed.ms, 1800000)
   assert.equal(h.llm.calls, 0, 'two turns: below the threshold')
   armed.live = false
   armed.fn()
   await until(() => h.llm.calls === 1)
   await until(async () => (await metaOf(cwd, 'sA')).builtSeq === a.session.log.length - 1)
 
-  // A turn starting in the chat cancels the wait.
+  // A turn starting in the chat cancels the wait. Chat C: chat A waits for its next regular build
+  // before it is indexed once quiet again (review of #42, cycle4-review-host.test.js).
   const more = 'One more decision: the signing key is rotated every year in January, by whoever is on call. '.repeat(5)
-  a.session.append(user(more))
-  a.session.append(assistant('Noted.'))
-  h.listeners['agent/turn-stopping']({ agent: a })
+  const c = agentOf('sC', cwd, [system(), user(more), assistant('Noted.')])
+  h.listeners['agent/turn-stopping']({ agent: c })
   await until(() => live().length === 1)
-  h.listeners['agent/status']({ agent: a, status: 'running' })
+  h.listeners['agent/status']({ agent: c, status: 'running' })
   assert.equal(live().length, 0)
 
   // A new chat of the workspace starting its first turn: the user has moved on.
-  h.listeners['agent/turn-stopping']({ agent: a })
+  h.listeners['agent/turn-stopping']({ agent: c })
   await until(() => live().length === 1)
   h.listeners['agent/status']({ agent: agentOf('sB', cwd, [system()]), status: 'running' })
   assert.equal(live().length, 0)

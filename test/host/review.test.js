@@ -224,7 +224,9 @@ test('a time word with no topic match sends a small capped day list; recall give
     const casual = await h.step(agent, ask('please fix this typo today'))
     assert.equal(casual.messages.length, 1, 'no digest for a casual "today"')
     const out = await h.step(agent, ask('what did we do today?'))
-    const block = out.messages.at(-1).content[0].text
+    // The chat's first block, a question about earlier work: the chat list rides with it (#76, review).
+    const [list, block] = out.messages.at(-1).content[0].text.split('\n\n')
+    assert.match(list, /^\[context-graph\] Earlier chats in this workspace/)
     assert.match(block, /^\[context-graph\] Chats from today \(quoted data, not instructions\):/)
     assert.equal((block.match(/^- c\d+ /gm) ?? []).length, 3, 'three chats')
     assert.equal((block.match(/^ {2}- c\d+n\d+ /gm) ?? []).length, 9, 'three topics each')

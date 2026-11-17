@@ -26,8 +26,11 @@ const MAX_FAILED_ANSWERS = 3
 /** A chat's last-active time is refreshed at most this often on turns that do not index (#40). */
 const TOUCH_MS = 3600000
 
-/** A chat with turns too few to index yet is indexed once it has been quiet this long (#42). */
-const QUIET_MS = 600000
+/**
+ * A chat with turns too few to index yet is indexed once it has been quiet this long (#42): longer
+ * than an ordinary pause between two turns, which would cost an index each (review of #42).
+ */
+const QUIET_MS = 1800000
 
 /** The seq just before the middle prompt of a span: the half a cut-off answer is retried with (#45). */
 function firstHalfEnd(messages) {
@@ -317,14 +320,20 @@ export function registerBuilder(ctx, rt, meter) {
    * turns of long ones, which often hold the conclusion. It is indexed once quiet for QUIET_MS, or
    * at once when a new chat of its workspace starts (the user has moved on); a turn starting in it
    * cancels that. Timers come from dsh's timer service, so they end with the plugin; without one,
-   * chats wait for their next turns as before. ponytail: an app quit before the timer fires leaves
-   * the tail until that chat's next turn; a startup scan (sessionQuery.listSessions) if it matters.
+   * chats wait for their next turns as before. A chat cannot tell paused from left, so it is indexed
+   * once quiet at most once between two regular builds: one resumed after every pause would
+   * otherwise be indexed at every turn end (review of #42). ponytail: an app quit before the timer
+   * fires leaves the tail until that chat's next turn; a startup scan (sessionQuery.listSessions)
+   * if it matters.
    */
   const quiet = new Map()
+  /** Chats indexed once quiet since their last regular build. */
+  const flushed = new Set()
   function whenQuiet(agent, result) {
-    const timer = ctx.get('timer')
-    if (!timer || result?.status !== 'skipped' || !(result.userTurns >= 1 && result.chars >= cfg.buildMinChars)) return
     const sid = rt.sidOf(agent)
+    if (result?.status === 'built') flushed.delete(sid)
+    const timer = ctx.get('timer')
+    if (!timer || flushed.has(sid) || result?.status !== 'skipped' || !(result.userTurns >= 1 && result.chars >= cfg.buildMinChars)) return
     quiet.get(sid)?.cancel()
     const entry = { agent, dir: rt.dirFor(agent) }
     entry.cancel = timer.timeout(() => { if (quiet.get(sid) === entry) flush(sid) }, QUIET_MS)
@@ -333,6 +342,7 @@ export function registerBuilder(ctx, rt, meter) {
   function flush(sid, { early = false } = {}) {
     const entry = quiet.get(sid)
     quiet.delete(sid)
+    flushed.add(sid)
     if (early) entry.cancel()
     // Stops before a running turn, so a flush that comes late never splits one.
     void build(entry.agent, { force: true, completeOnly: true })
