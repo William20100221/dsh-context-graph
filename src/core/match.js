@@ -36,15 +36,19 @@ const nodeWords = new WeakMap()
  * A topic's search words, computed once per topic object (#33). Loaded graphs are cached by file
  * stat (src/store), so the same objects come back on every message until the file changes.
  * A lowerCamel name in the label is one label word without its humps, so "a file url" does not
- * name pathToFileURL; its humps count only where the gist has them (#74).
+ * name pathToFileURL; its humps count only where the gist has them (#74). `code`: the label and
+ * alias words written as code, the only ones an identifier counts double on: a message's
+ * "macBook" is not code to a topic named "MacBook dev setup" (review of #74).
  */
 export function nodeTokens(node) {
   let words = nodeWords.get(node)
   if (!words) {
+    const named = searchUnits([node.label, ...(node.aliases ?? [])].join(' '), { humps: false })
     words = {
-      strong: new Set(tokenize([node.label, ...(node.aliases ?? [])].join(' '), { humps: false })),
+      strong: new Set(named.flatMap((u) => (u.kind === 'cjk' ? u.bigrams : u.tokens)).filter(Boolean)),
       weak: new Set(tokenize(node.gist ?? '')),
-      label: new Set(tokenize(node.label, { humps: false }))
+      label: new Set(tokenize(node.label, { humps: false })),
+      code: new Set(named.filter((u) => u.code).map((u) => u.tokens[0]))
     }
     nodeWords.set(node, words)
   }
@@ -69,7 +73,7 @@ export const globalId = (view, id) => `c${view.cid}${id}`
  * `said`: tokens that count as already counted (the savings estimate passes the prompt's).
  * @returns { label, gist, matched } label and gist words, and the message's tokens that matched.
  */
-function evidence(units, { strong, weak }, said = []) {
+function evidence(units, { strong, weak, code }, said = []) {
   let label = 0
   let gist = 0
   const matched = []
@@ -104,13 +108,13 @@ function evidence(units, { strong, weak }, said = []) {
 
   for (const unit of units) {
     if (unit.kind === 'word') {
-      // The topic has the same compound ("opt-out", "pnpm-lock.yaml"): one word, two when it is
-      // code. Otherwise its parts are separate words in the topic ("restore-tested" against
-      // "restore tested"), each counted on its own; parts of code (runner.py, self._resp) count
-      // only as gist words, so a pasted traceback does not light up every topic named "runner".
+      // The topic has the same compound ("opt-out", "pnpm-lock.yaml"): one word, two when both
+      // write it as code. Otherwise its parts are separate words in the topic ("restore-tested"
+      // against "restore tested"), each counted on its own; parts of code (runner.py, self._resp)
+      // count only as gist words, so a pasted traceback does not light up every topic named "runner".
       const [whole, ...parts] = unit.tokens
       if (counted.has(whole)) continue
-      if (strong.has(whole)) { add([whole], unit.code ? 2 : 1, true); continue }
+      if (strong.has(whole)) { add([whole], unit.code && code.has(whole) ? 2 : 1, true); continue }
       const wholeInGist = weak.has(whole)
       if (wholeInGist && (unit.code || !parts.some((p) => strong.has(p)))) { add([whole], 1, false); continue }
       for (const p of parts) {
@@ -137,7 +141,7 @@ function evidence(units, { strong, weak }, said = []) {
 const ordered = (all) => [...all.filter((u) => !(u.kind === 'word' && u.code)), ...all.filter((u) => u.kind === 'word' && u.code)]
 
 /**
- * How many words of `text` are among a topic's `{ strong, weak }` words, counted the way matching
+ * How many words of `text` are among a topic's words (nodeTokens), counted the way matching
  * counts them (a Chinese word once, an exact code identifier of the label twice), leaving out the
  * tokens in `said`. The savings estimate tells an answer that used a topic from one that did not
  * with it (src/core/ledger.js).

@@ -109,6 +109,11 @@ function isCode(word) {
   return /[_.]/.test(word) || slashes >= 2 || (slashes === 1 && /\d/.test(word))
 }
 
+// Product names that read as plurals stay whole, whatever their case (review of #75): Windows is
+// not window, Teams not team. A capital cannot tell them apart: every label starts with one
+// ("Timestamps stored as timestamptz" must still find "timestamp"), and aliases are lowercase ("windows path").
+const PLURAL_NAMES = new Set(['windows', 'teams', 'sheets', 'pages', 'actions'])
+
 /**
  * A plural and its singular as one search word (#75): tests and test, queries and query, branches
  * and branch. Plain lowercase words of 4+ letters only, and never into a stopword ("times" stays).
@@ -116,7 +121,7 @@ function isCode(word) {
  * No dictionary: irregular plurals (indices, aliases, statuses) still differ, as before.
  */
 function singular(word) {
-  if (word.length < 4 || !/^[a-z]+$/.test(word)) return word
+  if (word.length < 4 || !/^[a-z]+$/.test(word) || PLURAL_NAMES.has(word)) return word
   let s = word
   if (s.endsWith('s')) {
     if (s.endsWith('ies') && s.length > 4) s = `${s.slice(0, -3)}y`
@@ -140,11 +145,14 @@ function withParts(word, parts) {
  * word counts double where a topic has it, its humps are its parts (unless `humps` is false). 7+
  * characters with a first hump of 2+, so iPhone, eCommerce or macOS stay plain words; PascalCase
  * (GitHub) does too. The word folds like a plain word: loadViews, LoadViews and loadviews are one.
+ * At most 40 characters and 6 humps: a pasted base64 blob or key is one plain word, not an
+ * identifier with a thousand parts that every topic would rescan (review of #74).
  */
 function camelUnit(word, humps) {
-  if (word.length < 7 || !/^[a-z][a-z\d]+[A-Z][A-Za-z\d]*$/.test(word)) return undefined
-  const parts = humps ? word.split(/(?<=[a-z\d])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/).map((h) => h.toLowerCase()) : []
-  return { kind: 'word', tokens: withParts(singular(word.toLowerCase()), parts), code: true }
+  if (word.length < 7 || word.length > 40 || !/^[a-z][a-z\d]+[A-Z][A-Za-z\d]*$/.test(word)) return undefined
+  const parts = word.split(/(?<=[a-z\d])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/)
+  if (parts.length > 6) return undefined
+  return { kind: 'word', tokens: withParts(singular(word.toLowerCase()), humps ? parts.map((h) => h.toLowerCase()) : []), code: true }
 }
 
 /**
