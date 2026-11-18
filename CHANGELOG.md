@@ -4,6 +4,155 @@ All notable changes to dsh-context-graph. Versions follow semver; each minor ver
 is one development cycle (audit, issues, fixes, independent review), documented in
 [docs/cycles](docs/cycles).
 
+## 0.10.0 — 2026-11-17 — memory for the way dsh is used
+
+Cycle 4. Memory now works for every way dsh drives a chat, not only typed prompts: `/goal` rounds,
+scheduled reminders, plan mode and the model's questions. A new chat pays nothing for memory it
+does not need, a question finds its topic however it is worded, and less is stored and rewritten.
+The audit behind it loaded the plugin into dsh's own runtime; that harness is now part of the suite.
+
+**Input dsh drives** (#69, #70, #71)
+- `/goal` rounds, scheduled reminders and late answers to the model's questions count as prompts
+  and as turns: a round is matched by its objective (once per goal revision), a reminder by its own
+  prompt, and both count toward `buildEveryTurns`. A goal changed in an off stretch, a reminder
+  scheduled there and an answer to a question asked there stay private, rounds included. (#69)
+- The plan you approve in plan mode is indexed as the model's text, and your answers to its
+  questions (in time or late) as yours, with their question; both are part of a recalled turn. (#70)
+- Turn ids (`t7`, `c3t7`) are dsh's own turn numbers: a steer stays in its turn, a goal round has
+  its own. (#71)
+
+**Indexing** (#42)
+- A chat that stops short of the next 4-turn mark is indexed once it goes quiet, or at once when a
+  new chat of its workspace starts; a turn starting in it cancels that.
+
+**Tokens** (#76, #77, #80, #81, #84)
+- The chat list (about 200 tokens, then re-sent as cached input with every later request) rides
+  only with a chat's first topic lines or a question about earlier work; a first message about
+  something else gets nothing. (#76)
+- `recall("2026-11-01")` and the automatic day digest share a 1,000-token budget among the day's
+  chats (up to about 3,600 before); what does not fit is named. (#77)
+- Everyday messages with a time word and "we <verb>" ("what should we do today", 我们明天要讨论的)
+  no longer get a day digest of about 360-470 tokens. (#80)
+- A day's digest lists the chats worked on that day first, not the ones that merely span it. (#81)
+- More ways to name a past day: two days ago, a week or 2 weeks ago (that calendar week), last
+  night, last Monday, nov 3, November 3rd, 三天前, 一周前, 两个礼拜前; 大前天 is three days back,
+  上上周 the week before last, 上上个月 the month before last. (#84)
+
+**Quality** (#73, #74, #75)
+- A file or command output the model read that lists topic ids no longer hides those topics, and
+  it is no longer scanned (the slowest per-message step in long chats). (#73)
+- An exact lowerCamel identifier (`loadViews`) finds its topic the way snake_case does. (#74)
+- Plurals fold onto their singulars on both sides (tests, queries, branches, caches); compounds
+  stay exact. On the corpus 37 reworded questions now find their topic (0.9.0: 4), with no false
+  hit and no block for 19 more everyday messages. (#75)
+
+**Speed and storage** (#72, #78, #82, #83, #58)
+- The first recall of an ordinary chat reads no dsh log. (#72)
+- Ledger entries keep only counters that are not zero and lists that are not empty; meta.json no
+  longer stores the workspace path. (#78)
+- `/context-graph map` lists the newest 40 chats (about 40 KB at most in the session log; 1 MB at
+  1,000 chats before) and points to the plugin's page for the rest. (#82)
+- The ledger is one small file per chat, so a turn end writes only its own chat's file: 1.7 ms
+  instead of 10.2 ms at 1,500 chats. 0.9.0's ledger.json is only read. (#83)
+- Forks indexed by 0.4-0.6 are found with one dsh session listing per run; one whose fork point is
+  not known yet stays out of matching while it is learned in the background. (#58)
+
+**Data safety** (#79)
+- A damaged file that cannot be moved aside (a sync tool or a scan holds it) is no longer reported
+  as set aside and read as missing: a memory-off chat is not indexed because of it, and the file is
+  never overwritten with no copy kept.
+
+**Tests**
+- test/e2e/cycle4-real-dsh.test.js boots dsh 0.2.1's own runtime (cordis, sessions, agent loop,
+  session query, commands, `/goal`) with a scripted provider and the plugin: a chat indexed at
+  dsh's turn end with one call at the lowest effort, a second chat that gets the topic and recalls
+  it and its turn, off then on through dsh's command service, and a `/goal` chat. Skipped where dsh
+  is not installed.
+
+**Found by the independent reviews of this change, and fixed** (first review: 3 angles, 15 findings, 12 confirmed by reproduction and the other 3 fixed as well, plus 2 the fixers left open, closed after the merge; second review: 3 angles, 14 findings, 13 confirmed by an independent reproduction, 1 of them high; third check, of those fixes: 3 angles, 12 findings, each reproduced twice, 3 of them medium. Every fix has a test that fails without it)
+
+Privacy
+- A fork that resumes a `/goal` set while an ancestor's memory was off keeps it private: a fork
+  takes its ancestors' off stretches up to the fork point as its own first gaps, and a fork made
+  before 0.10.0 takes them before its next index. (K0)
+- Under dsh's `ptc` preset, tool calls made from `run_code` count like direct ones: a reminder
+  scheduled while memory was off stays private, and plans and answers are read. (K1)
+- Only a plan you approved is indexed; a plan sent back to planning is not, and the words you sent
+  it back with are read as your answer. (R1)
+- A chat driven only by `/goal` gets its fingerprint from the goal's objective, so a later app run
+  does not list every dsh session on its first message; a listing that failed is not retried on
+  every message. (K10)
+
+Turn ids
+- Turn ids stored up to 0.9.0 (which counted typed prompts) are never shown beside dsh's numbering:
+  a chat's store is converted from its log at its next build or topic recall and marked
+  (msgs.json `v: 2`); until then its sources name no turn, on the plugin's page either. (K2, K9)
+
+Tokens and indexing
+- The chat list rides with a chat's first block on whichever turn it comes, so a chat that opens
+  with a greeting still gets it with its first topic lines or question about earlier work. (K3)
+- A chat with pauses is indexed once quiet at most once between two regular indexes, after 30
+  minutes instead of 10: 5 indexing calls instead of 12 on a 12-turn chat paused after every turn
+  (0.9.0: 3). (R0)
+- A msgs.json that cannot be read (a damaged file another program holds) reads as no stored
+  source: the block still goes out and a recall says no source is stored, instead of failing with
+  a raw error that names local paths. (K11)
+
+Matching and time
+- Stories that name a day ("the restaurant we tried last night was amazing, find me a similar
+  one") get no day digest, and "what did I do wrong" is no memory question. (K4)
+- 会话, 会议, 开会 and 想法 no longer read as plans, so a question about another 会话 gets its
+  digest again. (K5)
+- Windows, Teams, Sheets, Pages and Actions are never folded onto window, team, sheet, page and
+  action. (K6)
+- A pasted base64 blob or key is one plain word, not a camelCase identifier with a thousand parts:
+  3-5 ms instead of 80-117 ms at 10,500 topics, and no false hits. (K7)
+- 两天前端 (the frontend these two days) and 三天前后 are no longer days ago, "1.5 weeks ago" is not 5
+  weeks ago, and a month date that is the subject ("the may 1 launch last week") gives way to the
+  time phrase. (K8)
+- A lowerCamel brand name (macBook, deepSeek, mongoDB) counts double only where the topic writes
+  it as code too. (R2)
+
+Second review (of the fixes above and how they meet the rest)
+- Turn recall of another chat judges privacy from that chat's log, as indexing does: in a chat
+  indexed by 0.9.0, the rounds of a goal set while memory was off and resumed after `on` are never
+  served, also in a fork made then. (high)
+- A fork holds its parent's topics that cite a plan, an answer or a goal round, so they are not
+  sent to it again (about 100-160 tokens, then re-sent as cached input with every later request);
+  a chat begun with `/goal` is found as an ancestor by its objective, and its fingerprint no
+  longer changes when a prompt is typed later.
+- After one quiet index, a new chat of the workspace still indexes a chat's last turns; only a
+  quiet index that indexed counts as the one between two regular indexes.
+- "the bug we fixed yesterday is back" and "the port we picked last week, what was it" ask about
+  earlier work again; a story needs a word of how it went ("was amazing"), read within its clause,
+  so a pasted 100 KB transcript no longer costs about 100 ms.
+- After a failed listing of dsh's sessions, forks indexed by 0.4-0.6 are held back and learned
+  from their own logs instead of being offered for the rest of the run.
+- A damaged fork meta keeps its ancestors' off stretches next to the gaps it reads back.
+- What dsh drives from an off stretch is found in the log by every reader instead of being stored
+  as gaps, so a daily reminder no longer fills the 50-gap cap and closes shared turns.
+- 3天前端口, 3天前后端 and 2天前后台 are days ago again; "on nov 10" is the day asked about whatever
+  else the message names when it is past; identifiers up to 10 humps
+  (findAllByCustomerIdAndCreatedAtBetween) are code.
+
+Third check (of the second review's fixes)
+- A steer typed into a round of a goal set while memory was off never becomes the chat's title.
+- A damaged meta whose off stretches could not be read back keeps a goal set in them private
+  after `on`, in indexing and in turn recall.
+- "what did we decide yesterday about the launch on dec 3?" asks about yesterday: an upcoming date
+  no longer wins over the day asked about.
+- A request that points back at earlier work ("the plan we agreed on yesterday, write it up")
+  asks about it; "good", "bad" or "perfect" said of your own work is no story.
+- 这两天 or 连续两天 before 前后端 is a duration, not days ago; a mixed-case random id with a digit
+  is one plain word.
+- After its quiet index, a chat is indexed 5 minutes after a new chat starts unless you go back to
+  it first (a side question costs nothing), and a quiet index that failed counts as the one, so
+  a model that keeps failing is not called at every pause.
+- A failed listing of dsh's sessions is tried again after 30 seconds; a fork with a long first
+  prompt reads its ancestors' fingerprints once, not once per chat.
+- A message's "pages" or "actions" no longer finds a topic about a page or an action (tried in the
+  second review): "github actions" met "Undo action history".
+
 ## 0.9.0 — 2026-11-17 — see what memory does
 
 Cycle 3. You can now see what memory does without reading code: a savings line on the

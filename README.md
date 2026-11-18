@@ -27,7 +27,7 @@ summary of the chat. Memory is a tree that a new chat reads from the top, cheape
 
 | Layer | What the model sees | When |
 |---|---|---|
-| Chat | `c3 Postgres tuning for the orders dashboard` | once, on a chat's first message (about 200 tokens for all chats); not again after a restart |
+| Chat | `c3 Postgres tuning for the orders dashboard` | once per chat, with its first topic lines or its first question about earlier work (about 200 tokens for all chats); not again after a restart |
 | Topic | `- c3n12 orders index: (customer_id, created_at) cut the query to 40 ms` | on a message about it; unrelated messages get nothing |
 | Source | the cited messages, each naming its turn (`c3t7`) | `recall("c3n12")` |
 | Turn | the whole turn from dsh's own log | `recall("c3t7")` |
@@ -55,8 +55,9 @@ summarised away, and nothing is sent that you did not ask for.
 
 1. **Plugins → Add plugin**, official npm registry, type `dsh-context-graph`, install, then fully
    restart the app (new slash commands need a restart).
-2. Chat as usual. Every chat indexes itself every 4 turns and is shared with the other chats of
-   its workspace. Type `/context-graph`, pick it from the menu, then `build` to index one right away.
+2. Chat as usual. Every chat indexes itself every 4 turns, and once more when it goes quiet, and is
+   shared with the other chats of its workspace. Type `/context-graph`, pick it from the menu, then
+   `build` to index one right away.
 3. Open a new chat in the same workspace and ask about something from the first.
 4. To keep one chat out of the others, run `/context-graph unshare` in it.
 
@@ -77,12 +78,17 @@ No word means `stats`.
 Memory is already on in every chat. `on` undoes an earlier `off`, answers at once and indexes the
 chat in the background (a turn that is still running is indexed when it ends).
 
-After that the chat indexes itself every 4 human turns (one small auxiliary model call
-each time, using the chat's own routed model at its lowest reasoning effort unless you configure
-another). The first index creates `.context-graph/chats/<chat>/` with the chat's topics, the
-messages they cite and a `meta.json` holding its title, summary, dates and flags. From now on every
-message you send in this chat is matched against the other shared chats of the workspace, and the
-next message also carries the one-line list of those chats.
+After that the chat indexes itself every 4 turns (one small auxiliary model call each time, using
+the chat's own routed model at its lowest reasoning effort unless you configure another). A turn
+is anything dsh runs for you: a message you type, a `/goal` round, a reminder you scheduled, a late
+answer to a question the model asked. A chat that stops short of the next 4-turn mark is indexed
+once it has been quiet for 30 minutes, or as soon as a new chat of its workspace starts, at most
+once between two regular indexes; after that, a new chat indexes it 5 minutes later unless you
+go back to it first, so a quick side question in another chat costs nothing. The first index creates
+`.context-graph/chats/<chat>/` with the chat's topics, the messages they cite and a `meta.json`
+holding its title, summary, dates and flags. From now on every message you send in this chat is
+matched against the other shared chats of the workspace, and its next topic lines (or its next
+question about earlier work) also carry the one-line list of those chats.
 
 Card: `Memory on · indexing this chat now · 2 shared chats to draw on`
 
@@ -94,7 +100,9 @@ Stops indexing, stops adding anything to your requests, and stops `recall` from 
 (this chat's own turns, `t7`, still work). The folder stays on disk, so `on` later resumes where it
 left off. Other chats keep seeing what this chat shared before. What you type while memory is off is
 never indexed, shared or stored, also after `on`: that stretch is remembered as a gap, and nothing
-from it becomes the chat's title. `on` while a turn is still running, or while messages you typed
+from it becomes the chat's title. The same holds for a `/goal` set there (all its rounds, also
+after `on` and in a fork made later), a reminder scheduled there when it fires, and your answers to
+questions the model asked there. `on` while a turn is still running, or while messages you typed
 are still queued, takes effect once the chat is idle, so they stay private too.
 
 ### `share` / `unshare` — keep a chat private, or share it again
@@ -102,8 +110,9 @@ are still queued, takes effect once the chat is idle, so they stay private too.
 Every chat is shared by default: other chats with memory on can match and recall its topics.
 `unshare` makes this chat private; `share` undoes that. Nothing is copied or merged: the graph stays in its own folder with its own dates, and its
 ids carry the chat number (`c3n12`) so every hit traces back to where it came from. Both take
-effect at once. A fork is private from its first message when its parent is, and memory-off when memory was off where it was forked. A chat shared
-before its first index has nothing to offer yet; it fills in every 4 turns or with `build`.
+effect at once. A fork is private from its first message when its parent is, and memory-off when
+memory was off where it was forked. A chat shared before its first index has nothing to offer yet;
+it fills in at its first index (after 4 turns, when it goes quiet, or with `build`).
 
 Card: `Shared with the workspace · 7 topics`
 
@@ -135,9 +144,10 @@ Card: `3 topics indexed (2 new) · this chat has 7 topics`
 
 ### `map` — every chat in the workspace
 
-Lists all indexed chats newest first: chat id, start date, summary, topic count and flags (`this
+Lists the indexed chats newest first: chat id, start date, summary, topic count and flags (`this
 chat`, `memory on`, `shared`/`private`), each followed by its most connected topics with their ids.
-This is the text form of the graph; the picture is on the plugin's page (see below).
+This is the text form of the graph, and it stays in the chat's log, so it stops at the newest 40
+chats and names how many more there are; the whole picture is on the plugin's page (see below).
 
 ```
 2 chats in C:\Projects\site\.context-graph
@@ -185,42 +195,50 @@ It is an estimate: it cannot know what you would have pasted without memory. It 
 only counts when the answer shows it was used (an answer that only repeats your question does not
 count), what you would have pasted is counted once, at most a topic's three newest messages as
 stored (long ones keep only their head and tail), and never re-sent, and the time a model spends
-re-deriving old decisions is not counted at all. The counters live in `.context-graph/ledger.json`,
-one small entry per chat, written at most once per turn; while a sync tool holds that file, the
-card says the savings are unavailable for now instead of failing.
+re-deriving old decisions is not counted at all. The counters live in `.context-graph/ledger/`, one
+small file per chat holding only the counters that are not zero, written at most once per turn and
+only for that chat; while a sync tool holds one of them, the card says the savings are unavailable
+for now instead of failing.
 
 ## How matching and recall work
 
-**Matching is lexical, free and strict.** Your message is split into words (in any alphabet),
-identifiers (`clear_conversation` also yields `clear` and `conversation`) and Chinese character
-pairs; filler such as "can you help", 我们 or 的 is ignored. A topic must earn its place, counted per
+**Matching is lexical, free and strict.** Your message is split into words (in any alphabet; a
+plural is read as its singular, so `tests` finds `test` and `queries` finds `query`, while a few
+product names, `Windows`, `Teams`, `Sheets`, `Pages` and `Actions`, stay as written), identifiers (`clear_conversation`
+also yields `clear` and `conversation`, `loadViews` yields `load` and `views`) and Chinese
+character pairs; filler such as "can you help", 我们 or 的 is ignored. A topic must earn its place, counted per
 word of your message: a word found in its label or aliases counts 2, in its gist 0.5, and it needs
 at least one label word and a score of 3 (two label words, or one plus two gist words). A Chinese or
 Japanese word counts once however many character pairs it has (数据库 is one word, 单元测试 two), so
-both languages need the same evidence; an exact identifier such as `pnpm-lock.yaml` counts double,
-while bits of code in a pasted log count only as gist words; a long message needs a little more.
+both languages need the same evidence; an exact identifier such as `pnpm-lock.yaml` or `loadViews`
+counts double where the topic writes it the same way, while bits of code in a pasted log count only
+as gist words; a long message needs a little more.
 The same subject in several chats takes one slot, shown as its newest copy; a lower hit stays only
 if it matches a word the higher ones did not; a topic already in the chat's context is not sent
 again and its slot stays empty, but its replacement, or a newer copy that says something else, is.
 Up to 5 hits; only a hit with three label words that is clearly ahead has its source included, and
 only up to 300 tokens. A changed decision links to its replacement with a `supersedes` edge, so a
 hit on the old one shows the new one. On the audit corpus (6 chats, 60 topics, English and Chinese)
-this finds the right topic for 20 of 20 questions and sends nothing for 20 of 20 everyday messages.
+this finds the right topic for 20 of 20 questions, 10 of 10 held-out ones and 37 of 37 reworded
+ones (a plural for a singular, an identifier in camelCase), and sends nothing for 41 of 41 everyday
+messages (test/core/cycle4-matching.test.js).
 
 **Time ranks, it does not filter.** Which topics a message gets is decided on evidence; a named
 time then puts the ones from then first, so it can never push an exact older match out:
 
 | You write | Ranked first |
 |---|---|
-| `yesterday`, `昨天` | topics and chats from yesterday |
-| `3 days ago`, `3天前` | that day |
-| `last week`, `上周` / `this week`, `本周` | Monday to Monday |
-| `last month`, `上个月` | that calendar month |
-| `2026-11-01`, `2025年11月1日`, `11月1日` | that day |
+| `yesterday`, `last night`, `昨天` | topics and chats from yesterday |
+| `3 days ago`, `two days ago`, `last Monday`, `3天前`, `三天前`, `大前天` | that day |
+| `last week`, `a week ago`, `上周`, `一周前`, `上上周` / `this week`, `本周` | Monday to Monday |
+| `last month`, `上个月`, `上上个月` | that calendar month |
+| `2026-11-01`, `November 3rd`, `nov 3`, `2025年11月1日`, `11月1日` | that day |
 
 A question about earlier work that matches no topic ("what did we do yesterday?", "上次聊了什么")
-gets a short list of the chats from then instead. A message that only mentions a day ("today I want
-to learn rust", "今天做了红烧肉") gets nothing.
+gets a short list of the chats from then instead, the ones worked on then first, within about
+1,000 tokens. A message that only mentions a day, plans one or tells a story about one ("today I
+want to learn rust", "what should we do today", "yesterday we went hiking", "今天做了红烧肉") gets
+nothing.
 
 **Recall ids.** The model (or you, in a message) can ask for:
 
@@ -228,9 +246,9 @@ to learn rust", "今天做了红烧肉") gets nothing.
 |---|---|
 | `c3n12` | Topic 12 of chat 3: label, gist, its newest 3 source messages (about 1,000 tokens together, each naming its turn), and linked topics |
 | `c3` | Chat 3: summary, dates, and its topics most connected first; past 40, the rest by name |
-| `c3t7` | Turn 7 of chat 3 from dsh's log: the prompt, the answers and one line of tool use, about 2,000 tokens at most; only turns that chat has indexed, never turns a fork inherited |
+| `c3t7` | Turn 7 of chat 3 (dsh's own turn number) from dsh's log: the prompt, the answers, an approved plan, your answers to the model's questions and one line of tool use, about 2,000 tokens at most; only turns that chat has indexed, never turns a fork inherited |
 | `t7` | Turn 7 of the current chat, in the same form |
-| `2026-11-01` | Every shared chat active that day, with its topics from that day |
+| `2026-11-01` | Every shared chat active that day, with its topics from that day, about 1,000 tokens at most; what does not fit is named |
 
 ## What it costs
 
@@ -241,10 +259,10 @@ see [What memory saved](#what-memory-saved).
 | Moment | Added to the request |
 |---|---|
 | Every request | the `recall` tool definition, about 80 tokens |
-| First message of a chat | one line per earlier chat with topics, about 200 tokens in all |
+| A chat's first topic lines or first question about earlier work | one line per earlier chat with topics, about 200 tokens in all, once per chat |
 | A message about something earlier | 1-5 topic lines, about 30 tokens each, plus a short source when one topic clearly answers it |
 | Any other message | nothing |
-| Indexing | one auxiliary call every 4 turns, off the critical path, at the route's lowest reasoning effort; its fixed rules and the topic list come first so the provider can cache them |
+| Indexing | one auxiliary call every 4 turns, and at most one more when the chat goes quiet in between; off the critical path, at the route's lowest reasoning effort; its fixed rules and the topic list come first so the provider can cache them |
 | `recall` | one tool round trip: a topic's source up to about 1,000 tokens, a turn up to about 2,000 |
 
 Injected blocks are appended to the end of your newest message, never inserted earlier, so the
@@ -261,7 +279,7 @@ read as `inlineMaxTokens` (about 4 characters a token, so `0` still turns inlini
 | Key | Default | Meaning |
 |---|---|---|
 | `dir` | `.context-graph` | Memory folder, relative to the agent workspace or absolute |
-| `buildEveryTurns` | `4` | Index after this many new human turns (chats with memory on) |
+| `buildEveryTurns` | `4` | Index after this many new turns (typed, `/goal` rounds, reminders, late answers; chats with memory on) |
 | `buildMinChars` | `400` | ...and at least this much new text |
 | `maxHits` | `5` | At most this many topics per message; only relevant ones are sent |
 | `inlineMaxTokens` | `300` | A hit that clearly answers the message has its source included up to this size |
@@ -292,7 +310,7 @@ Remove with `dsh plugin --profile desktop remove dsh-context-graph`.
 .context-graph/chats/<sessionId>/topics.json  topics and links; every topic has its time and the seqs of its sources
 .context-graph/chats/<sessionId>/msgs.json    the messages topics cite, each stored once
 .context-graph/chats/.cid/                    one empty file per chat number in use
-.context-graph/ledger.json                    the savings estimate: a few counters per chat
+.context-graph/ledger/<sessionId>.json        the savings estimate of one chat: its counters that are not zero
 ```
 
 A chat gets its folder when it is first indexed; quick chats that never reach an index leave
@@ -301,7 +319,10 @@ reads. Delete a chat's folder to forget it. Delete `.context-graph/` to forget t
 
 Memory from older versions is upgraded on first use: v0.1-v0.3 kept one `graph.json` for the
 whole workspace, v0.4-v0.6 one `graph.json` plus `src/` per chat. Those files are kept unchanged
-as a backup for 7 days after the upgrade and then removed.
+as a backup for 7 days after the upgrade and then removed. The `ledger.json` of v0.9.0 is only
+read: each chat's ledger file starts from its entry there. Turn ids stored up to v0.9.0 counted
+typed prompts; a chat's stored messages take dsh's own turn numbers the next time it is indexed or
+one of its topics is recalled, and until then its sources name no turn.
 
 ## Development
 
@@ -314,7 +335,7 @@ src/client/       dsh chat card for /context-graph (DisclosureRow, en/zh titles)
 icon.svg          Plugins page icon in dsh's built-in icon style
 locale/           Plugins page title and description (en, zh); zh links README.zh.md
 cordis.patch.yml  mounts the plugin at the profile root with default config
-test/             node --test, mirroring src/ (core, store, host, client)
+test/             node --test, mirroring src/ (core, store, host, client); e2e runs dsh's own runtime with a scripted model
 docs/             architecture, and docs/cycles: each development cycle's brief and issues
 ```
 
@@ -328,20 +349,26 @@ Release: `npm test`, `npm version patch`, `npm publish`, `git push --follow-tags
 
 ## Known limits
 
-- Not yet verified with a live model; tests run against the published dsh packages.
+- Not yet verified with a live model; tests run against the published dsh packages, and one suite
+  runs dsh's own runtime (sessions, agent loop, commands, `/goal`) with a scripted model.
 - Two dsh processes writing the same chat at the same moment: the later write wins (writes inside
   one process are serialized, and chat numbers are claimed safely across processes).
 - Subagent sessions are neither indexed nor given memory blocks; their `recall` follows the chat
   that started the task, however deeply nested.
-- Tool outputs are not indexed and not part of a recalled turn (only one line naming the tools used);
-  they stay in dsh's log.
-- A chat shorter than 4 human turns is not indexed until it continues or you run `build` (planned:
-  index quiet chats on their own).
+- Tool outputs are not indexed and not part of a recalled turn (only one line naming the tools
+  used), except a plan you approved in plan mode and your answers to the model's questions; they
+  stay in dsh's log.
 - Matching is lexical: a question worded with none of a topic's words will not find it, a long
   pasted log can still bring one loosely related topic, and a Chinese transliteration (普罗米修斯)
   counts as more than one word.
-- A fork made by 0.4-0.6 of a chat that was later made private keeps offering the topics it
-  inherited to matching until it is opened again or recalled once (#58).
+- Telling a question about earlier work from everyday talk is lexical too: an everyday request
+  about something done on a day ("a recipe like the curry we tried last night") can still get a
+  short day digest, and a question worded as a story ("the hike we did on saturday was steep")
+  gets none.
+- A reminder's text edited in dsh's reminder manager (outside the chat) is indexed like any new
+  input when it fires with memory on, even if the edit was made while memory was off.
+- Turn ids stored up to v0.9.0 count typed prompts; until the chat is indexed again or one of its
+  topics is recalled, its sources name no turn.
 - The savings figure is an estimate (see [What memory saved](#what-memory-saved)); token counts are the plugin's own estimate, except indexing, which is what dsh reported. A subagent started fresh (not forked from the chat) is not charged the recall tool's share.
 - A chat whose meta.json was damaged and whose off stretches could not be read back keeps its turns from before its next `on` closed to other chats (its topics still work), and forks made in that part start with memory off.
 

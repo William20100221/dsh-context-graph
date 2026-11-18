@@ -46,3 +46,33 @@ two review rounds of the change find nothing high or medium they can reproduce, 
 - Do not add to a chat's context anything the chat did not need; no extra model calls.
 - Do not read tool output into memory beyond the plan and the user's own answers.
 - Do not ask the owner questions; choose by: fewer tokens, then speed and quality, then storage.
+
+## RESULT (2026-11-19)
+- Released as v0.10.0. Issues #42, #58 and #69-#84 closed by the release commit. This is the last
+  cycle of this run: the owner asked to wrap up after cycle 4.
+- What the user sees now: memory for `/goal` rounds, reminders, approved plans and the answers to
+  the model's questions, with an off stretch covering all of them; turn ids that are dsh's own;
+  short chats indexed once quiet; no chat list for a first message that needs no memory; a day
+  recall within 1,000 tokens; plurals, camelCase and many more ways to name a past day (大前天, 上上周,
+  two days ago, last Monday) understood;
+  one small ledger file per chat; `map` capped at 40 chats.
+- The audit of 0.9.0 (3 lenses, real dsh among them; 18 findings, all confirmed) gave #69-#84 and
+  designs for #42 and #58, all fixed with tests; the audit's real-dsh harness is now
+  test/e2e/cycle4-real-dsh.test.js.
+- Three independent review rounds of the change, each finding reproduced before it was fixed:
+  15 findings (12 confirmed, the other 3 fixed as well, plus 2 the fixers left open), then 14 on
+  those fixes (13 confirmed, 1 high: turn recall of a chat indexed by 0.9.0 could serve a goal set
+  while off), then 12 on those (3 medium). Design changes made because of them: turn recall and
+  indexing judge privacy from the log with the off stretches, and what dsh drives from one is never
+  stored as a gap; forks take their ancestors' off stretches; forks compare what the builder read;
+  a quiet index is bounded per regular cycle; one product-plural change was tried and reverted.
+- The two-clean-rounds stop rule was not met to the letter: the third round still found 3 medium
+  problems (an upcoming date, requests about earlier work, a title from a private steer). All are
+  fixed, each with a test checked by undoing its fix; no fourth round was run.
+- Mutation check: 168 mutants of cycles 1-3 (166 caught; one equivalent now, one covered by a new
+  test), 64 of the cycle-4 fixes (63, then all with one more test), 18 of the second-review fixes
+  (17, then all); every third-check fix was checked by undoing it. 304 tests in three time zones.
+- Carried forward: telling a question about earlier work from everyday talk is lexical (an
+  everyday request about "the curry we tried last night" can still get a short digest); a reminder
+  edited in dsh's reminder manager is new input when it fires; old turn ids show no turn until the
+  chat is indexed again or a topic of it is recalled.
