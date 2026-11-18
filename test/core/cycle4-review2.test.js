@@ -39,7 +39,8 @@ test('second review: "the X we did" asks about earlier work unless the clause sa
 })
 
 test('second review: a pasted transcript with no punctuation is read in linear time', () => {
-  const transcript = 'what we did there was the approach we tried and then the thing we used '.repeat(3000)
+  // Clauses all the way, and a story phrase only at the end: an unbounded look ahead would scan to it from every clause.
+  const transcript = `${'what we did there was the approach we tried and then the thing we used '.repeat(1000)}and it was amazing`
   const started = performance.now()
   asksAboutPast(transcript)
   assert.ok(performance.now() - started < 60, `${Math.round(performance.now() - started)} ms for ${transcript.length} characters`)
