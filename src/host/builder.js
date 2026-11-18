@@ -32,6 +32,13 @@ const TOUCH_MS = 3600000
  */
 const QUIET_MS = 1800000
 
+/**
+ * A chat already indexed once quiet in this cycle is indexed this long after a new chat of its
+ * workspace starts, unless it runs again first: a quick side question in another chat costs no
+ * index, a chat really left still gets its tail (third check of #42).
+ */
+const LEFT_MS = 300000
+
 /** The seq just before the middle prompt of a span: the half a cut-off answer is retried with (#45). */
 function firstHalfEnd(messages) {
   const prompts = messages.filter((m) => m.role === 'user')
@@ -319,8 +326,9 @@ export function registerBuilder(ctx, rt, meter) {
    * cancels that. Timers come from dsh's timer service, so they end with the plugin; without one,
    * chats wait for their next turns as before. A chat cannot tell paused from left, so its timer runs at most once
    * between two regular builds: one resumed after every pause would otherwise be indexed at every
-   * turn end (review of #42). A new chat still flushes it every time (the user has moved on, once
-   * per new chat), and only a flush that indexed counts as the one (second review). ponytail: an app quit before the timer
+   * turn end (review of #42). A new chat flushes it at once if it had no quiet index yet in this
+   * cycle, else LEFT_MS later unless it runs again first (second review, third check). A flush that
+   * indexed or failed counts as the one: a model that keeps failing is not called at every pause. ponytail: an app quit before the timer
    * fires leaves the tail until that chat's next turn; a startup scan (sessionQuery.listSessions)
    * if it matters.
    */
@@ -343,7 +351,7 @@ export function registerBuilder(ctx, rt, meter) {
     if (early) entry.cancel()
     // Stops before a running turn, so a flush that comes late never splits one. Memory off, a busy
     // chat or an unusable answer leave the timer to the next turn end.
-    void build(entry.agent, { force: true, completeOnly: true }).then((result) => { if (result?.status === 'built') flushed.add(sid) })
+    void build(entry.agent, { force: true, completeOnly: true }).then((result) => { if (result?.status === 'built' || result?.status === 'failed') flushed.add(sid) })
   }
   function started(agent) {
     if (rt.isSubagent(agent)) return
@@ -352,7 +360,14 @@ export function registerBuilder(ctx, rt, meter) {
     quiet.delete(sid)
     if (quiet.size === 0 || hasAnswer(agent)) return
     const dir = rt.dirFor(agent)
-    for (const [other, entry] of quiet) if (entry.dir === dir) flush(other, { early: true })
+    for (const [other, entry] of quiet) {
+      if (entry.dir !== dir) continue
+      if (!flushed.has(other)) { flush(other, { early: true }); continue }
+      if (entry.left) continue
+      entry.left = true
+      entry.cancel()
+      entry.cancel = ctx.get('timer').timeout(() => { if (quiet.get(other) === entry) flush(other) }, LEFT_MS)
+    }
   }
   const hasAnswer = (agent) => {
     for (let seq = 0; ; seq++) {
