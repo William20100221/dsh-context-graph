@@ -51,6 +51,19 @@ test('a fork of a fork made at a point in the grandparent\'s off stretch starts 
   assert.equal((await metaOf(cwd, 'sF2')).memoryOff, true)
 }))
 
+test('a fork of a fork whose meta came before 0.10.0 asks the grandparent too (third review of #60, v0.10.0)', { skip }, () => inWorkspace(async (cwd) => {
+  const h = await setup({ buildMinChars: 1 })
+  const g = await grandparent(h, cwd)
+  const [, to] = (await metaOf(cwd, 'sG')).gaps.at(-1)
+  // F1 as 0.9.0 left it: a fork of G, but none of G's off stretches among its own gaps.
+  const gLog = [...g.session.log, user('after on'), assistant('ok')]
+  await updateMeta(join(cwd, '.context-graph'), 'sF1', (m) => m, () => ({ forkSeq: gLog.length, parent: 'sG', builtSeq: gLog.length - 1, startedAt: 'T', lastActiveAt: 'T' }))
+  const f2Log = gLog.slice(0, to + 1)
+  const f2 = agentOf('sF2', cwd, [...f2Log, user('f2: and the PIN again?')], { header: { isSeeded: true, parentSession: 'sF1' }, inheritedEventCount: f2Log.length })
+  await h.step(f2, ask('hello'))
+  assert.equal((await metaOf(cwd, 'sF2')).memoryOff, true)
+}))
+
 test('a fork of a chat whose damaged meta lost its off stretches starts off (third review of #60)', { skip }, () => inWorkspace(async (cwd) => {
   const h = await setup({ buildMinChars: 1 })
   const p = agentOf('sP', cwd, chatEvents(4))
