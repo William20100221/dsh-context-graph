@@ -67,7 +67,7 @@ export function registerMemory(ctx, rt, meter) {
    * so only chats with that first prompt need their stored messages compared. This keeps a fork's
    * first message from parsing every chat's msgs.json (review of #52).
    */
-  const ancestorLike = (view, agent) => rt.ancestorOf(view.meta, (seq) => agent.session.eventAt(seq))
+  const ancestorLike = (view, agent) => rt.ancestorOf(view.meta, agent.session)
 
   /** The hits a fork already holds. */
   async function inherited(agent, forkSeq, hits) {

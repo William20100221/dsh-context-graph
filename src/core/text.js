@@ -147,12 +147,13 @@ function withParts(word, parts) {
  * (GitHub) does too. The word folds like a plain word: loadViews, LoadViews and loadviews are one.
  * At most 40 characters and 10 humps: a pasted base64 blob or key is one plain word, not an
  * identifier with a thousand parts that every topic would rescan (review of #74), while
- * findAllByCustomerIdAndCreatedAtBetween still is one (second review).
+ * findAllByCustomerIdAndCreatedAtBetween still is one (second review); one with a digit, at most 6, as
+ * random ids of mixed case nearly always hold one (third check).
  */
 function camelUnit(word, humps) {
   if (word.length < 7 || word.length > 40 || !/^[a-z][a-z\d]+[A-Z][A-Za-z\d]*$/.test(word)) return undefined
   const parts = word.split(/(?<=[a-z\d])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/)
-  if (parts.length > 10) return undefined
+  if (parts.length > (/\d/.test(word) ? 6 : 10)) return undefined
   return { kind: 'word', tokens: withParts(singular(word.toLowerCase()), humps ? parts.map((h) => h.toLowerCase()) : []), code: true }
 }
 
@@ -190,9 +191,7 @@ export function searchUnits(text, { humps = true } = {}) {
     const word = cased.toLowerCase()
     // Most words have no separator: one plain word, no parts (#66).
     if (!/[_./-]/.test(word)) {
-      // One of PLURAL_NAMES in a message also finds its singular ("how should we name redux actions"),
-      // not the other way round: a topic named Windows is no window (second review of #75).
-      if (word.length >= 2 && !STOPWORDS.has(word)) units.push(camelUnit(cased, humps) ?? { kind: 'word', tokens: humps && PLURAL_NAMES.has(word) ? [word, word.slice(0, -1)] : [singular(word)], code: false })
+      if (word.length >= 2 && !STOPWORDS.has(word)) units.push(camelUnit(cased, humps) ?? { kind: 'word', tokens: [singular(word)], code: false })
       continue
     }
     if (!/[\p{L}\p{N}]/u.test(word) || STOPWORDS.has(word)) continue

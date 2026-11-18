@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { BlockAssembler } from '@deepseek-ai/dsh-llm'
 
 import { betterParse, builderPrompt, parseBuilderOutput, planSpan } from '../core/builder.js'
-import { memoryOn, offPoint } from '../core/chat.js'
+import { memoryOn, offPoint, walkGaps } from '../core/chat.js'
 import { mergeDelta } from '../core/graph.js'
 import { emptyCounters, usedIn } from '../core/ledger.js'
 import { collectSpan, firstPromptSeq, lastAnswer, mergeGaps, titleOf } from '../core/session.js'
@@ -106,7 +106,7 @@ export function registerBuilder(ctx, rt, meter) {
       const forkSeq = rt.forkSeqOf(session) ?? 0
       // A fork's own titles start at its own first prompt (review of #60).
       const titleFrom = forkSeq ? (firstPromptSeq(eventAt, forkSeq) ?? Infinity) : 0
-      span = collectSpan(eventAt, rt.indexStart(agent, meta), { completeOnly, gaps: meta?.gaps, titleFrom })
+      span = collectSpan(eventAt, rt.indexStart(agent, meta), { completeOnly, gaps: walkGaps(meta), titleFrom })
       // A command build that stopped before a running turn: that turn is indexed when it ends (#65).
       if (span.open && force) st.indexAtEnd = true
       if (span.messages.length === 0) return { status: 'nothing', reason: 'no new messages since the last build' }
@@ -201,7 +201,7 @@ export function registerBuilder(ctx, rt, meter) {
           // dsh's own title (model-made or the user's rename) once there is one (#41). A meta whose
           // off stretches were lost (recovered, turnsClosed) takes no new title from the log (review).
           // (Its first-prompt fingerprint is set by runtime.js upToDate before this change runs.)
-          title: latest.turnsClosed === true ? latest.title : span.title ?? latest.title ?? titleOf(eventAt, 60, forkSeq, latest.gaps),
+          title: latest.turnsClosed === true ? latest.title : span.title ?? latest.title ?? titleOf(eventAt, 60, forkSeq, mergeGaps(latest.gaps, span.hidden)),
           ...(delta.summary ? { summary: delta.summary } : {}),
           lastActiveAt: now,
           builtSeq: endSeq

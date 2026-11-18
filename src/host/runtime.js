@@ -6,7 +6,7 @@
 import { createHash } from 'node:crypto'
 import { basename, isAbsolute, join } from 'node:path'
 
-import { closedAt, memoryOn, offPoint, sharedOn } from '../core/chat.js'
+import { closedAt, memoryOn, offPoint, sharedOn, walkGaps } from '../core/chat.js'
 import { emptyCounters, standIn } from '../core/ledger.js'
 import { collectSpan, eventText, inGap, isPrompt, mergeGaps, promptText, shownContext, titleOf } from '../core/session.js'
 import { chatDir, listChats, loadGraph, loadMeta, updateMeta } from '../store/chats.js'
@@ -46,14 +46,25 @@ const ancestorKeys = (eventAt) => [...new Set([titleOf(eventAt), firstPromptOf(e
 
 /** Whether a chat's first prompt is `first`; metas written before 0.9.0 keep it as text, or only a title. */
 const startsWith = (meta, first) => first !== undefined && (meta?.firstKey !== undefined ? meta.firstKey === firstKey(first) : (meta?.firstPrompt ?? meta?.title) === first)
-/** Whether a chat may be an ancestor of the chat whose log is `eventAt` (same first prompt). */
-const ancestorOf = (meta, eventAt) => ancestorKeys(eventAt).some((first) => startsWith(meta, first))
+/**
+ * Whether a chat may be an ancestor of `session`'s chat (same first prompt). Its keys are read once
+ * per session: the inherited part never changes, and a pasted first prompt is long (third check).
+ */
+const keyCache = new WeakMap()
+function ancestorOf(meta, session) {
+  let keys = keyCache.get(session)
+  if (!keys) keyCache.set(session, (keys = ancestorKeys((seq) => session.eventAt(seq)).map((text) => ({ text, key: firstKey(text) }))))
+  return keys.some(({ text, key }) => (meta?.firstKey !== undefined ? meta.firstKey === key : (meta?.firstPrompt ?? meta?.title) === text))
+}
 
 /**
  * Whether a chat's meta cannot say if the chat is a fork: written by 0.4-0.7 and not since (#58).
  * From 0.8.0 on, the write that stores the first prompt (firstPrompt, then its fingerprint firstKey)
  * also stores forkSeq when the chat is a fork, so a meta with either says (#72).
  */
+/** How long a failed listing of dsh's sessions, or a fork point not learned, waits to be tried again. */
+const RETRY_MS = 30000
+
 const forkUnknown = (meta) => !Number.isInteger(meta?.forkSeq) && meta?.firstKey === undefined && meta?.firstPrompt === undefined
 
 /**
@@ -257,7 +268,7 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
     }
     const eventAt = (seq) => agent.session.eventAt(seq)
     for (const chat of await listChats(dir)) {
-      if (chat.sid === sidOf(agent) || !ancestorOf(chat.meta, eventAt)) continue
+      if (chat.sid === sidOf(agent) || !ancestorOf(chat.meta, agent.session)) continue
       if (chat.meta.private !== true && chat.meta.memoryOff !== true) continue
       const stored = await loadMessages(chatDir(dir, chat.sid))
       const inherited = Object.keys(stored).map(Number).filter((seq) => seq < forkSeq)
@@ -345,7 +356,7 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
    * review of #69).
    */
   async function offsOf(dir, meta) {
-    const own = Array.isArray(meta?.gaps) ? meta.gaps : []
+    const own = walkGaps(meta)
     if (!Number.isInteger(meta?.forkSeq) || !meta.parent || meta.offsInherited === true) return own
     return mergeGaps(own, await offUpTo(dir, await metaOf(dir, meta.parent), meta.forkSeq - 1))
   }
@@ -440,7 +451,11 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
     seeded ??= Promise.resolve()
       .then(() => query.listSessions())
       .then((records) => new Set(records.filter((r) => r?.header?.isSeeded === true).map((r) => String(r.header.id))))
-      .catch(() => null)
+      .catch(() => {
+        // Tried again later (third check): until then the unsure chats stay held back.
+        setTimeout(() => { seeded = undefined }, RETRY_MS).unref?.()
+        return null
+      })
     return seeded
   }
   const learning = new Map()
@@ -462,7 +477,10 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
       // back meanwhile (fail closed, second review of #58).
       if (forks && !forks.has(c.sid)) { forkPoints.set(c.sid, 0); continue }
       waiting.add(c.sid)
-      if (!learning.has(c.sid)) learning.set(c.sid, learnForkPoint(c.sid, c.meta).catch(() => false))
+      if (!learning.has(c.sid)) learning.set(c.sid, learnForkPoint(c.sid, c.meta).catch(() => false).then((learned) => {
+        if (!forkPoints.has(c.sid)) setTimeout(() => learning.delete(c.sid), RETRY_MS).unref?.()
+        return learned
+      }))
     }
     return chats.filter((c) => !waiting.has(c.sid))
   }

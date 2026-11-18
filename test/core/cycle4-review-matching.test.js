@@ -19,9 +19,7 @@ const view = (cid, label, gist, aliases = []) => {
 }
 
 test('review K6: Windows, Teams and Sheets are names, not the plurals of window, team and sheet', () => {
-  // A topic's name stays whole; a message's plural name also finds its singular (second review).
-  assert.deepEqual(tokenize('Windows Teams Sheets Pages Actions windows', { humps: false }), ['windows', 'teams', 'sheets', 'pages', 'actions'])
-  assert.deepEqual(tokenize('pages Windows'), ['pages', 'page', 'windows', 'window'])
+  assert.deepEqual(tokenize('Windows Teams Sheets Pages Actions windows'), ['windows', 'teams', 'sheets', 'pages', 'actions'])
   assert.deepEqual(tokenize('tests caches'), ['test', 'cach'], 'other plurals still fold')
   const views = [
     view(1, 'Windows line endings', 'core.autocrlf false plus .gitattributes eol=lf; CRLF broke the shell scripts', ['crlf']),

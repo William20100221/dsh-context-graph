@@ -66,16 +66,36 @@ test('second review: long lowerCamel identifiers up to 10 humps are code and fin
   assert.deepEqual(ids(matchAcross(v, 'shouldThrowExceptionWhenUserIsNull is failing again on CI')), ['c1n1'])
 })
 
-test('second review: a message\'s plural product word still finds a singular topic; a topic named Windows still meets no window', () => {
+test('third check: the plural of a product name stays whole in a message too, so "github actions" or "microsoft teams" meets no unrelated topic', () => {
   const views = [
-    view(1, 'Page title templates', 'every route sets its document title from one template'),
-    view(2, 'Redux action naming', 'domain/eventName in past tense'),
-    view(3, 'Team invite flow', 'owners send an email link that expires after 7 days'),
-    view(4, 'Sheet export to CSV', 'one CSV per sheet, zipped'),
-    view(5, 'Windows line endings', 'core.autocrlf false plus .gitattributes eol=lf')
+    view(1, 'Undo action history', 'every edit is an action the history can undo'),
+    view(2, 'Team notification settings', 'each team picks which notifications it gets'),
+    view(3, 'Docs page layout', 'the sidebar and the page header'),
+    view(4, 'Window resize handler', 'the layout reflows on resize, debounced')
   ]
-  for (const [q, want] of [['where do we set titles for the pages?', 'c1n1'], ['how should we name redux actions?', 'c2n1'], ['how do teams invite people?', 'c3n1'], ['can we export all sheets at once to csv?', 'c4n1']]) {
-    assert.deepEqual(ids(matchAcross(views, q)), [want], q)
+  for (const q of ['github actions history only keeps 90 days of logs', 'send the build failures to microsoft teams as notifications', 'publish the docs to github pages', 'the layout breaks when I resize on windows']) {
+    assert.deepEqual(ids(matchAcross(views, q)), [], q)
   }
-  assert.deepEqual(ids(matchAcross(views, 'the modal window closes on escape, is that a bug in the line of code?')), [], 'window is not Windows')
+})
+
+test('third check: an upcoming "on <date>" gives way to the day asked about; a past one still wins', () => {
+  const now = new Date(2026, 10, 19, 15)
+  assert.equal(parseTimeRange('what did we decide yesterday about the launch on dec 3?', now)?.label, 'yesterday')
+  assert.equal(parseTimeRange('remind me what we decided last week for the migration on nov 30', now)?.label, 'last week')
+  assert.equal(parseTimeRange("what did we decide on nov 10? I need it for today's standup", now)?.label, '2026-11-10')
+})
+
+test('third check: a request that points back at earlier work asks about it; what developers say of their work is no story', () => {
+  for (const q of ['the plan we agreed on yesterday, write it up as a spec', 'the migration we wrote yesterday, apply it to staging', 'the function we wrote yesterday needs tests, add them', 'the approach we picked yesterday was bad, what were the alternatives']) assert.equal(asksAboutPast(q), true, q)
+  for (const q of ['the hotel we picked two days ago cancelled again', 'the hike we did on saturday still hurts my knees']) assert.equal(asksAboutPast(q), false, q)
+})
+
+test('third check: 这两天 or 连续两天 before 前后端 is a duration, not days ago', () => {
+  for (const q of ['这两天前后端联调一直有问题，之前我们定的接口格式是什么？', '连续两天前后端都报错，我们之前讨论过吗', '花了三天前后端联调，上次说的方案是什么']) assert.equal(label(q), undefined, q)
+  assert.equal(label('3天前后端改了什么，我们讨论过吗'), '3 days ago')
+})
+
+test('third check: a mixed-case random id with a digit is one plain word, a long identifier without one is code', () => {
+  assert.equal(searchUnits('k3JdLx9QpRtVwYz2mNb')[0].code, false)
+  assert.equal(searchUnits('findAllByCustomerIdAndCreatedAtBetween')[0].code, true)
 })
