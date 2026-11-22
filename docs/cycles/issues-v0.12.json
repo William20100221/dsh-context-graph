@@ -1,0 +1,67 @@
+[
+  {
+    "key": "F-1",
+    "milestone": "v0.12.0",
+    "labels": [
+      "enhancement",
+      "tokens"
+    ],
+    "title": "Hide a chat from memory, bring it back, and delete the memory of a chat that is gone",
+    "body": "**Problem**\nThe only way to keep a chat out of other chats is `/context-graph unshare`, typed inside that chat. There is no way to take a whole chat's memory out of play from the Memory tree, to bring it back later, or to clear the memory of a chat whose dsh session no longer exists (its branch stays in the tree and keeps matching).\n\n**Fix**\n- **Hide** (any chat, from its details in Memory tree): the chat's sid goes into `.context-graph/hidden.json`, a file of its own beside the chats. Every reader (topic matching, the chat list, day digests, `recall`, `/context-graph find`) loads only the chats not listed there, so a hidden branch costs no input tokens. Indexing pauses while a chat is hidden and catches up when it is shown again. The tree keeps hidden chats in a Hidden branch, greyed, with **Use again**.\n- **Delete memory**: only for a chat whose dsh session is gone (dsh no longer lists it; an archived chat still counts as there). Its details offer **Delete memory**, which asks for confirmation (what goes, that it cannot be undone) before the chat's folder and its savings file are removed.\n- The routes are owner-only POSTs, like the existing GETs.",
+    "number": 91
+  },
+  {
+    "key": "F-2",
+    "milestone": "v0.12.0",
+    "labels": [
+      "enhancement"
+    ],
+    "title": "Show a chat's memory number in its header, and archive a chat together with its memory",
+    "body": "**Problem**\nNothing in a chat says which memory branch it is (`c4`), so the ids the model and the Memory tree use cannot be matched to the chats in the sidebar. And removing a chat from the sidebar (Archive) leaves its memory in play.\n\n**Fix**\n- A small chip in the session header, next to the title row (`conversation.session.header.actions`): `c4` with a hint (topics, shared or private, hidden, memory off). Clicking it opens Memory tree on that chat.\n- A session menu item **Archive & forget** (`sidebar.workspaces.session.menu.item`, shown before dsh's own Archive): it asks for confirmation, then archives the chat through dsh (`uiWorkspace.archiveSession`) and deletes its memory. The confirmation says the chat can be restored from the archive but its memory cannot.",
+    "number": 92
+  },
+  {
+    "key": "F-3",
+    "milestone": "v0.13.0",
+    "labels": [
+      "enhancement",
+      "data-safety"
+    ],
+    "title": "Keep the complete source messages, so a topic can always be read in full",
+    "body": "**Problem**\nA topic's sources are stored cut to their first 4,500 and last 1,000 characters, only the messages a topic cites are kept, and Memory tree shows the first 600 characters. Once a chat's dsh session is deleted, the rest is gone for good: `recall(\"c3t7\")` can only rebuild a turn from the few cited fragments.\n\n**Fix**\n- Indexing stores every message it reads (user and assistant text, never what was typed while memory was off) in full, not only the cited ones.\n- Chats indexed before keep what they have and are completed from dsh's log in the background, once per app run, while their session still exists, walking the same off stretches as every other reader.\n- Memory tree shows a source in full (long ones open on request) and offers the whole turn, read from dsh's log or, for a deleted chat, from the stored copy.\n- What the model gets is unchanged (`sourceMaxTokens`, `turnMaxTokens`).",
+    "number": 93
+  },
+  {
+    "key": "F-4",
+    "milestone": "v0.14.0",
+    "labels": [
+      "enhancement",
+      "quality"
+    ],
+    "title": "Label chats, and the parts of a chat, by what they are for",
+    "body": "**Problem**\nA chat is known only by its one-line summary and its topics. Whether it was a quick question, a coding session on one project, bug fixing or homework is not recorded, so a message such as \"the bug we fixed in the plugin\" has nothing to narrow the search with, and a chat that holds several conversations is one undivided branch.\n\n**Fix**\n- Indexing also returns the chat's **type** from a fixed list (quick question, everyday chat, coding, bug fixing, research, study, writing, planning, setup, data, creative, language), its **project** when there is one (`dsh-context-graph`, `NZQA ESS`), and, for a chat with several conversations, its **parts**: a label and what it was about, for a range of turns.\n- Labels rank: among the topics a message matches, those in chats (or parts) whose label the message names (\"bug\", \"homework\", \"code\") come first. A label never matches on its own, so it adds no unrelated topics.\n- Memory tree shows a chat's labels and parts.",
+    "number": 94
+  },
+  {
+    "key": "F-5",
+    "milestone": "v0.14.0",
+    "labels": [
+      "enhancement"
+    ],
+    "title": "Memory tree: sort chats by label, and remember the choice",
+    "body": "**Problem**\nThe tree always groups chats one way. With labels, grouping by what a chat was for (all coding, all study) is a second useful view.\n\n**Fix**\nA toggle in the toolbar, at the top right above the details: **Group: Subject** / **Group: Label**. One click switches, a second switches back. The choice is kept in the app's local storage, so it is the same after closing and reopening DeepSeek Harness.",
+    "number": 95
+  },
+  {
+    "key": "F-6",
+    "milestone": "v0.15.0",
+    "labels": [
+      "enhancement",
+      "quality",
+      "tokens"
+    ],
+    "title": "A subject layer above chats, searched first",
+    "body": "**Problem**\nAll chats hang directly off the workspace. Several chats about one subject (Earth and space science, say) are not grouped, in the tree or in the search.\n\n**Fix**\n- Indexing names each chat's broad subject, reusing a subject the workspace already has when it fits; chats indexed before are given one in a single small call after the next build in their workspace.\n- Memory tree: workspace, subjects, chats, topics, sources.\n- Search goes through the layers: the subjects closest to the message first, then the topics of their chats; if those hold no match, the topics of every chat; if there is still none, the search stops there. When a subject matched but none of its topics did, the model gets one line naming that subject's chats, so it can `recall` one (the deepest layer was not found); with no subject and no topic, nothing is added.",
+    "number": 96
+  }
+]
