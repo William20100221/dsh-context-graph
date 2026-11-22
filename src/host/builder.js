@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { BlockAssembler } from '@deepseek-ai/dsh-llm'
 
 import { betterParse, builderPrompt, parseBuilderOutput, planSpan } from '../core/builder.js'
-import { memoryOn, offPoint, walkGaps } from '../core/chat.js'
+import { hiddenOn, memoryOn, offPoint, walkGaps } from '../core/chat.js'
 import { mergeDelta } from '../core/graph.js'
 import { emptyCounters, usedIn } from '../core/ledger.js'
 import { collectSpan, firstPromptSeq, lastAnswer, mergeGaps, titleOf } from '../core/session.js'
@@ -107,6 +107,8 @@ export function registerBuilder(ctx, rt, meter) {
       let meta = await rt.metaFor(agent)
       // An off whose write has not landed yet already holds here (runtime.js withPending).
       if (!memoryOn(meta)) return { status: 'off', reason: 'memory is off for this chat; /context-graph on resumes it' }
+      // A hidden chat costs no indexing either; it catches up from builtSeq once used again (#91).
+      if (hiddenOn(meta)) return { status: 'hidden', reason: 'this chat is hidden from memory; Memory tree → Use again resumes it' }
       // A fork from before 0.10.0 takes its ancestors' off stretches first (runtime.js inheritOffs).
       meta = await rt.inheritOffs(agent, meta)
       // Read from the durable log after the last indexed seq, so compacted turns are not lost (#13).

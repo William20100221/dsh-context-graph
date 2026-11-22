@@ -610,3 +610,73 @@ test('a tree showing more than 400 rows draws what enters at once; a small one k
   tree.node('c1n2').props.ref(fakeEl(log))
   assert.equal(log.filter(([what]) => what === 'animate').length, 1)
 })
+
+// ---- v0.12.0: hide, use again, delete memory (#91) ------------------------------------------------
+
+test('hidden chats hang from a closed Hidden branch, greyed; archived and deleted chats are marked (#91)', () => {
+  const data = { key: 'a', title: 'W', chats: [branch(3, ['fact']), branch(2, ['fact'], { hidden: true }), branch(1, ['fact'], { gone: true })] }
+  const tree = mountTree(data)
+  assert.deepEqual(tree.ids(), ['w', 'c3', 'c3n1', 'c1', 'c1n1', 'hidden'], 'the Hidden branch is last and closed')
+  assert.match(find(tree.node('hidden'), (e) => e.props?.className === 'dshcg-label').props.children, /^t:hiddenGroup \(1\)$/)
+  assert.match(find(tree.node('c1'), (e) => e.type === 'title').props.children, /^c1 · t:deleted/)
+  tree.node('hidden').props.onClick()
+  assert.equal(tree.node('c2').props['data-hidden'], 'true')
+  const client = loadClient()
+  assert.deepEqual([...client.initialOpen(data)], ['w', 'c3', 'c1'], 'a hidden chat never starts open')
+  assert.match(client.chatLabel({ cid: 4, archived: true, shared: true, memory: true, shown: 1, total: 1, summary: '' }, t), /^c4 · t:archived$/)
+})
+
+test('a chat\'s panel hides it or uses it again; Delete memory shows only for an archived or deleted chat and asks first (#91)', async () => {
+  const calls = []
+  const panel = (chat) => {
+    const react = fakeReact()
+    const client = loadClient({ react })
+    const props = { chat: { cid: 4, total: 9, shared: true, memory: true, savings: null, ...chat }, t, onClose() {}, onHide: async (cid, on) => calls.push(['hide', cid, on]), onForget: async (cid) => calls.push(['forget', cid]) }
+    return () => react.render(client.ChatPanel, props)
+  }
+  const button = (tree, label) => find(tree, (e) => e.type === 'button' && e.props.children === label)
+  const live = panel({})
+  button(live(), 't:hide').props.onClick()
+  assert.equal(button(live(), 't:deleteMemory'), undefined, 'a chat dsh still has can only be hidden')
+  const hidden = panel({ hidden: true })
+  button(hidden(), 't:useAgain').props.onClick()
+  assert.ok(find(hidden(), (e) => e.props?.children === 't:hiddenHint'))
+  const gone = panel({ gone: true })
+  button(gone(), 't:deleteMemory').props.onClick()
+  assert.deepEqual(calls, [['hide', 4, true], ['hide', 4, false]], 'nothing deleted on the first click')
+  const dialog = find(gone(), (e) => e.props?.role === 'alertdialog')
+  assert.ok(dialog, 'it asks first')
+  assert.match(JSON.stringify(dialog), /9 t:topics · t:deleteBody/)
+  find(dialog, (e) => e.type === 'button' && e.props.children === 't:cancel').props.onClick()
+  assert.equal(find(gone(), (e) => e.props?.role === 'alertdialog'), undefined)
+  button(gone(), 't:deleteMemory').props.onClick()
+  find(find(gone(), (e) => e.props?.role === 'alertdialog'), (e) => e.type === 'button' && e.props.children === 't:deleteMemory').props.onClick()
+  await settle()
+  assert.deepEqual(calls.at(-1), ['forget', 4])
+  assert.ok(button(panel({ archived: true })(), 't:deleteMemory'), 'an archived chat too')
+})
+
+test('the host\'s reason shows when a change fails, and changes are POSTs with the page\'s header (#91)', async () => {
+  const sent = []
+  const react = fakeReact()
+  const client = loadClient({ react, fetch: async (url, init) => { sent.push([url, init]); return { ok: false, status: 409, json: async () => ({ error: 'this chat still exists' }) } } })
+  const effects = []
+  const page = fakeReact({ effects })
+  const own = loadClient({ react: page, fetch: async (url, init) => { sent.push([url, init?.method ?? 'GET', init?.headers?.['x-context-graph']]); return { ok: true, json: async () => (url.includes('overview') ? { workspaces: [{ key: 'a', title: 'A', indexed: 1, topics: 1 }] } : url.includes('tree') ? { key: 'a', title: 'A', chats: [{ cid: 4, summary: '', shared: true, memory: true, total: 1, topics: [['n1', 'x', 'fact']], links: [], gone: true }] } : { forgotten: true }) } } })
+  const draw = () => page.render(own.TreePage, { t })
+  draw()
+  for (const run of effects.splice(0)) run()
+  await settle()
+  await settle()
+  find(draw(), (e) => e.type === own.MemoryTree).props.onChat(4)
+  const chatPanel = find(draw(), (e) => e.type === own.ChatPanel)
+  await chatPanel.props.onForget(4)
+  assert.deepEqual(sent.filter(([, method]) => method === 'POST'), [['api/context-graph.forget?w=a&cid=4', 'POST', '1']])
+  assert.equal(sent.at(-1)[0], 'api/context-graph.tree?w=a', 'the tree is read again')
+  // A refusal shows the host's reason in the panel.
+  const failing = () => react.render(client.ChatPanel, { chat: { cid: 4, total: 1, gone: true, shared: true, memory: true }, t, onClose() {}, onForget: () => Promise.reject(new Error('this chat still exists')) })
+  find(failing(), (e) => e.type === 'button' && e.props.children === 't:deleteMemory').props.onClick()
+  find(find(failing(), (e) => e.props?.role === 'alertdialog'), (e) => e.type === 'button' && e.props.children === 't:deleteMemory').props.onClick()
+  await settle()
+  assert.equal(find(failing(), (e) => e.props?.role === 'alert')?.props.children, 'this chat still exists')
+})

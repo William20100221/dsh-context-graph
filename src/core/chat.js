@@ -12,6 +12,15 @@ export const memoryOn = (meta) => meta?.memoryOff !== true
 export const sharedOn = (meta) => meta?.private !== true
 
 /**
+ * A chat hidden from memory in Memory tree (#91): no other chat matches, lists, digests or recalls
+ * it, and it is not indexed until it is used again. Its own chat is unaffected.
+ */
+export const hiddenOn = (meta) => meta?.hidden === true
+
+/** Whether other chats may draw on a chat: shared and not hidden. */
+export const reachable = (meta) => sharedOn(meta) && !hiddenOn(meta)
+
+/**
  * Where a chat's memory went off, or undefined while it is on: the point `off` recorded, else (off
  * under 0.8.0, a meta recovered fail-closed, a fork that starts off) the chat's last index, so all
  * of what came after counts as typed while off (#59).

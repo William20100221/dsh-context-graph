@@ -64,7 +64,20 @@ window.__ModuleLoader__.load({
       fact: 'Fact',
       task: 'Task',
       artifact: 'Artifact',
-      'open-question': 'Open question'
+      'open-question': 'Open question',
+      hide: 'Hide from memory',
+      useAgain: 'Use again',
+      hiddenGroup: 'Hidden',
+      hiddenGroupHint: 'Chats hidden from memory: no other chat uses them',
+      hiddenHint: 'Hidden: no other chat uses this chat, and it is not indexed until you use it again.',
+      deleteMemory: 'Delete memory',
+      deleteTitle: 'Delete the memory of {chat}?',
+      deleteBody: 'Its topics and stored messages are removed for good. This cannot be undone.',
+      cancel: 'Cancel',
+      deleted: 'deleted',
+      archived: 'archived',
+      goneHint: 'This chat was deleted in DeepSeek Harness; its memory is still here.',
+      archivedHint: 'This chat is archived in DeepSeek Harness.'
     }
     const zh = {
       stats: '上下文图谱',
@@ -112,7 +125,20 @@ window.__ModuleLoader__.load({
       fact: '事实',
       task: '任务',
       artifact: '产物',
-      'open-question': '待定问题'
+      'open-question': '待定问题',
+      hide: '从记忆中隐藏',
+      useAgain: '重新使用',
+      hiddenGroup: '已隐藏',
+      hiddenGroupHint: '从记忆中隐藏的对话：其他对话不会用到它们',
+      hiddenHint: '已隐藏：其他对话不会用到这个对话，重新使用之前也不会索引它。',
+      deleteMemory: '删除记忆',
+      deleteTitle: '删除 {chat} 的记忆？',
+      deleteBody: '它的主题和保存的消息会被永久删除，无法恢复。',
+      cancel: '取消',
+      deleted: '已删除',
+      archived: '已归档',
+      goneHint: '这个对话已在 DeepSeek Harness 中删除，它的记忆还在这里。',
+      archivedHint: '这个对话已在 DeepSeek Harness 中归档。'
     }
     const KINDS = ['decision', 'fact', 'task', 'artifact', 'open-question']
     const COLORS = { decision: '#4A65E8', fact: '#2BA471', task: '#E5973C', artifact: '#8E5BE8', 'open-question': '#E5484D' }
@@ -151,6 +177,11 @@ window.__ModuleLoader__.load({
       '.dshcg-node[data-kind="workspace"] .dshcg-label{font-weight:600}',
       '.dshcg-count{font-size:11px;fill:var(--dsw-alias-label-secondary)}',
       '.dshcg-node[data-dim="true"],.dshcg-link[data-dim="true"]{opacity:.18}',
+      // #91: the Hidden branch and what is in it are greyed; deleting asks first, in the panel.
+      '.dshcg-node[data-kind="group"] .dshcg-label{font-style:italic;fill:var(--dsw-alias-label-secondary)}',
+      '.dshcg-node[data-hidden="true"]{opacity:.55}',
+      '.dshcg-btn-danger{color:var(--dsw-alias-state-error-primary,#E5484D)}',
+      '.dshcg-confirm{border:1px solid var(--dsw-alias-state-error-primary,#E5484D);border-radius:var(--dsw-radius-md,8px);padding:10px;display:flex;flex-direction:column;gap:8px}',
       // #88: a moving node or link eases to its new place (Material 3: 300 ms, emphasized); pointing
       // at or focusing a node fades everything outside its family.
       '.dshcg-node{transition:transform 300ms cubic-bezier(0.2,0,0,1),opacity 150ms linear}',
@@ -266,6 +297,14 @@ window.__ModuleLoader__.load({
       return response.json()
     }
 
+    /** A change to one chat's memory (#91): POST with the header the host asks for; the host's reason on failure. */
+    async function postJson(name, query) {
+      const response = await fetch(`api/context-graph.${name}?${new URLSearchParams(query)}`, { method: 'POST', headers: { 'x-context-graph': '1' } })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`)
+      return body
+    }
+
     const number = (n) => Number(n ?? 0).toLocaleString()
     const translator = (t) => (typeof t === 'function' ? (key) => { const s = t(key); return s && s !== key ? s : en[key] ?? key } : (key) => en[key] ?? key)
 
@@ -292,8 +331,9 @@ window.__ModuleLoader__.load({
      * symbols, 🔒 private and ⏸ memory off; hover shows the full label (review).
      */
     function chatLabel(c, t, room = Infinity) {
-      let head = [`c${c.cid}`, c.shared ? '' : t('private'), c.memory ? '' : t('memoryOff'), c.total > c.shown ? `+${c.total - c.shown} ${t('more')}` : ''].filter(Boolean).join(' · ')
-      if (letters(head) > room) head = [`c${c.cid}`, `${c.shared ? '' : '🔒'}${c.memory ? '' : '⏸'}`, c.total > c.shown ? `+${c.total - c.shown}` : ''].filter(Boolean).join(' · ')
+      const gone = c.gone ? t('deleted') : c.archived ? t('archived') : ''
+      let head = [`c${c.cid}`, gone, c.shared ? '' : t('private'), c.memory ? '' : t('memoryOff'), c.total > c.shown ? `+${c.total - c.shown} ${t('more')}` : ''].filter(Boolean).join(' · ')
+      if (letters(head) > room) head = [`c${c.cid}`, `${c.gone ? '🗑' : c.archived ? '🗄' : ''}${c.shared ? '' : '🔒'}${c.memory ? '' : '⏸'}`, c.total > c.shown ? `+${c.total - c.shown}` : ''].filter(Boolean).join(' · ')
       const rest = room - letters(head) - 3 // 3: the ' · ' before the summary
       return c.summary && rest >= 6 ? `${head} · ${fit(c.summary, rest)}` : head // 6: four letters and the …
     }
@@ -384,21 +424,27 @@ window.__ModuleLoader__.load({
           children: detail?.sources?.map((s, i) => ({ id: `${tid}s${i}`, kind: 'source', topic: tid, label: fit(sourceLine(s), ROOM[3]), full: sourceLine(s) }))
         }
       }
+      const chatItem = (c) => {
+        const chat = { ...c, shown: c.topics.length }
+        return {
+          id: `c${c.cid}`,
+          kind: 'chat',
+          chat: c,
+          label: chatLabel(chat, t, ROOM[1]),
+          full: chatLabel(chat, t),
+          children: c.topics.map((entry) => topic(c.cid, entry, c.links ?? []))
+        }
+      }
+      // Hidden chats (#91) hang from a branch of their own, closed at first.
+      const hidden = data.chats.filter((c) => c.hidden)
       return {
         id: 'w',
         kind: 'workspace',
         label: data.title,
-        children: data.chats.map((c) => {
-          const chat = { ...c, shown: c.topics.length }
-          return {
-            id: `c${c.cid}`,
-            kind: 'chat',
-            chat: c,
-            label: chatLabel(chat, t, ROOM[1]),
-            full: chatLabel(chat, t),
-            children: c.topics.map((entry) => topic(c.cid, entry, c.links ?? []))
-          }
-        })
+        children: [
+          ...data.chats.filter((c) => !c.hidden).map(chatItem),
+          ...(hidden.length ? [{ id: 'hidden', kind: 'group', label: `${t('hiddenGroup')} (${hidden.length})`, full: t('hiddenGroupHint'), children: hidden.map(chatItem) }] : [])
+        ]
       }
     }
 
@@ -406,7 +452,7 @@ window.__ModuleLoader__.load({
     function initialOpen(data) {
       const open = new Set(['w'])
       let rows = 0
-      for (const c of data.chats) {
+      for (const c of data.chats.filter((x) => !x.hidden)) {
         if (open.size > 1 && rows + c.topics.length > OPEN_ROWS) break
         open.add(`c${c.cid}`)
         rows += c.topics.length
@@ -468,7 +514,7 @@ window.__ModuleLoader__.load({
 
     // Topics are dots in their kind's colour; the workspace and chats, which hold them, are rings; a
     // topic's messages are small grey dots.
-    const dotStyle = (item) => (item.kind === 'topic' ? { fill: COLORS[item.topicKind] ?? '#888' } : item.kind === 'source' ? { fill: 'var(--dsw-alias-label-secondary)' } : { fill: 'none', stroke: 'var(--dsw-alias-label-secondary)', strokeWidth: 1.5 })
+    const dotStyle = (item) => (item.kind === 'topic' ? { fill: COLORS[item.topicKind] ?? '#888' } : item.kind === 'source' ? { fill: 'var(--dsw-alias-label-secondary)' } : item.kind === 'group' ? { fill: 'none', stroke: 'var(--dsw-alias-label-secondary)', strokeWidth: 1.5, strokeDasharray: '2 2' } : { fill: 'none', stroke: 'var(--dsw-alias-label-secondary)', strokeWidth: 1.5 })
 
     /** A node that has children to show, or a topic whose messages are not read yet. */
     const expandable = (item) => (item.children?.length ?? 0) > 0 || (item.kind === 'topic' && item.children === undefined)
@@ -644,6 +690,7 @@ window.__ModuleLoader__.load({
                 'aria-selected': chosen(n.item) ? 'true' : 'false',
                 tabIndex: n.id === stop ? 0 : -1,
                 'data-kind': n.item.kind,
+                'data-hidden': n.item.chat?.hidden ? 'true' : undefined,
                 'data-family': kin(n.id),
                 'data-dim': dim(n.item) ? 'true' : 'false',
                 'data-match': hit(n.item) ? 'true' : 'false',
@@ -739,8 +786,18 @@ window.__ModuleLoader__.load({
     }
 
     /** A chat, selected in the tree: its marks, summary, dates and what memory saved in it (#87). */
-    function ChatPanel({ chat, t, onClose }) {
-      const marks = [chat.shared ? '' : t('private'), chat.memory ? '' : t('memoryOff')].filter(Boolean).join(' · ')
+    function ChatPanel({ chat, t, onClose, onHide = async () => {}, onForget = async () => {} }) {
+      const [confirming, setConfirming] = useState(false)
+      const [busy, setBusy] = useState(false)
+      const [error, setError] = useState('')
+      const act = (run) => {
+        setBusy(true)
+        setError('')
+        run().then(() => setBusy(false), (reason) => { setBusy(false); setError(String(reason?.message ?? reason)) })
+      }
+      const marks = [chat.hidden ? t('hiddenGroup') : '', chat.gone ? t('deleted') : chat.archived ? t('archived') : '', chat.shared ? '' : t('private'), chat.memory ? '' : t('memoryOff')].filter(Boolean).join(' · ')
+      // Memory can be deleted only once dsh archived or deleted the chat (#91); the host checks too.
+      const removable = chat.gone || chat.archived
       const day = (iso) => (iso ? new Date(iso).toLocaleDateString() : '?')
       const s = chat.savings
       return jsxs('div', {
@@ -761,7 +818,35 @@ window.__ModuleLoader__.load({
           jsx('div', { className: 'dshcg-muted', children: `${chat.total} ${t('topics')} · ${day(chat.startedAt)} – ${day(chat.lastActiveAt)}` }),
           s === null || s === undefined
             ? jsx('div', { className: 'dshcg-muted', children: t('savingsUnavailable') })
-            : jsx('div', { children: `${t('saved')} ${number(s.saved)} · ${t('cost')} ${number(s.cost)} · ${t('net')} ${s.net >= 0 ? '+' : '−'}${number(Math.abs(s.net))}` })
+            : jsx('div', { children: `${t('saved')} ${number(s.saved)} · ${t('cost')} ${number(s.cost)} · ${t('net')} ${s.net >= 0 ? '+' : '−'}${number(Math.abs(s.net))}` }),
+          chat.hidden ? jsx('div', { className: 'dshcg-muted', children: t('hiddenHint') }) : null,
+          chat.gone ? jsx('div', { className: 'dshcg-muted', children: t('goneHint') }) : chat.archived ? jsx('div', { className: 'dshcg-muted', children: t('archivedHint') }) : null,
+          jsxs('div', {
+            className: 'dshcg-row',
+            children: [
+              jsx('button', { type: 'button', className: 'dshcg-btn', disabled: busy, onClick: () => act(() => onHide(chat.cid, !chat.hidden)), children: chat.hidden ? t('useAgain') : t('hide') }),
+              removable ? jsx('button', { type: 'button', className: 'dshcg-btn dshcg-btn-danger', disabled: busy, onClick: () => setConfirming(true), children: t('deleteMemory') }) : null
+            ]
+          }),
+          confirming && removable
+            ? jsxs('div', {
+              className: 'dshcg-confirm',
+              role: 'alertdialog',
+              'aria-label': t('deleteTitle').replace('{chat}', `c${chat.cid}`),
+              children: [
+                jsx('strong', { children: t('deleteTitle').replace('{chat}', `c${chat.cid}`) }),
+                jsx('div', { children: `${chat.total} ${t('topics')} · ${t('deleteBody')}` }),
+                jsxs('div', {
+                  className: 'dshcg-row',
+                  children: [
+                    jsx('button', { type: 'button', className: 'dshcg-btn dshcg-btn-danger', disabled: busy, onClick: () => act(() => onForget(chat.cid)), children: t('deleteMemory') }),
+                    jsx('button', { type: 'button', className: 'dshcg-btn', disabled: busy, onClick: () => setConfirming(false), children: t('cancel') })
+                  ]
+                })
+              ]
+            })
+            : null,
+          error ? jsx('div', { className: 'dshcg-bad', role: 'alert', children: error }) : null
         ]
       })
     }
@@ -799,9 +884,16 @@ window.__ModuleLoader__.load({
         if (!details[id] || details[id].error) read(id)
       }
       const close = () => setSelected(null)
+      // After a change the tree is read again in place: what is open and chosen stays (#91).
+      const refresh = () => {
+        const n = generation.current
+        return getJson('tree', { w: ws.key }).then((value) => { if (generation.current === n) setMap(value) })
+      }
+      const hideChat = (cid, on) => postJson('hide', { w: ws.key, cid, on: on ? '1' : '0' }).then(refresh)
+      const forgetChat = (cid) => postJson('forget', { w: ws.key, cid }).then(() => { setSelected(null); return refresh() })
       const detail = selected?.topic ? details[selected.topic] : undefined
       const panel = !selected || !map?.chats ? null
-        : selected.chat !== undefined ? jsx(ChatPanel, { chat: map.chats.find((c) => c.cid === selected.chat), t, onClose: close }, `c${selected.chat}`)
+        : selected.chat !== undefined ? jsx(ChatPanel, { chat: map.chats.find((c) => c.cid === selected.chat), t, onClose: close, onHide: hideChat, onForget: forgetChat }, `c${selected.chat}`)
           : detail?.error ? jsxs('div', { className: 'dshcg-panel', children: [jsx('div', { className: 'dshcg-bad', children: t('topicFailed') }), jsxs('div', { className: 'dshcg-row', children: [jsx('button', { type: 'button', className: 'dshcg-btn', onClick: () => read(selected.topic), children: t('retry') }), jsx('button', { type: 'button', className: 'dshcg-btn', onClick: close, children: t('close') })] })] })
             : !detail || detail.loading ? jsx('div', { className: 'dshcg-panel dshcg-muted', children: t('loading') })
               // Keyed by topic: another topic gets a new panel, not this one's buttons and Copied.

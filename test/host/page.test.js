@@ -29,10 +29,9 @@ async function withPage(workspaces, llm) {
   return { h, routes, get }
 }
 
-test('three owner-only GET routes, registered only where dsh has a connection', { skip }, async () => {
+test('owner-only routes, registered only where dsh has a connection (the list: v0.12-hide.test.js)', { skip }, async () => {
   const { routes } = await withPage([])
-  assert.deepEqual([...routes.keys()].sort(), ['/api/context-graph.overview', '/api/context-graph.topic', '/api/context-graph.tree'])
-  for (const route of routes.values()) assert.deepEqual([route.methods, route.requestBody], [['GET'], 'buffered'])
+  for (const route of routes.values()) assert.equal(route.requestBody, 'buffered')
   const plain = await setup()
   assert.equal(plain.commands.length, 1, 'without a connection the page does not start, and nothing breaks')
 })

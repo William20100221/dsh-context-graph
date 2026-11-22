@@ -160,6 +160,20 @@ export function updateMeta(dir, sid, change = (meta) => meta, init = () => ({}))
   })
 }
 
+/**
+ * A chat's memory removed for good (#91): its folder and its savings file. Under the chat's lock, so
+ * a meta write in flight finishes first. Callers pass a sid read from the chats folder, never one
+ * taken from a request.
+ * ponytail: a build already running for that chat can still write after this; callers only remove
+ * chats dsh archived or deleted, which start no new builds.
+ */
+export function removeChat(dir, sid) {
+  return locked(chatDir(dir, sid), async () => {
+    await rm(chatDir(dir, sid), { recursive: true, force: true, maxRetries: 10 })
+    await rm(join(dir, 'ledger', `${sid}.json`), { force: true, maxRetries: 10 })
+  })
+}
+
 /** Every chat folder with a readable meta.json, unsorted. Folders starting with '.' are bookkeeping. */
 async function readChats(dir) {
   let names = []

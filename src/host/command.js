@@ -7,7 +7,7 @@
  * write only this plugin's files, and the per-chat `building` flag already prevents overlap.
  */
 
-import { memoryOn, offPoint, sharedOn } from '../core/chat.js'
+import { hiddenOn, memoryOn, offPoint, sharedOn } from '../core/chat.js'
 import { addCounters, savingsDetail, savingsLine } from '../core/ledger.js'
 import { SCORE, matchAcross } from '../core/match.js'
 import { renderMap } from '../core/render.js'
@@ -92,11 +92,15 @@ export function registerCommand(ctx, rt, { build, turnOn, onAtIdle, meter, updat
             }
             if (sub === 'map') {
               // Every chat of the workspace, private ones too: this is the user's own view. Loaded once (#49).
-              const all = await rt.loadViews(agent, { all: true })
+              // A hidden chat is named, not listed: its topics would land in this chat's log (#91).
+              const listed = await rt.loadViews(agent, { all: true })
+              const all = listed.filter((v) => v.own || !hiddenOn(v.meta))
+              const hidden = listed.filter((v) => !v.own && hiddenOn(v.meta)).map((v) => `c${v.cid}`)
               // dsh keeps the card's whole text in the chat's session log, at every call: the newest
               // chats only (loadViews keeps listChats' order, newest first), the page has the rest (#82).
               const more = all.length > MAP_MAX_CHATS ? `\n… ${plural(all.length - MAP_MAX_CHATS, 'more chat')}; Memory tree in the sidebar has them all` : ''
-              return { kind: 'success', text: `${plural(all.length, 'chat')} in ${rt.dirFor(agent)}\n${renderMap(all.slice(0, MAP_MAX_CHATS))}${more}` }
+              const hiddenLine = hidden.length ? `\nHidden from memory: ${hidden.join(', ')} (Memory tree → Use again)` : ''
+              return { kind: 'success', text: `${plural(all.length, 'chat')} in ${rt.dirFor(agent)}\n${renderMap(all.slice(0, MAP_MAX_CHATS))}${more}${hiddenLine}` }
             }
             const views = await rt.loadViews(agent)
             if (sub === 'find') {
@@ -133,7 +137,7 @@ export function registerCommand(ctx, rt, { build, turnOn, onAtIdle, meter, updat
             return {
               kind: 'success',
               text: [
-                `Memory ${memoryOn(meta) ? 'on' : meta?.onWhenIdle === true ? 'off until this turn ends' : 'off'} · ${own || !meta ? `${plural(Object.keys(own?.graph.nodes ?? {}).length, 'topic')} in this chat` : 'topics of this chat could not be read'} · ${sharedOn(meta) ? 'shared' : 'private'} · ${plural(shared, 'shared chat')} · ${plural(pending, 'turn')} waiting to be indexed${updates.current() ? ' · update available' : ''}`,
+                `Memory ${memoryOn(meta) ? 'on' : meta?.onWhenIdle === true ? 'off until this turn ends' : 'off'} · ${own || !meta ? `${plural(Object.keys(own?.graph.nodes ?? {}).length, 'topic')} in this chat` : 'topics of this chat could not be read'} · ${hiddenOn(meta) ? 'hidden from memory' : sharedOn(meta) ? 'shared' : 'private'} · ${plural(shared, 'shared chat')} · ${plural(pending, 'turn')} waiting to be indexed${updates.current() ? ' · update available' : ''}`,
                 // What memory did for this chat and the workspace, with the estimate's terms (#35).
                 ledger ? savingsLine(here, everywhere) : 'Savings: unavailable for now (the savings ledger could not be read)',
                 lastLine,

@@ -6,7 +6,7 @@
 import { createHash } from 'node:crypto'
 import { basename, isAbsolute, join } from 'node:path'
 
-import { closedAt, memoryOn, offPoint, sharedOn, walkGaps } from '../core/chat.js'
+import { closedAt, memoryOn, offPoint, reachable, sharedOn, walkGaps } from '../core/chat.js'
 import { emptyCounters, standIn } from '../core/ledger.js'
 import { collectSpan, eventText, inGap, isPrompt, mergeGaps, promptText, shownContext, titleOf } from '../core/session.js'
 import { chatDir, listChats, loadGraph, loadMeta, updateMeta } from '../store/chats.js'
@@ -502,7 +502,8 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
   async function loadViews(agent, { all = false } = {}) {
     const dir = dirFor(agent)
     const sid = sidOf(agent)
-    const listed = (await listChats(dir)).filter((c) => all || c.sid === sid || sharedOn(c.meta))
+    // A hidden chat's topics are not even read (#91): only `all` (the user's own map) lists it.
+    const listed = (await listChats(dir)).filter((c) => all || c.sid === sid || reachable(c.meta))
     // The map (all) is the user's own view of every chat; nothing in it reaches a model.
     const chats = all ? listed : await withoutUnknownForks(sid, listed)
     // One chat whose topics cannot be read (a file locked by a sync tool, no permission) is
@@ -527,7 +528,7 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
     }
     // Visible chats only: a private chat that shares a number with a shared one (possible in data
     // from before v0.7) must not hide it. Blocks never name this chat, so another chat comes first.
-    const matches = (await listChats(dir)).filter((c) => String(c.meta.cid) === String(cid) && (c.sid === sid || sharedOn(c.meta)))
+    const matches = (await listChats(dir)).filter((c) => String(c.meta.cid) === String(cid) && (c.sid === sid || reachable(c.meta)))
     // A copy whose topics cannot be read is left out, as in loadViews (fourth review).
     const views = (await Promise.all(matches.map((c) => viewFrom(dir, sid, c).catch(() => undefined)))).filter(Boolean)
     const others = views.filter((v) => !v.own)

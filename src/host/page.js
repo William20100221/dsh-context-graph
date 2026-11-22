@@ -4,24 +4,32 @@
  *   GET api/context-graph.overview                 workspaces with memory: chats, topics, savings
  *   GET api/context-graph.tree?w=<key>             one workspace as a tree: chats, their topics, links (#86)
  *   GET api/context-graph.topic?w=<key>&id=c3n12   one topic: gist, aliases, links, its sources
+ *   GET api/context-graph.chat?sid=<session>       one chat's memory number and flags, for its header (#92)
+ *   POST api/context-graph.hide?w=<key>&cid=3&on=1  hide a chat from memory, or (on=0) use it again (#91)
+ *   POST api/context-graph.forget?w=<key>&cid=3     delete the memory of a chat dsh archived or deleted
+ *   POST api/context-graph.forget?sid=<session>     the same, for the session menu's Archive & forget (#92)
  *
  * Nested plugin with `inject: ['connection']`: it starts only where dsh's connection exists, and
  * dsh answers 403 to every principal but the owner on these routes. A workspace is named by a key
  * the overview handed out, never by a path in the request, so nothing outside the known memory
- * folders can be read. This is the owner's own view: private and memory-off chats are included
- * and marked. Nothing here writes, and nothing reaches a chat's context.
+ * folders can be read; a chat is named by its number in that workspace or by its dsh session, and
+ * the sid used on disk is always one read from the chats folder. This is the owner's own view:
+ * private, hidden and memory-off chats are included and marked. The GETs write nothing; the two
+ * POSTs change one chat's memory and ask for a header no other web page can send (`x-context-graph`),
+ * and `forget` refuses a chat whose session dsh still has outside its archive. Nothing here reaches
+ * a chat's context.
  */
 
 import { createHash } from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 
-import { memoryOn, sharedOn } from '../core/chat.js'
+import { hiddenOn, memoryOn, sharedOn } from '../core/chat.js'
 import { has, neighbors } from '../core/graph.js'
 import { memoryTree } from '../core/tree.js'
 import { addCounters, balance, counters, emptyCounters } from '../core/ledger.js'
 import { chatSummary } from '../core/render.js'
-import { chatDir, listChats, loadGraph } from '../store/chats.js'
+import { chatDir, listChats, loadGraph, removeChat, updateMeta } from '../store/chats.js'
 import { loadLedger } from '../store/ledger.js'
 import { loadMessages, oldTurns, sourceOf } from '../store/messages.js'
 
@@ -100,8 +108,28 @@ export function registerPage(ctx, rt) {
     return (await chatsOf(dir, options)).filter((c) => Number.isInteger(c.cid) && Object.keys(c.graph.nodes).length > 0 && !seen.has(c.cid) && seen.add(c.cid))
   }
 
+  /**
+   * What dsh says of each session: `listed`, the sessions it still has (null while it cannot list
+   * them here, so nothing is taken for deleted), and `archived`, the ones in its archive.
+   */
+  async function sessionStates() {
+    let listed = null
+    try {
+      const query = ctx.get('sessionQuery')
+      if (typeof query?.listSessions === 'function') listed = new Set((await query.listSessions()).map((r) => String(r?.header?.id)))
+    } catch (error) {
+      console.error('context-graph: dsh could not list its sessions; no chat counts as deleted for now', error?.message ?? error)
+    }
+    let archived = new Set()
+    try { archived = new Set((ctx.get('workspaceRegistry')?.archivedSessionIds ?? []).map(String)) } catch { /* not mounted here */ }
+    return { listed, archived }
+  }
+
+  /** Whether dsh archived or deleted a chat's session: only then may its memory be deleted (#91). */
+  const removable = (states, sid) => states.archived.has(sid) || (states.listed !== null && !states.listed.has(sid))
+
   async function tree(w) {
-    const chats = await drawn(w.dir)
+    const [chats, states] = await Promise.all([drawn(w.dir), sessionStates()])
     const byCid = new Map(chats.map((c) => [c.cid, c]))
     return {
       key: w.key,
@@ -115,6 +143,10 @@ export function registerPage(ctx, rt) {
           summary: chatSummary({ meta: c.meta, graph: c.graph }),
           shared: sharedOn(c.meta),
           memory: memoryOn(c.meta),
+          hidden: hiddenOn(c.meta),
+          // The chat's dsh session: archived, deleted (gone), or neither (#91).
+          archived: states.archived.has(c.sid),
+          gone: states.listed !== null && !states.listed.has(c.sid),
           startedAt: c.meta.startedAt,
           lastActiveAt: c.meta.lastActiveAt,
           savings: c.unreadable ? null : balance(c.c),
@@ -151,18 +183,81 @@ export function registerPage(ctx, rt) {
     }
   }
 
-  const route = (name, handle) => ({
+  /** The workspace a request names by its key; undefined for any other value. */
+  const workspaceOf = async (query) => (await known()).find((k) => k.key === query.get('w'))
+
+  /** A chat of `w` by its number: the one the tree draws for it (drawn), so both name the same chat. */
+  async function chatByCid(w, cid) {
+    return (await drawn(w.dir, { savings: false })).find((c) => String(c.cid) === String(cid ?? ''))
+  }
+
+  /** A chat by its dsh session, in whichever known workspace holds it: { w, chat } or undefined. */
+  async function chatBySid(sid) {
+    if (!sid) return undefined
+    for (const w of await known()) {
+      const chat = (await listChats(w.dir)).find((c) => c.sid === sid)
+      if (chat) return { w, chat }
+    }
+    return undefined
+  }
+
+  /** The header chip of a chat (#92): its number and flags, or 404 while it has no memory yet. */
+  async function chatInfo(query) {
+    const found = await chatBySid(query.get('sid'))
+    if (!found || !Number.isInteger(found.chat.meta.cid)) return undefined
+    const { w, chat } = found
+    const graph = await loadGraph(chatDir(w.dir, chat.sid)).catch(() => undefined)
+    return { w: w.key, cid: chat.meta.cid, topics: graph ? Object.keys(graph.nodes).length : null, shared: sharedOn(chat.meta), memory: memoryOn(chat.meta), hidden: hiddenOn(chat.meta) }
+  }
+
+  /** Hide a chat from memory, or use it again (#91). */
+  async function hide(query) {
+    const w = await workspaceOf(query)
+    const chat = w && (await chatByCid(w, query.get('cid')))
+    if (!chat) return undefined
+    const on = query.get('on') !== '0'
+    const meta = await updateMeta(w.dir, chat.sid, (m) => {
+      const { hidden, ...rest } = m
+      return on ? { ...rest, hidden: true } : rest
+    })
+    return { cid: meta.cid, hidden: hiddenOn(meta) }
+  }
+
+  /**
+   * Delete a chat's memory for good (#91, #92): only when dsh archived or deleted its session, which
+   * the host checks itself; the page asks the user to confirm first.
+   */
+  async function forget(query) {
+    let w
+    let sid
+    if (query.get('sid')) {
+      const found = await chatBySid(query.get('sid'))
+      if (!found) return undefined
+      w = found.w
+      sid = found.chat.sid
+    } else {
+      w = await workspaceOf(query)
+      sid = w && (await chatByCid(w, query.get('cid')))?.sid
+    }
+    if (!w || !sid) return undefined
+    if (!removable(await sessionStates(), sid)) return { status: 409, error: 'this chat still exists: hide it, or archive it first' }
+    await removeChat(w.dir, sid)
+    return { forgotten: true }
+  }
+
+  const route = (name, handle, { write = false } = {}) => ({
     path: `/api/context-graph.${name}`,
-    methods: ['GET'],
+    methods: [write ? 'POST' : 'GET'],
     requestBody: 'buffered',
     fetch: async (request) => {
       try {
+        // A plain cross-site form or image cannot send this header: changes come from this page only.
+        if (write && request.headers.get('x-context-graph') !== '1') return json({ error: 'missing x-context-graph header' }, 403)
         const query = new URL(request.url).searchParams
-        if (name === 'overview') return json(await overview())
-        const w = (await known()).find((k) => k.key === query.get('w'))
-        if (!w) return json({ error: 'unknown workspace' }, 404)
-        const value = await handle(w, query)
-        return value === undefined ? json({ error: 'not found' }, 404) : json(value)
+        const value = await handle(query)
+        if (value === undefined) return json({ error: 'not found' }, 404)
+        if (value?.status) return json({ error: value.error }, value.status)
+        return json(value)
       } catch (error) {
         console.error('context-graph: page request failed (non-fatal)', error)
         return json({ error: 'failed' }, 500)
@@ -170,11 +265,26 @@ export function registerPage(ctx, rt) {
     }
   })
 
+  /** A read route that names a workspace: 404 for a key the overview did not hand out. */
+  const inWorkspace = (handle) => async (query) => {
+    const w = await workspaceOf(query)
+    if (!w) return { status: 404, error: 'unknown workspace' }
+    return handle(w, query)
+  }
+
   ctx.plugin({
     name: 'context-graph-page',
     inject: ['connection'],
     apply(pageCtx) {
-      for (const r of [route('overview'), route('tree', (w) => tree(w)), route('topic', (w, q) => topic(w, q.get('id')))]) {
+      const routes = [
+        route('overview', () => overview()),
+        route('tree', inWorkspace((w) => tree(w))),
+        route('topic', inWorkspace((w, q) => topic(w, q.get('id')))),
+        route('chat', chatInfo),
+        route('hide', hide, { write: true }),
+        route('forget', forget, { write: true })
+      ]
+      for (const r of routes) {
         pageCtx.effect(function* () {
           yield pageCtx.connection.fetch.register(r)
         }, `context-graph page: ${r.path}`)
@@ -182,5 +292,5 @@ export function registerPage(ctx, rt) {
     }
   })
 
-  return { overview, tree, topic, known }
+  return { overview, tree, topic, known, hide, forget, chatInfo }
 }
