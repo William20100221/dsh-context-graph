@@ -1090,7 +1090,8 @@ window.__ModuleLoader__.load({
         }
         if (map?.key === want.w && Array.isArray(map.chats)) {
           jump.want = null
-          setSelected({ chat: want.cid })
+          // Only a chat the tree draws: one with a number and no topics yet is not in it (#99).
+          if (map.chats.some((c) => c.cid === want.cid)) setSelected({ chat: want.cid })
         }
       })
       const read = (id) => {
@@ -1113,8 +1114,10 @@ window.__ModuleLoader__.load({
       const hideChat = (cid, on) => postJson('hide', { w: ws.key, cid, on: on ? '1' : '0' }).then(refresh)
       const forgetChat = (cid) => postJson('forget', { w: ws.key, cid }).then(() => { setSelected(null); return refresh() })
       const detail = selected?.topic ? details[selected.topic] : undefined
-      const panel = !selected || !map?.chats ? null
-        : selected.chat !== undefined ? jsx(ChatPanel, { chat: map.chats.find((c) => c.cid === selected.chat), t, onClose: close, onHide: hideChat, onForget: forgetChat }, `c${selected.chat}`)
+      // A chosen chat that is no longer in the tree (deleted, or never drawn) shows no panel (#99).
+      const chosenChat = selected?.chat !== undefined ? map?.chats?.find((c) => c.cid === selected.chat) : undefined
+      const panel = !selected || !map?.chats || (selected.chat !== undefined && !chosenChat) ? null
+        : selected.chat !== undefined ? jsx(ChatPanel, { chat: chosenChat, t, onClose: close, onHide: hideChat, onForget: forgetChat }, `c${selected.chat}`)
           : detail?.error ? jsxs('div', { className: 'dshcg-panel', children: [jsx('div', { className: 'dshcg-bad', children: t('topicFailed') }), jsxs('div', { className: 'dshcg-row', children: [jsx('button', { type: 'button', className: 'dshcg-btn', onClick: () => read(selected.topic), children: t('retry') }), jsx('button', { type: 'button', className: 'dshcg-btn', onClick: close, children: t('close') })] })] })
             : !detail || detail.loading ? jsx('div', { className: 'dshcg-panel dshcg-muted', children: t('loading') })
               // Keyed by topic: another topic gets a new panel, not this one's buttons and Copied.

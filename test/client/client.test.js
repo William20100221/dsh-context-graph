@@ -933,3 +933,24 @@ test('chats hang from their subjects by default, in the order of each subject\'s
   const client = loadClient()
   assert.match(JSON.stringify(client.ChatPanel({ chat: { cid: 5, total: 1, shared: true, memory: true, subject: 'Earth and Space Science', type: 'study' }, t, onClose() {} })), /Earth and Space Science/)
 })
+
+test('a chip asking for a chat the tree does not draw opens the tree with nothing chosen, and a chosen chat that is gone shows no panel (#99)', async () => {
+  const effects = []
+  const react = fakeReact({ effects })
+  const client = withServices({}, { react, fetch: async (url) => ({ ok: true, json: async () => (url.includes('overview') ? { workspaces: [{ key: 'k1', title: 'A', indexed: 1, topics: 1 }] } : { key: 'k1', title: 'A', chats: [branch(4, ['fact'])] }) }) })
+  client.jump.want = { w: 'k1', cid: 7 } // c7 has a number but no topics: not in the tree
+  const page = () => react.render(client.TreePage, { t })
+  page()
+  for (const run of effects.splice(0)) run()
+  await settle()
+  await settle()
+  page()
+  effects.splice(0).at(-1)()
+  assert.doesNotThrow(() => page())
+  assert.equal(find(page(), (e) => e.type === client.ChatPanel), undefined)
+  assert.equal(find(page(), (e) => e.type === client.MemoryTree).props.selected, null, 'the tree is drawn, nothing chosen: no stale choice opens later')
+  assert.equal(client.jump.want, null)
+  // A chat chosen, then gone from the tree (its memory deleted elsewhere): no panel, no failure.
+  find(page(), (e) => e.type === client.MemoryTree).props.onChat(9)
+  assert.equal(find(page(), (e) => e.type === client.ChatPanel), undefined)
+})
