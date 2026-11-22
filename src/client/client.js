@@ -518,15 +518,20 @@ window.__ModuleLoader__.load({
     const ENTER = { duration: 300, easing: 'cubic-bezier(0.05, 0.7, 0.1, 1)' }
     const stillness = () => globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true
 
+    // A tree showing more rows than this draws what enters at once: a search that opens thousands of
+    // topics would start thousands of animations, on SVG transforms the browser cannot hand to the
+    // compositor (#90).
+    const CALM_ROWS = 400
+
     /**
      * A node or link drawn for the first time grows out of its parent, as in the D3 collapsible tree
      * (#88); an element already shown is left to the CSS transitions. Nothing moves when the system
-     * asks for reduced motion.
+     * asks for reduced motion, or when `calm` (a tree too big to follow the motion, #90).
      */
-    function grow(el, frames) {
+    function grow(el, frames, calm = false) {
       if (!el || el.dataset?.grown) return
       if (el.dataset) el.dataset.grown = '1'
-      if (stillness() || typeof el.animate !== 'function') return
+      if (calm || stillness() || typeof el.animate !== 'function') return
       try { el.animate(frames, ENTER) } catch { /* a browser that cannot animate this property: shown at once */ }
     }
 
@@ -584,6 +589,7 @@ window.__ModuleLoader__.load({
       const chosen = (item) => (item.kind === 'chat' ? selected?.chat === item.chat.cid : item.kind === 'topic' && selected?.topic === item.id)
       const dim = (item) => item.kind === 'topic' && ((kind && item.topicKind !== kind) || (q && !hit(item)))
       const center = hover ?? focused
+      const calm = layout.nodes.length > CALM_ROWS
       const family = center ? familyOf(layout.nodes, center) : null
       // A family holds each member's parent, so a link is in it when its child is.
       const kin = (id) => (family ? (family.has(id) ? 'true' : 'false') : undefined)
@@ -621,7 +627,7 @@ window.__ModuleLoader__.load({
                 style: { d: `path('${d}')` },
                 'data-dim': dim(n.item) ? 'true' : 'false',
                 'data-family': kin(n.id),
-                ref: (el) => grow(el, [{ d: `path('${linkPath(n.parent, tip)}')`, opacity: 0 }, { d: `path('${d}')`, opacity: 1 }])
+                ref: (el) => grow(el, [{ d: `path('${linkPath(n.parent, tip)}')`, opacity: 0 }, { d: `path('${d}')`, opacity: 1 }], calm)
               }, `l${n.id}`)
             }),
             ...layout.nodes.map((n) => {
@@ -645,7 +651,7 @@ window.__ModuleLoader__.load({
                 style: { transform: at },
                 ref: (el) => {
                   if (el) els.current.set(n.id, el)
-                  grow(el, [{ transform: from, opacity: 0 }, { transform: at, opacity: 1 }])
+                  grow(el, [{ transform: from, opacity: 0 }, { transform: at, opacity: 1 }], calm)
                 },
                 onClick: () => {
                   setActive(n.id)

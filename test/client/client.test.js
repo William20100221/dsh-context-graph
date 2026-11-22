@@ -597,3 +597,16 @@ test('a topic chosen while its chat is closed opens that chat once, and the chat
   tree.node('c1').props.onKeyDown({ key: 'ArrowLeft', preventDefault() {} })
   assert.ok(!tree.ids().includes('c1n2'), 'Left closes it, the topic still chosen')
 })
+
+test('a tree showing more than 400 rows draws what enters at once; a small one keeps the motion (review, #90)', () => {
+  const more = { query: 'topic' } // opens all five chats: 506 rows
+  const tree = mountTree({ key: 'a', title: 'W', chats: [1, 2, 3, 4, 5].map((cid) => branch(cid, many2(100))) }, () => {}, more)
+  assert.ok(tree.ids().length > 400)
+  const log = []
+  tree.node('c3n50').props.ref(fakeEl(log))
+  find(tree.draw(), (e) => e.type === 'path' && e.key === 'lc3n50').props.ref(fakeEl(log))
+  assert.deepEqual(log, [], 'no animation')
+  more.query = '' // the newest chat alone: 106 rows
+  tree.node('c1n2').props.ref(fakeEl(log))
+  assert.equal(log.filter(([what]) => what === 'animate').length, 1)
+})
