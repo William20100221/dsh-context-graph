@@ -147,7 +147,7 @@ Card: `3 topics indexed (2 new) · this chat has 7 topics`
 Lists the indexed chats newest first: chat id, start date, summary, topic count and flags (`this
 chat`, `memory on`, `shared`/`private`), each followed by its most connected topics with their ids.
 This is the text form of the graph, and it stays in the chat's log, so it stops at the newest 40
-chats and names how many more there are; the whole picture is on the plugin's page (see below).
+chats and names how many more there are; Memory tree in the sidebar has them all (see below).
 
 ```
 2 chats in C:\Projects\site\.context-graph
@@ -166,17 +166,29 @@ are left out because they are already in its context.
 
 Card: `2 matching topics`, then `c3n12 builder timeout: ...` per line.
 
-## The plugin's page
+## Memory tree
 
-Plugins → Context Graph shows, for each workspace with memory: what memory saved, what it cost and
-the balance, and a map of the memory. Chats are circles (newest first), topics are dots inside them
-coloured by kind (decision, fact, task, artifact, open question) and sized by their links, and
-links are lines. Hover a dot for its label, click it for its gist, its chat, its links, the first
-lines of its sources and the id to paste into a message (`c3n12`). Search and the kind buttons
-fade everything else; drag to move, + and − to zoom.
+**Memory tree** in the sidebar (under New Session, next to Automation tasks) opens the memory of a
+workspace as a tree, root on the left: the workspace, its chats (newest first), each chat's topics
+grouped by kind (decision, fact, task, artifact, open question), and the messages each topic came
+from, with their turn ids. These are the same layers recall walks.
 
-It is your own view, so private and memory-off chats are shown and marked. The data comes from
-read-only routes dsh only answers for the app's owner; the page adds nothing to any chat.
+- **Open and close.** The newest chats start open while their topics fit 40 rows; a closed chat
+  shows how many topics it holds. Click a chat to open or close it. Click a topic to see its gist,
+  its chat, its links, its source messages and the id to paste into a message (`c3n12`), in a
+  panel beside the tree; the topic opens into its messages too. Click a chat for its dates, marks
+  and savings.
+- **Find.** Search opens the chats it matches and fades the other topics; the kind buttons fade the
+  other kinds. Pointing at a node fades everything but its family: its ancestors, what it holds and
+  the topics it links to.
+- **Keyboard.** Tab into the tree, then Up/Down to move, Right to open or step in, Left to close or
+  step out, Home/End, Enter or Space to open the details.
+- **Motion.** What opens grows out of its parent and what moves eases to its place; nothing moves
+  when the system asks for reduced motion.
+
+The plugin's page in Plugins shows what memory saved and cost in each workspace (see below). Both
+are your own view, so private and memory-off chats are shown and marked. The data comes from
+read-only routes dsh only answers for the app's owner; neither page adds anything to a chat.
 
 ## What memory saved
 
@@ -331,7 +343,7 @@ index.js          package entry: re-exports the plugin from src/host/plugin.js
 src/core/         pure logic: tokenize, graph, matching, time, rendering, builder prompt and parser
 src/store/        files on disk: atomic JSON, chat folders, messages, upgrades from older versions
 src/host/         dsh wiring: builder, memory injection, recall tool, command, meter, update check
-src/client/       dsh chat card for /context-graph (DisclosureRow, en/zh titles)
+src/client/       the browser module: the /context-graph card, the savings page in Plugins, the Memory tree page
 icon.svg          Plugins page icon in dsh's built-in icon style
 locale/           Plugins page title and description (en, zh); zh links README.zh.md
 cordis.patch.yml  mounts the plugin at the profile root with default config
@@ -370,10 +382,26 @@ Release: `npm test`, `npm version patch`, `npm publish`, `git push --follow-tags
 - Turn ids stored up to v0.9.0 count typed prompts; until the chat is indexed again or one of its
   topics is recalled, its sources name no turn.
 - The savings figure is an estimate (see [What memory saved](#what-memory-saved)); token counts are the plugin's own estimate, except indexing, which is what dsh reported. A subagent started fresh (not forked from the chat) is not charged the recall tool's share.
+- Memory tree sizes each label from its letters, not from the font: a label of wide capitals can
+  run a little past its pill (the full text shows on hover). A tree showing more than 400 rows
+  draws what opens at once, without the motion.
 - A chat whose meta.json was damaged and whose off stretches could not be read back keeps its turns from before its next `on` closed to other chats (its topics still work), and forks made in that part start with memory off.
 
 Using Claude Code? The Claude version is a separate plugin built for Claude's app:
 [claude-context-graph](https://github.com/William20100221/claude-context-graph).
+
+## Credits
+
+The Memory tree borrows techniques, not code, from projects that big companies publish under free
+licences. Nothing was copied and no dependency was added; the plugin still ships without any.
+
+| Technique | From | Licence |
+|---|---|---|
+| Tidy tree layout: one column per level, a parent centred on its children, siblings closer than cousins (Reingold-Tilford as improved by Buchheim et al.); horizontal link curves; branches that grow out of their parent when opened | [D3](https://d3js.org) (`d3-hierarchy`, `d3-shape`, the collapsible tree), Observable | ISC |
+| Each column as wide as its widest node | [AntV G6](https://g6.antv.antgroup.com) compactBox layout, Ant Group | MIT |
+| Only the first levels open at the start; fade everything but a node's family | [Apache ECharts](https://echarts.apache.org) tree series (`initialTreeDepth`, `emphasis.focus`), first built at Baidu | Apache-2.0 |
+| Motion: 300 ms, emphasized easing for what moves, emphasized decelerate for what enters | [Material Design 3](https://m3.material.io/styles/motion/easing-and-duration/tokens-specs), Google | Apache-2.0 |
+| Keyboard and roles: one tab stop, arrow keys, `tree` / `treeitem` with level, position, expanded and selected | [WAI-ARIA tree view pattern](https://www.w3.org/WAI/ARIA/apg/patterns/treeview/), W3C; Microsoft Fluent UI and GitHub Primer follow it too | W3C (pattern only) |
 
 ## Contributors
 

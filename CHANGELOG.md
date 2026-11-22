@@ -4,6 +4,57 @@ All notable changes to dsh-context-graph. Versions follow semver; each minor ver
 is one development cycle (audit, issues, fixes, independent review), documented in
 [docs/cycles](docs/cycles).
 
+## 0.11.0 — 2026-11-22 — the memory tree
+
+The memory has always been a tree (workspace, chats, topics, the messages they came from); now it
+is drawn as one, on a page of its own. The picture moves from the plugin's page in Plugins to a
+Memory tree entry in the sidebar, next to Automation tasks. Its techniques come from projects big
+companies publish under free licences; no code was copied and no dependency added (credits in the
+README).
+
+**Its own page** (#85)
+- Memory tree in the sidebar's panel list opens a page in the main column, laid out like dsh's own
+  first-level pages. The plugin's page in Plugins keeps the savings and says where the tree is;
+  `/context-graph map` points there for the chats it leaves out.
+
+**A tree, not circles** (#86)
+- Root on the left, one column per level. The layout keeps D3's tidy-tree rules (a parent centred
+  on its children, siblings one row apart, another parent's children half a row further); each
+  column is as wide as its widest label, as in AntV G6's compactBox, so labels are no longer cut to
+  fit a circle; links are D3's horizontal curves.
+- The newest chats start open while their topics fit 40 rows (the idea of ECharts'
+  initialTreeDepth); a closed chat shows how many topics it holds. Topics are grouped by kind, so
+  each colour forms one band; chats and the workspace are rings.
+- Search opens the chats it matches and fades the other topics; the kind buttons fade the other
+  kinds. The tree scrolls natively; zoom scales the drawing.
+- Host: the `map` route becomes `tree` (chats with their topics and the links among them), and
+  `src/core/layout.js` gives way to `src/core/tree.js`.
+
+**The last level** (#87)
+- Opening a topic reads it once and adds its newest stored messages as its children (`user t7 ·
+  ...`); a message leads back to its topic. A topic on its way shows `…`, one that failed `!`.
+- A chat or topic you choose shows its details beside the tree: a topic's gist, links, sources and
+  id; a chat's marks, dates and savings.
+
+**Focus, motion, keyboard** (#88)
+- Pointing at a node, or focusing it by keyboard, fades everything but its family: ancestors,
+  descendants and the topics it links to (ECharts' emphasis focus).
+- What opens grows out of its parent and what moves eases to its place (D3's collapsible tree;
+  Material 3 timing: 300 ms, emphasized easing). Nothing moves with reduced motion on.
+- The tree is a WAI-ARIA tree (the W3C pattern Microsoft Fluent UI and GitHub Primer follow): one
+  tab stop, Up/Down, Right/Left to open, close or step in and out, Home/End, Enter/Space.
+
+**Review** (#89, #90)
+- A linked topic opened from the details panel opens its chat once, so the selection is drawn; the
+  chat can still be closed. (#89)
+- A tree showing more than 400 rows (a broad search in a big workspace) draws what enters at once
+  instead of starting an animation per node. (#90)
+
+Checks: 320 tests in three time zones; every rule of the tree was broken on purpose and a test
+failed each time (49 mutants; one more showed a check that could never fail, which was removed). The motion was
+checked in Chromium: transitions on transform and on a link's path, and the grow-in keyframes,
+interpolate as intended.
+
 ## 0.10.0 — 2026-11-17 — memory for the way dsh is used
 
 Cycle 4. Memory now works for every way dsh drives a chat, not only typed prompts: `/goal` rounds,

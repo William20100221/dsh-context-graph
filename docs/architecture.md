@@ -16,7 +16,7 @@ src/core/           pure logic: no I/O, no dsh imports, fully testable with node
   time.js             parseTimeRange (calendar days, real dates, relative days and weeks), asksAboutPast, day
   match.js            the relevance gate (matchAcross, over a word index per graph), chat ranking for the list
   ledger.js           the savings estimate: counters, balance, what counts as used, the card's lines
-  layout.js           where the map draws chats and topics (deterministic)
+  tree.js             the memory as the tree the Memory tree page draws: chats newest first, topics by kind
   render.js           every text the plugin writes into a chat or a card; fence, formatSource
   builder.js          the indexing prompt (fixed rules first), planSpan, the tolerant answer parser
   session.js          reading dsh session events: spans (typed prompts, goal rounds, reminders, answers, approved plans), dsh's turn numbers, titles, lean turns, what was already shown
@@ -32,10 +32,12 @@ src/host/           dsh wiring, one module per job, composed by plugin.js
   memory.js           agent/pre-step: the block appended to a human turn
   recall.js           the recall tool (topics, chats, days, turns via sessionQuery)
   command.js          /context-graph
-  page.js             owner-only routes for the plugin's page in Plugins (totals, map, topic)
+  page.js             owner-only routes for the savings page in Plugins and the Memory tree page (totals, tree, topic)
   meter.js            llm/stream usage buckets
   update.js           npm update check
-src/client/         the browser module dsh loads (hand-written, no build step): the command card and the page
+src/client/         the browser module dsh loads (hand-written, no build step): the command card, the savings page in
+                    Plugins, and Memory tree (a sidebar entry and its page; the tree is laid out here, because it
+                    changes as branches open and close)
 ```
 
 Dependencies point downward only: host -> store -> core, host -> core, client stands alone.
