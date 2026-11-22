@@ -4,6 +4,12 @@ All notable changes to dsh-context-graph. Versions follow semver; each minor ver
 is one development cycle (audit, issues, fixes, independent review), documented in
 [docs/cycles](docs/cycles).
 
+## 0.15.1 — 2026-11-23 — Archive & forget, in its place
+
+- Archive & forget now sits right under dsh's own Archive session in a chat's menu, in the same
+  group and colour, with an icon of its own, instead of a red row between two dividers above it
+  (#100). It is no longer offered for an archived chat, where dsh offers Restore.
+
 ## 0.15.0 — 2026-11-23 — subjects, and a review of 0.12-0.15
 
 **A subject layer** (#96)
