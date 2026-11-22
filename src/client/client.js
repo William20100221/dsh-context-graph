@@ -555,6 +555,12 @@ window.__ModuleLoader__.load({
       const [focused, setFocused] = useState(null) // the node with keyboard focus
       const [active, setActive] = useState('w') // the tree's one tab stop
       const els = React.useRef(new Map())
+      // A topic chosen while its chat is closed (a linked topic opened from the panel) opens that chat
+      // once, so the selection is drawn; the chat can be closed again as any other (#89).
+      const reveal = /^(c\d+)n/.exec(selected?.topic ?? '')?.[1]
+      React.useEffect(() => {
+        if (reveal) setOpen((was) => (was.has(reveal) ? was : new Set([...was, reveal])))
+      }, [selected?.topic])
       const q = query.trim().toLowerCase()
       const root = treeItems(data, t, details)
       const hit = (item) => item.kind === 'topic' && q !== '' && item.full.toLowerCase().includes(q)

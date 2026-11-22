@@ -211,12 +211,13 @@ const branch = (cid, topics, extra = {}) => ({ cid, summary: `chat ${cid}`, shar
 
 /** MemoryTree drawn with state kept between renders. */
 function mountTree(data, onOpen = () => {}, more = {}) {
-  const react = fakeReact()
+  const effects = []
+  const react = fakeReact({ effects })
   const client = loadClient({ react })
   const draw = () => react.render(client.MemoryTree, { data, t, onOpen, ...more })
   const nodes = () => [...walk(draw())].filter((e) => e.type === 'g' && e.props.className === 'dshcg-node')
   const node = (id) => nodes().find((g) => g.key === id)
-  return { client, draw, nodes, node, ids: () => nodes().map((g) => g.key) }
+  return { client, draw, nodes, node, ids: () => nodes().map((g) => g.key), settle: () => { draw(); for (const run of effects.splice(0)) run() } }
 }
 
 test('the tree draws the workspace, its chats and their topics; a chat opens and closes, a topic opens its details (#86)', () => {
@@ -584,4 +585,15 @@ test('closing a chat the search opened does not leave it open once the search is
   tree.node('c1').props.onClick()
   more.query = ''
   assert.ok(!tree.ids().includes('c1n1'))
+})
+
+test('a topic chosen while its chat is closed opens that chat once, and the chat can still be closed (review, #89)', () => {
+  const more = {}
+  const tree = mountTree({ key: 'a', title: 'W', chats: [branch(2, many2(40)), branch(1, ['fact', 'decision'])] }, () => {}, more)
+  assert.ok(!tree.ids().includes('c1n2'), 'c1 starts closed')
+  more.selected = { topic: 'c1n2' } // a linked topic opened from the panel
+  tree.settle()
+  assert.equal(tree.node('c1n2')?.props['data-selected'], 'true', 'drawn and marked')
+  tree.node('c1').props.onKeyDown({ key: 'ArrowLeft', preventDefault() {} })
+  assert.ok(!tree.ids().includes('c1n2'), 'Left closes it, the topic still chosen')
 })
