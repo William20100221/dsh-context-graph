@@ -446,3 +446,142 @@ test('the page says the savings are unavailable when the host could not read the
   const savings = find(page(), (e) => e.type?.name === 'Savings')
   assert.equal(savings.type(savings.props).props.children, 't:savingsUnavailable')
 })
+
+// ---- #88: keyboard, family focus, motion ---------------------------------------------------------
+
+/** A stand-in DOM element for a node's ref: records focus and animations. */
+const fakeEl = (log = []) => ({ dataset: {}, focus() { log.push(['focus', this.id]) }, animate(frames, options) { log.push(['animate', frames, options]) } })
+
+test('the arrow keys follow the W3C tree view pattern on the visible rows (#88)', () => {
+  const client = loadClient()
+  const data = { key: 'a', title: 'W', chats: [branch(2, ['fact', 'fact']), branch(1, ['fact'])] }
+  const open = new Set(['w', 'c2'])
+  const { nodes } = client.layoutTree(client.treeItems(data, t), open)
+  const k = (id, key) => JSON.parse(JSON.stringify(client.treeKey(nodes, id, key, (x) => open.has(x)))) // plain objects: the client runs in its own realm
+  assert.deepEqual(k('c2', 'ArrowDown'), { focus: 'c2n1' })
+  assert.deepEqual(k('c2n2', 'ArrowDown'), { focus: 'c1' }, 'down leaves a branch for the next row')
+  assert.deepEqual(k('c1', 'ArrowDown'), null, 'the last row')
+  assert.deepEqual(k('c1', 'ArrowUp'), { focus: 'c2n2' })
+  assert.deepEqual(k('c2', 'ArrowRight'), { focus: 'c2n1' }, 'an open branch: into its first child')
+  assert.deepEqual(k('c1', 'ArrowRight'), { open: 'c1' }, 'a closed one opens')
+  assert.deepEqual(k('c2n1', 'ArrowRight'), { open: 'c2n1' }, 'a topic opens into its messages')
+  assert.deepEqual(k('c2', 'ArrowLeft'), { close: 'c2' })
+  assert.deepEqual(k('c2n1', 'ArrowLeft'), { focus: 'c2' }, 'a closed one: out to its parent')
+  assert.deepEqual(k('w', 'ArrowLeft'), { close: 'w' })
+  assert.deepEqual([k('c2n2', 'Home'), k('w', 'End')], [{ focus: 'w' }, { focus: 'c1' }])
+  assert.deepEqual([k('c1', 'Enter'), k('c1', ' ')], [{ activate: 'c1' }, { activate: 'c1' }])
+  assert.equal(k('c1', 'a'), null)
+  const read = client.layoutTree(client.treeItems(data, t, { c2n1: { sources: [] } }), open).nodes
+  assert.equal(client.treeKey(read, 'c2n1', 'ArrowRight', (x) => open.has(x)), null, 'a topic with no messages has nothing to open')
+  const loading = new Set([...open, 'c2n1']) // opened, its messages not here yet
+  const waiting = client.layoutTree(client.treeItems(data, t, { c2n1: { loading: true } }), loading).nodes
+  assert.equal(client.treeKey(waiting, 'c2n1', 'ArrowRight', (x) => loading.has(x)), null, 'not into the next topic while its own messages load')
+})
+
+test('the tree is a WAI-ARIA tree with one tab stop; keys move focus, open and close (#88)', () => {
+  const log = []
+  const opened = []
+  const tree = mountTree({ key: 'a', title: 'W', chats: [branch(2, ['fact', 'fact']), branch(1, ['fact'])] }, (id) => opened.push(id), { selected: { topic: 'c2n2' } })
+  const svg = find(tree.draw(), (e) => e.type === 'svg')
+  assert.equal(svg.props.role, 'tree')
+  const c2n2 = tree.node('c2n2').props
+  assert.deepEqual([c2n2.role, c2n2['aria-level'], c2n2['aria-posinset'], c2n2['aria-setsize'], c2n2['aria-selected']], ['treeitem', 3, 2, 2, 'true'])
+  assert.equal(tree.node('c2').props['aria-expanded'], 'true')
+  assert.equal(tree.node('c2n1').props['aria-expanded'], 'false', 'a topic not read yet can open')
+  assert.deepEqual(tree.nodes().filter((g) => g.props.tabIndex === 0).map((g) => g.key), ['w'], 'one tab stop, the workspace at first')
+  // Every node's element, as React would hand it over.
+  for (const g of tree.nodes()) g.props.ref(Object.assign(fakeEl(log), { id: g.key }))
+  const press = (id, key) => tree.node(id).props.onKeyDown({ key, preventDefault() {} })
+  press('w', 'ArrowDown')
+  assert.deepEqual(log.filter(([what]) => what === 'focus'), [['focus', 'c2']])
+  assert.deepEqual(tree.nodes().filter((g) => g.props.tabIndex === 0).map((g) => g.key), ['c2'], 'the tab stop follows')
+  press('c1', 'ArrowLeft')
+  assert.ok(!tree.ids().includes('c1n1'), 'Left closed c1')
+  assert.equal(tree.node('c1').props['aria-expanded'], 'false')
+  press('c1', 'ArrowRight')
+  assert.ok(tree.ids().includes('c1n1'), 'Right opened it')
+  press('c2n1', 'ArrowRight')
+  assert.deepEqual(opened, ['c2n1'], 'Right on a topic reads it')
+  const stops = () => tree.nodes().filter((g) => g.props.tabIndex === 0).map((g) => g.key)
+  press('c2', 'ArrowLeft') // closes c2
+  tree.node('c2').props.onClick() // opens it again; the click makes it the tab stop
+  assert.deepEqual(stops(), ['c2'])
+  tree.node('c2n2').props.onFocus({ currentTarget: { matches: () => false } }) // the stop moves into the branch
+  assert.deepEqual(stops(), ['c2n2'])
+  tree.node('c2').props.onClick() // closes it, from c2 itself
+  assert.deepEqual(stops(), ['c2'])
+  // A stop that disappears (its chat was opened by a search, now cleared) goes back to the workspace.
+  const more = {}
+  const searched = mountTree({ key: 'a', title: 'W', chats: [branch(2, many2(40)), branch(1, ['fact'])] }, () => {}, more)
+  more.query = 'topic 1.1'
+  searched.node('c1n1').props.onFocus({ currentTarget: { matches: () => false } })
+  more.query = ''
+  assert.deepEqual(searched.nodes().filter((g) => g.props.tabIndex === 0).map((g) => g.key), ['w'], 'Tab still reaches the tree')
+  press('c1', 'Enter')
+  assert.ok(!tree.ids().includes('c1n1'), 'Enter does what a click does: c1 closed')
+})
+
+test('pointing at a node or focusing it by keyboard shows its family; a click\'s focus does not (#88)', () => {
+  const data = { key: 'a', title: 'W', chats: [branch(2, ['fact', 'fact', 'fact'], { links: [['n1', 'n3']] }), branch(1, ['fact'])] }
+  const tree = mountTree(data)
+  const family = () => Object.fromEntries(tree.nodes().map((g) => [g.key, g.props['data-family']]))
+  assert.ok(Object.values(family()).every((v) => v === undefined), 'nothing faded at rest')
+  tree.node('c2n1').props.onPointerEnter()
+  assert.deepEqual(family(), { w: 'true', c2: 'true', c2n1: 'true', c2n2: 'false', c2n3: 'true', c1: 'false', c1n1: 'false' }, 'ancestors and the linked topic')
+  const link = (id) => find(tree.draw(), (e) => e.type === 'path' && e.key === `l${id}`).props['data-family']
+  assert.deepEqual([link('c2n1'), link('c2n2'), link('c1')], ['true', 'false', 'false'])
+  tree.node('c2n1').props.onPointerLeave()
+  assert.ok(Object.values(family()).every((v) => v === undefined))
+  tree.node('c2').props.onFocus({ currentTarget: { matches: (sel) => sel === ':focus-visible' } })
+  assert.deepEqual(family(), { w: 'true', c2: 'true', c2n1: 'true', c2n2: 'true', c2n3: 'true', c1: 'false', c1n1: 'false' }, 'a chat and all it holds')
+  tree.node('c2').props.onBlur()
+  tree.node('c1').props.onFocus({ currentTarget: { matches: () => false } }) // focus from a click
+  assert.ok(Object.values(family()).every((v) => v === undefined))
+})
+
+test('a node or link drawn for the first time grows out of its parent, once, and not at all with reduced motion (#88)', () => {
+  const data = { key: 'a', title: 'W', chats: [branch(1, ['fact'])] }
+  const log = []
+  const tree = mountTree(data)
+  const el = fakeEl(log)
+  tree.node('c1n1').props.ref(el)
+  tree.node('c1n1').props.ref(el) // React hands the same element over again at the next render
+  const animations = log.filter(([what]) => what === 'animate')
+  assert.equal(animations.length, 1)
+  const [, frames, options] = animations[0]
+  assert.match(frames[0].transform, /scale\(0\.6\)$/, 'from its parent, small')
+  assert.equal(frames[1].transform, tree.node('c1n1').props.style.transform, 'to its place')
+  assert.deepEqual({ ...options }, { duration: 300, easing: 'cubic-bezier(0.05, 0.7, 0.1, 1)' }, 'Material 3 emphasized decelerate')
+  const path = find(tree.draw(), (e) => e.type === 'path' && e.key === 'lc1n1')
+  const pathLog = []
+  path.props.ref(fakeEl(pathLog))
+  assert.match(pathLog[0][1][0].d, /^path\('M/, 'a link grows from its parent end')
+  assert.equal(path.props.style.d, `path('${path.props.d}')`, 'd is a style too, so a moving link is eased')
+  // Reduced motion: shown at once.
+  const still = []
+  const react = fakeReact()
+  const quiet = loadClient({ react, globals: { matchMedia: (q) => ({ matches: q === '(prefers-reduced-motion: reduce)' }) } })
+  const g = [...walk(react.render(quiet.MemoryTree, { data, t, onOpen() {} }))].find((e) => e.key === 'c1n1')
+  g.props.ref(fakeEl(still))
+  assert.deepEqual(still, [])
+  // A browser that cannot animate the property shows it at once instead of failing.
+  assert.doesNotThrow(() => tree.node('c1').props.ref({ dataset: {}, animate() { throw new TypeError('d') }, focus() {} }))
+})
+
+test('the motion is eased by Material 3 timings in the CSS and stops with reduced motion (#88)', () => {
+  let css = ''
+  const document = { querySelector: () => null, createElement: () => ({ dataset: {} }), head: { appendChild: (tag) => { css = tag.textContent } } }
+  loadClient({ globals: { document } })
+  assert.match(css, /\.dshcg-node\{transition:transform 300ms cubic-bezier\(0\.2,0,0,1\)/)
+  assert.match(css, /\.dshcg-link\{transition:d 300ms cubic-bezier\(0\.2,0,0,1\)/)
+  assert.match(css, /@media \(prefers-reduced-motion:reduce\)\{\.dshcg-node,\.dshcg-link\{transition:none\}\}/)
+})
+
+test('closing a chat the search opened does not leave it open once the search is cleared (#88)', () => {
+  const more = {}
+  const tree = mountTree({ key: 'a', title: 'W', chats: [branch(2, many2(40)), branch(1, ['fact', 'decision'])] }, () => {}, more)
+  more.query = 'topic 1.1'
+  tree.node('c1').props.onClick()
+  more.query = ''
+  assert.ok(!tree.ids().includes('c1n1'))
+})

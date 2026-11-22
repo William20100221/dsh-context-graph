@@ -151,6 +151,16 @@ window.__ModuleLoader__.load({
       '.dshcg-node[data-kind="workspace"] .dshcg-label{font-weight:600}',
       '.dshcg-count{font-size:11px;fill:var(--dsw-alias-label-secondary)}',
       '.dshcg-node[data-dim="true"],.dshcg-link[data-dim="true"]{opacity:.18}',
+      // #88: a moving node or link eases to its new place (Material 3: 300 ms, emphasized); pointing
+      // at or focusing a node fades everything outside its family.
+      '.dshcg-node{transition:transform 300ms cubic-bezier(0.2,0,0,1),opacity 150ms linear}',
+      '.dshcg-link{transition:d 300ms cubic-bezier(0.2,0,0,1),opacity 150ms linear}',
+      '.dshcg-node[data-family="false"],.dshcg-link[data-family="false"]{opacity:.25}',
+      '.dshcg-node[data-family="true"] .dshcg-pill{stroke:var(--dsw-alias-label-secondary)}',
+      '.dshcg-link[data-family="true"]{stroke:var(--dsw-alias-label-secondary)}',
+      '.dshcg-node:focus{outline:none}',
+      '.dshcg-node:focus-visible .dshcg-pill{stroke:var(--dsw-alias-brand-primary,#4A65E8);stroke-width:2}',
+      '@media (prefers-reduced-motion:reduce){.dshcg-node,.dshcg-link{transition:none}}',
       '.dshcg-node[data-selected="true"] .dshcg-pill{stroke:var(--dsw-alias-brand-primary,#4A65E8);stroke-width:2}',
       // The details sit beside the tree, and below it on a narrow window (#87).
       '.dshcg-split{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,360px);gap:12px;align-items:start}',
@@ -360,7 +370,7 @@ window.__ModuleLoader__.load({
      * a topic not read yet has no children, a loading one shows …, a failed one !.
      */
     function treeItems(data, t, details = {}) {
-      const topic = (cid, [id, label, kind]) => {
+      const topic = (cid, [id, label, kind], links) => {
         const tid = `c${cid}${id}`
         const detail = details[tid]
         return {
@@ -370,6 +380,7 @@ window.__ModuleLoader__.load({
           label: fit(String(label), ROOM[2]),
           full: detail?.error ? `${tid} ${label}: ${t('topicFailed')}` : `${tid} ${label}`,
           badge: detail?.loading ? '…' : detail?.error ? '!' : undefined,
+          linked: links.flatMap(([from, to]) => (from === id ? [`c${cid}${to}`] : to === id ? [`c${cid}${from}`] : [])),
           children: detail?.sources?.map((s, i) => ({ id: `${tid}s${i}`, kind: 'source', topic: tid, label: fit(sourceLine(s), ROOM[3]), full: sourceLine(s) }))
         }
       }
@@ -385,7 +396,7 @@ window.__ModuleLoader__.load({
             chat: c,
             label: chatLabel(chat, t, ROOM[1]),
             full: chatLabel(chat, t),
-            children: c.topics.map((entry) => topic(c.cid, entry))
+            children: c.topics.map((entry) => topic(c.cid, entry, c.links ?? []))
           }
         })
       }
@@ -422,7 +433,7 @@ window.__ModuleLoader__.load({
       let next = 0
       let lastParent = null
       const place = (item, depth, parent) => {
-        const node = { id: item.id, item, depth, parent, x: 0, y: 0, w: widthOf(item, open) }
+        const node = { id: item.id, item, depth, parent, x: 0, y: 0, w: widthOf(item, open), pos: 1, size: 1 }
         nodes.push(node)
         const kids = open.has(item.id) ? item.children ?? [] : []
         if (kids.length === 0) {
@@ -430,7 +441,7 @@ window.__ModuleLoader__.load({
           node.y = next++
           lastParent = parent
         } else {
-          const placed = kids.map((kid) => place(kid, depth + 1, node))
+          const placed = kids.map((kid, i) => Object.assign(place(kid, depth + 1, node), { pos: i + 1, size: kids.length }))
           node.y = (placed[0].y + placed[placed.length - 1].y) / 2
         }
         return node
@@ -459,6 +470,66 @@ window.__ModuleLoader__.load({
     // topic's messages are small grey dots.
     const dotStyle = (item) => (item.kind === 'topic' ? { fill: COLORS[item.topicKind] ?? '#888' } : item.kind === 'source' ? { fill: 'var(--dsw-alias-label-secondary)' } : { fill: 'none', stroke: 'var(--dsw-alias-label-secondary)', strokeWidth: 1.5 })
 
+    /** A node that has children to show, or a topic whose messages are not read yet. */
+    const expandable = (item) => (item.children?.length ?? 0) > 0 || (item.kind === 'topic' && item.children === undefined)
+
+    /**
+     * The W3C WAI-ARIA tree view keys (#88), on the visible nodes in tree order: Up/Down move, Right
+     * opens a closed branch or steps into an open one, Left closes an open one or steps out to the
+     * parent, Home/End go to the ends, Enter or Space does what a click does.
+     * @returns { focus: id } | { open: id } | { close: id } | { activate: id } | null
+     */
+    function treeKey(nodes, id, key, isOpen) {
+      const i = nodes.findIndex((n) => n.id === id)
+      if (i < 0) return null
+      const n = nodes[i]
+      if (key === 'ArrowDown') return i + 1 < nodes.length ? { focus: nodes[i + 1].id } : null
+      if (key === 'ArrowUp') return i > 0 ? { focus: nodes[i - 1].id } : null
+      if (key === 'Home') return { focus: nodes[0].id }
+      if (key === 'End') return { focus: nodes[nodes.length - 1].id }
+      if (key === 'ArrowRight') {
+        if (!expandable(n.item)) return null
+        if (!isOpen(n.id)) return { open: n.id }
+        return nodes[i + 1]?.parent === n ? { focus: nodes[i + 1].id } : null
+      }
+      if (key === 'ArrowLeft') {
+        if (expandable(n.item) && isOpen(n.id)) return { close: n.id }
+        return n.parent ? { focus: n.parent.id } : null
+      }
+      if (key === 'Enter' || key === ' ') return { activate: n.id }
+      return null
+    }
+
+    /**
+     * A node's family (#88, Apache ECharts' emphasis focus 'relative'): its ancestors, its visible
+     * descendants and, for a topic, the topics it links to.
+     */
+    function familyOf(nodes, id) {
+      const n = nodes.find((x) => x.id === id)
+      if (!n) return null
+      const family = new Set([id, ...(n.item.linked ?? [])])
+      for (let up = n.parent; up; up = up.parent) family.add(up.id)
+      for (const m of nodes) for (let up = m.parent; up; up = up.parent) if (up === n) family.add(m.id)
+      return family
+    }
+
+    // Material 3 motion (Google, Apache-2.0): 300 ms (medium2); what enters decelerates
+    // (emphasized decelerate), what moves uses the emphasized curve (the CSS transitions above).
+    const ENTER = { duration: 300, easing: 'cubic-bezier(0.05, 0.7, 0.1, 1)' }
+    const stillness = () => globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true
+
+    /**
+     * A node or link drawn for the first time grows out of its parent, as in the D3 collapsible tree
+     * (#88); an element already shown is left to the CSS transitions. Nothing moves when the system
+     * asks for reduced motion.
+     */
+    function grow(el, frames) {
+      if (!el || el.dataset?.grown) return
+      if (el.dataset) el.dataset.grown = '1'
+      if (stillness() || typeof el.animate !== 'function') return
+      try { el.animate(frames, ENTER) } catch { /* a browser that cannot animate this property: shown at once */ }
+    }
+
     /** Search, kind filter and zoom, above the tree and its panel. */
     function TreeTools({ t, query, kind, onQuery, onKind, onScale }) {
       return jsxs('div', {
@@ -480,6 +551,10 @@ window.__ModuleLoader__.load({
      */
     function MemoryTree({ data, t, query = '', kind = '', scale = 1, details = {}, selected = null, onOpen, onChat = () => {} }) {
       const [open, setOpen] = useState(initialOpen(data))
+      const [hover, setHover] = useState(null) // the node under the pointer
+      const [focused, setFocused] = useState(null) // the node with keyboard focus
+      const [active, setActive] = useState('w') // the tree's one tab stop
+      const els = React.useRef(new Map())
       const q = query.trim().toLowerCase()
       const root = treeItems(data, t, details)
       const hit = (item) => item.kind === 'topic' && q !== '' && item.full.toLowerCase().includes(q)
@@ -487,9 +562,10 @@ window.__ModuleLoader__.load({
       const shown = new Set(open)
       if (q) for (const chat of root.children) if (chat.children.some(hit)) shown.add(chat.id)
       const layout = layoutTree(root, shown)
+      // Closes what is shown open (a chat opened by the search stays open until the search is cleared).
       const toggle = (id) => setOpen((was) => {
         const now = new Set(was)
-        if (now.has(id)) now.delete(id)
+        if (shown.has(id)) now.delete(id)
         else now.add(id)
         return now
       })
@@ -501,27 +577,83 @@ window.__ModuleLoader__.load({
       }
       const chosen = (item) => (item.kind === 'chat' ? selected?.chat === item.chat.cid : item.kind === 'topic' && selected?.topic === item.id)
       const dim = (item) => item.kind === 'topic' && ((kind && item.topicKind !== kind) || (q && !hit(item)))
+      const center = hover ?? focused
+      const family = center ? familyOf(layout.nodes, center) : null
+      // A family holds each member's parent, so a link is in it when its child is.
+      const kin = (id) => (family ? (family.has(id) ? 'true' : 'false') : undefined)
+      // A node collapsed away hands the tab stop to the workspace, so Tab still reaches the tree.
+      const stop = layout.nodes.some((n) => n.id === active) ? active : 'w'
+      const key = (n, e) => {
+        const move = treeKey(layout.nodes, n.id, e.key, (id) => shown.has(id))
+        if (!move) return
+        e.preventDefault?.()
+        if (move.focus) {
+          setActive(move.focus)
+          els.current.get(move.focus)?.focus?.()
+        }
+        if (move.open) n.item.kind === 'topic' ? activate(n.item) : toggle(n.id)
+        if (move.close) toggle(n.id)
+        if (move.activate) activate(n.item)
+      }
       return jsx('div', {
         className: 'dshcg-treebox',
         children: jsxs('svg', {
           className: 'dshcg-tree',
-          role: 'img',
+          role: 'tree',
           'aria-label': t('tree_label'),
           width: Math.round(layout.width * scale),
           height: Math.round(layout.height * scale),
           viewBox: `0 0 ${layout.width} ${layout.height}`,
           children: [
-            ...layout.nodes.filter((n) => n.parent).map((n) => jsx('path', { className: 'dshcg-link', d: linkPath(n.parent, n), 'data-dim': dim(n.item) ? 'true' : 'false' }, `l${n.id}`)),
+            ...layout.nodes.filter((n) => n.parent).map((n) => {
+              const d = linkPath(n.parent, n)
+              const tip = { x: n.parent.x + n.parent.w, y: n.parent.y, w: 0 }
+              return jsx('path', {
+                className: 'dshcg-link',
+                d,
+                // As a style too, so a moving link is eased by the CSS transition on d.
+                style: { d: `path('${d}')` },
+                'data-dim': dim(n.item) ? 'true' : 'false',
+                'data-family': kin(n.id),
+                ref: (el) => grow(el, [{ d: `path('${linkPath(n.parent, tip)}')`, opacity: 0 }, { d: `path('${d}')`, opacity: 1 }])
+              }, `l${n.id}`)
+            }),
             ...layout.nodes.map((n) => {
               const count = countOf(n.item, shown)
+              const at = `translate(${n.x}px,${n.y}px)`
+              const from = n.parent ? `translate(${n.parent.x + n.parent.w - PILL}px,${n.parent.y}px) scale(0.6)` : at
               return jsxs('g', {
                 className: 'dshcg-node',
+                role: 'treeitem',
+                'aria-level': n.depth + 1,
+                'aria-posinset': n.pos,
+                'aria-setsize': n.size,
+                'aria-expanded': expandable(n.item) ? (shown.has(n.id) ? 'true' : 'false') : undefined,
+                'aria-selected': chosen(n.item) ? 'true' : 'false',
+                tabIndex: n.id === stop ? 0 : -1,
                 'data-kind': n.item.kind,
+                'data-family': kin(n.id),
                 'data-dim': dim(n.item) ? 'true' : 'false',
                 'data-match': hit(n.item) ? 'true' : 'false',
                 'data-selected': chosen(n.item) ? 'true' : 'false',
-                style: { transform: `translate(${n.x}px,${n.y}px)` },
-                onClick: () => activate(n.item),
+                style: { transform: at },
+                ref: (el) => {
+                  if (el) els.current.set(n.id, el)
+                  grow(el, [{ transform: from, opacity: 0 }, { transform: at, opacity: 1 }])
+                },
+                onClick: () => {
+                  setActive(n.id)
+                  activate(n.item)
+                },
+                onKeyDown: (e) => key(n, e),
+                onFocus: (e) => {
+                  setActive(n.id)
+                  // Keyboard focus shows the family; a click's focus does not, or every click would dim the tree.
+                  if (e.currentTarget?.matches?.(':focus-visible')) setFocused(n.id)
+                },
+                onBlur: () => setFocused(null),
+                onPointerEnter: () => setHover(n.id),
+                onPointerLeave: () => setHover(null),
                 children: [
                   jsx('title', { children: n.item.full ?? n.item.label }),
                   jsx('rect', { className: 'dshcg-pill', x: 0, y: -PILL / 2, width: n.w, height: PILL, rx: PILL / 2 }),
@@ -721,6 +853,8 @@ window.__ModuleLoader__.load({
     exports.TreeIcon = TreeIcon
     exports.MemoryTree = MemoryTree
     exports.TreeTools = TreeTools
+    exports.treeKey = treeKey
+    exports.familyOf = familyOf
     exports.layoutTree = layoutTree
     exports.treeItems = treeItems
     exports.initialOpen = initialOpen
