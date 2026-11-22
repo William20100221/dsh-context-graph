@@ -185,10 +185,21 @@ from, with their turn ids. These are the same layers recall walks.
   step out, Home/End, Enter or Space to open the details.
 - **Motion.** What opens grows out of its parent and what moves eases to its place; nothing moves
   when the system asks for reduced motion.
+- **Hide a chat.** A chat's details have **Hide from memory**: no other chat matches, lists,
+  digests or recalls it any more, so it costs no input tokens, and it is not indexed while hidden.
+  It moves to the Hidden branch; **Use again** brings it back, and indexing catches up.
+- **Delete a chat's memory.** Only for a chat you archived or deleted in DeepSeek Harness (the tree
+  marks them): **Delete memory** asks first, then removes its topics and stored messages for good.
+
+**In a chat.** Its header shows which memory branch it is (`c4`, beside the mode); click it to open
+Memory tree on that chat. Its menu in the sidebar has **Archive & forget**: after you confirm, dsh
+archives the chat (you can restore it from the archive) and its memory is deleted (that cannot be
+restored). It shows only for a chat that has memory.
 
 The plugin's page in Plugins shows what memory saved and cost in each workspace (see below). Both
-are your own view, so private and memory-off chats are shown and marked. The data comes from
-read-only routes dsh only answers for the app's owner; neither page adds anything to a chat.
+are your own view, so private, hidden and memory-off chats are shown and marked. The data comes
+from routes dsh only answers for the app's owner; the two that change memory (hide, delete) also
+need a header only this page sends, and neither page adds anything to a chat.
 
 ## What memory saved
 

@@ -4,6 +4,26 @@ All notable changes to dsh-context-graph. Versions follow semver; each minor ver
 is one development cycle (audit, issues, fixes, independent review), documented in
 [docs/cycles](docs/cycles).
 
+## 0.12.0 — 2026-11-22 — hide, forget, and see which chat is which
+
+**Hide a chat, delete a chat's memory** (#91)
+- Memory tree → a chat's details → **Hide from memory**: no other chat matches, lists, digests,
+  maps or recalls it, its topics are not even read, and it is not indexed until **Use again**,
+  when indexing catches up. Hidden chats hang from a closed Hidden branch. The flag lives in the
+  chat's meta.json with its other flags, which fails closed when damaged.
+- **Delete memory**, after a confirmation, for a chat whose dsh session is archived or deleted;
+  the host checks that itself (while dsh cannot list its sessions, nothing counts as deleted) and
+  removes the chat's folder and savings file.
+
+**Which chat is which** (#92)
+- A chat's header shows its memory number (`c4`) beside dsh's mode label; a click opens Memory
+  tree on that chat.
+- The session menu has **Archive & forget** for a chat with memory: after a confirmation, dsh
+  archives the chat and its memory is deleted. If dsh does not archive it, nothing is deleted.
+
+The two routes that change memory are POSTs, owner-only like the rest, and need a header only the
+plugin's page sends, so another web page cannot trigger them.
+
 ## 0.11.0 — 2026-11-22 — the memory tree
 
 The memory has always been a tree (workspace, chats, topics, the messages they came from); now it
