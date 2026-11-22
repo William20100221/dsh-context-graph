@@ -1,0 +1,35 @@
+[
+  {
+    "key": "N-1",
+    "milestone": "v0.16.0",
+    "labels": [
+      "bug",
+      "quality"
+    ],
+    "title": "Another chat's labels are written without reading that chat",
+    "body": "**Rule** (set by the maintainer): a chat's memory or labels may be changed from outside that chat only after the model has read the chat itself (its source) and found them wrong or missing.\n\n**Problem**\nThe sorting call added in v0.15.0 (#96) gives chats indexed before 0.14/0.15 a subject, type and project in one call per workspace, from each chat's one-line summary and topic labels only. The model never reads those chats, so a label can be a guess about a conversation it has not seen.\n\nEverything else already keeps the rule: a chat's index writes only that chat's own topics, links and labels, from its own messages; matching and recall only read other chats; hiding and deleting are the user's own actions.\n\n**Fix**\n- Each older chat is labelled by a call of its own that reads that chat: its kept messages (#93), cut to the indexing input cap as indexing cuts a span, with its summary and the workspace's subjects to reuse.\n- Only labels the chat lacks are filled; labels its own index named are never replaced from outside.\n- A chat whose messages cannot be read (nothing kept) is left unlabelled rather than guessed.\n- At most 10 chats per workspace per app run, so an upgrade does not spend everything at once.",
+    "number": 102
+  },
+  {
+    "key": "N-2",
+    "milestone": "v0.16.1",
+    "labels": [
+      "enhancement",
+      "quality"
+    ],
+    "title": "A chat does not know which memory branch it is",
+    "body": "**Rule** (set by the maintainer): a chat knows what it is in memory; chat 7 is c7 in the tree.\n\n**Problem**\nThe user sees `c7` in the header (#92) and in Memory tree, but the model in that chat is never told. Its notes name other chats (`c3n12`), the chat list leaves it out, and when the user says \"c7\" or asks what this chat is in memory, the model cannot tell.\n\n**Fix**\n- With the first memory note a chat gets once it has a number, one line: `This chat is c7 in memory` and how its own turns are read (`recall(\"t3\")`); again only when no note of the plugin is left in the chat (after a compaction). About 20 tokens, once.\n- `/context-graph` (stats) says which chat this is.\n- `recall(\"c7t3\")` in chat 7 reads its own turn, like `recall(\"t3\")`.",
+    "number": 103
+  },
+  {
+    "key": "N-3",
+    "milestone": "v0.17.0",
+    "labels": [
+      "enhancement",
+      "tokens"
+    ],
+    "title": "Savings: count the conversation history memory stands in for, minus what memory costs",
+    "body": "**Rule** (set by the maintainer): a chat never takes earlier chats in as input; it uses their memory tree and digs into deeper layers only when needed. Tokens saved = the old total (the earlier conversation history that would otherwise have been input) - the tokens used for memory making and searching.\n\n**Problem**\nThe first part holds already: other chats reach the model only as topic lines, and sources and turns only by recall. The estimate does not follow the rule: it counts, for each topic used, only its three newest messages as stored, so it measures what one paste of a few messages would have cost, not the history memory replaces.\n\n**Fix**\n- Old total: for each earlier chat whose memory a chat actually used (a recall, or an answer saying two of a topic's words the prompt did not), that chat's whole kept conversation (#93), in tokens, counted once per chat that used it, at the time of the first use.\n- Memory making: the indexing calls (as dsh reported them; cached input x0.1, output x4).\n- Searching: the notes and recalls sent, their cached re-sends (x0.1) and the recall tool (x0.1).\n- Saved = old total - making - searching, shown with each term on the card and the plugin's page. Ledgers written before are converted once, from the topics they recorded as used.\n\n**Not changed, on purpose**: a chat's own history stays as dsh sends it. Folding it into the tree (tried in v0.2) breaks the provider's prompt cache, which bills repeated input at about a tenth of the price, so it costs more than it saves; dsh's own compaction handles long chats.",
+    "number": 104
+  }
+]
