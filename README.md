@@ -185,6 +185,10 @@ from, with their turn ids. These are the same layers recall walks.
   step out, Home/End, Enter or Space to open the details.
 - **Motion.** What opens grows out of its parent and what moves eases to its place; nothing moves
   when the system asks for reduced motion.
+- **Labels.** A chat's details show its type and project and, for a chat that held several
+  conversations, its parts (`t1–t4 · Bug fixing: the login redirect`). **Sort by label**, at the
+  right end of the toolbar, groups chats by type; a second click goes back. The choice is
+  remembered after DeepSeek Harness is closed and opened again.
 - **Hide a chat.** A chat's details have **Hide from memory**: no other chat matches, lists,
   digests or recalls it any more, so it costs no input tokens, and it is not indexed while hidden.
   It moves to the Hidden branch; **Use again** brings it back, and indexing catches up.
@@ -245,6 +249,14 @@ hit on the old one shows the new one. On the audit corpus (6 chats, 60 topics, E
 this finds the right topic for 20 of 20 questions, 10 of 10 held-out ones and 37 of 37 reworded
 ones (a plural for a singular, an identifier in camelCase), and sends nothing for 41 of 41 everyday
 messages (test/core/cycle4-matching.test.js).
+
+**Labels rank, they do not match.** Indexing labels each chat by what it is for (coding, bug fixing,
+research, study, writing, planning, setup, data, creative, language, a quick question, everyday
+chat), names its project when it has one, and labels the parts of a chat that held several
+conversations. Among the topics your message already matched, those in a chat whose project you
+name (all its words) come first, then those in a chat or part whose type you name ("the bug we
+fixed", 作业, "the install"). A label never matches on its own, so it brings no unrelated topic and
+costs no input tokens.
 
 **Time ranks, it does not filter.** Which topics a message gets is decided on evidence; a named
 time then puts the ones from then first, so it can never push an exact older match out:

@@ -4,6 +4,24 @@ All notable changes to dsh-context-graph. Versions follow semver; each minor ver
 is one development cycle (audit, issues, fixes, independent review), documented in
 [docs/cycles](docs/cycles).
 
+## 0.14.0 — 2026-11-23 — labels
+
+**What a chat is for** (#94)
+- Indexing labels each chat with a type (coding, debugging, research, study, writing, planning,
+  setup, data, creative, language, question, chat), its project when it has one, and, for a chat
+  that held several conversations, its parts: a type and a subject for a range of turns.
+- Labels order what a message matched: topics in a chat whose project the message names come
+  first, then those in a chat or part whose type it names. A label never matches on its own, so it
+  adds no topic and no input tokens.
+- Memory tree shows a chat's labels and parts.
+
+**Sort by label** (#95)
+- A toggle at the right end of Memory tree's toolbar groups chats by type and back; the choice is
+  remembered across restarts (the app's local storage).
+- Search and a chosen chat or topic open every branch above it, whatever the grouping.
+
+Chats indexed before keep no labels until their next index (0.15.0 labels them in one small call).
+
 ## 0.13.0 — 2026-11-23 — whole messages, kept
 
 **Complete sources** (#93)
