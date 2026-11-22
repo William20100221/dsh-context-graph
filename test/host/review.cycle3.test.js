@@ -421,10 +421,10 @@ test('an unreadable ledger.json costs the savings line, not the card or the page
   const get = (name, query = '') => quietly(() => routes.get(`/api/context-graph.${name}`).fetch(new Request(`http://localhost/api/context-graph.${name}${query}`)))
   const overview = await (await get('overview')).json()
   assert.equal(overview.workspaces[0].chats, 1)
-  assert.equal((await get('map', `?w=${overview.workspaces[0].key}`)).status, 200)
+  assert.equal((await get('tree', `?w=${overview.workspaces[0].key}`)).status, 200)
 }))
 
-test('the map leaves out a chat without a chat number, and a repeated number (second review of #36)', { skip }, () => inWorkspace(async (cwd) => {
+test('the tree leaves out a chat without a chat number, and a repeated number (second review of #36)', { skip }, () => inWorkspace(async (cwd) => {
   const dir = join(cwd, '.context-graph')
   const routes = new Map()
   const connection = { fetch: { register: (route) => { routes.set(route.path, route); return async () => {} } } }
@@ -436,13 +436,13 @@ test('the map leaves out a chat without a chat number, and a repeated number (se
   await writeFile(join(dir, 'chats', 'sD', 'meta.json'), '', 'utf8')
   const get = (name, query = '') => quietly(() => routes.get(`/api/context-graph.${name}`).fetch(new Request(`http://localhost/api/context-graph.${name}${query}`)))
   const { workspaces } = await (await get('overview')).json()
-  const response = await get('map', `?w=${workspaces[0].key}`)
+  const response = await get('tree', `?w=${workspaces[0].key}`)
   assert.equal(response.status, 200)
   const map = await response.json()
   const cids = map.chats.map((c) => c.cid)
   assert.deepEqual(cids, [...new Set(cids)], 'each number once')
   assert.ok(cids.every(Number.isInteger))
-  assert.ok(map.topics.every(([cid]) => Number.isInteger(cid)))
+  assert.ok(map.chats.every((c) => c.topics.length > 0), 'only chats with topics')
 }))
 
 test('a source message credited before a restart is not credited again for a sibling topic (second review of #35)', { skip }, () => inWorkspace(async (cwd) => {

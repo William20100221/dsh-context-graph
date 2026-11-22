@@ -126,7 +126,7 @@ test('the page says the savings are unavailable while the ledger cannot be read 
   const get = (name, query = '') => quietly(() => routes.get(`/api/context-graph.${name}`).fetch(new Request(`http://localhost/api/context-graph.${name}${query}`)))
   const { workspaces } = await (await get('overview')).json()
   assert.equal(workspaces[0].savings, null)
-  const map = await (await get('map', `?w=${workspaces[0].key}`)).json()
+  const map = await (await get('tree', `?w=${workspaces[0].key}`)).json()
   assert.equal(map.chats[0].savings, null)
 }))
 

@@ -183,7 +183,7 @@ test('a subagent forked from a chat is charged to it: the blocks it carries and 
   assert.equal(entry.c.tool, 4 * estimateTokens(tool.name + tool.description + JSON.stringify(tool.parameters)), 'the recall tool, with each of the four requests')
 }))
 
-test('the map and the topic route open the same chat for a number; unreadable sources leave the topic readable (second review of #36)', { skip }, () => inWorkspace(async (cwd) => {
+test('the tree and the topic route open the same chat for a number; unreadable sources leave the topic readable (second review of #36)', { skip }, () => inWorkspace(async (cwd) => {
   const dir = join(cwd, '.context-graph')
   const routes = new Map()
   const connection = { fetch: { register: (route) => { routes.set(route.path, route); return async () => {} } } }
@@ -196,7 +196,7 @@ test('the map and the topic route open the same chat for a number; unreadable so
   const get = (name, query = '') => quietly(() => routes.get(`/api/context-graph.${name}`).fetch(new Request(`http://localhost/api/context-graph.${name}${query}`)))
   const { workspaces } = await (await get('overview')).json()
   const w = workspaces[0].key
-  const map = await (await get('map', `?w=${w}`)).json()
+  const map = await (await get('tree', `?w=${w}`)).json()
   assert.deepEqual(map.chats.map((c) => c.cid), [1], 'the chat with topics is drawn')
   assert.equal((await (await get('topic', `?w=${w}&id=c1n1`)).json()).label, 'commit signing')
   const msgs = join(dir, 'chats', 'sOld', 'msgs.json')

@@ -91,7 +91,7 @@ test('the plugin page keeps the savings and says where the tree is; it asks for 
   await answer('api/context-graph.overview', { workspaces: [{ key: 'a', title: 'A', indexed: 1, topics: 1, savings: { saved: 5, cost: 2, net: 3 } }] })
   assert.ok(find(page(), (e) => e.type?.name === 'Savings'))
   assert.ok(find(page(), (e) => e.props?.children === 't:treeHint'))
-  assert.equal(find(page(), (e) => e.type === client.MemoryMap), undefined)
+  assert.equal(find(page(), (e) => e.type === client.MemoryTree), undefined)
   assert.deepEqual(asked, ['api/context-graph.overview'])
 })
 
@@ -111,19 +111,6 @@ test('the plugin page asks the host for the overview and shows loading meanwhile
   assert.match(JSON.stringify(page), /t:loading/)
   for (const run of effects) run()
   assert.deepEqual(asked, ['api/context-graph.overview'], 'document-relative, like dsh\'s own routes')
-})
-
-test('the map draws every topic from the host layout; search and kind dim the rest (#36)', () => {
-  const client = loadClient()
-  const map = { width: 1400, height: 300, chats: [{ cid: 1, x: 50, y: 50, r: 40, summary: 'CI setup', shared: true, memory: true, shown: 2, total: 2 }], topics: [[1, 'n1', 'pnpm cache', 'decision', 40, 50, 1], [1, 'n2', 'node matrix', 'fact', 60, 50, 1]], edges: [[1, 'n1', 'n2', 'uses']] }
-  const opened = []
-  const tree = client.MemoryMap({ map, t, onOpen: (id) => opened.push(id) })
-  const circles = [...walk(tree)].filter((e) => e.type === 'circle' && e.props.className === 'dshcg-topic')
-  assert.equal(circles.length, 2)
-  assert.equal([...walk(tree)].filter((e) => e.type === 'line').length, 1)
-  circles[0].props.onClick()
-  assert.deepEqual(opened, ['c1n1'])
-  assert.ok(circles.every((c) => c.props['data-dim'] === 'false'), 'nothing dimmed without a search')
 })
 
 const find = (tree, match) => [...walk(tree)].find(match)
@@ -147,7 +134,7 @@ function lateFetch() {
   }
 }
 
-const mapOf = (key) => ({ key, width: 1400, height: 100, chats: [], topics: [], edges: [] })
+const mapOf = (key) => ({ key, title: key, chats: [{ cid: 1, summary: '', shared: true, memory: true, total: 1, topics: [['n1', 'a topic', 'fact']], links: [] }] })
 const topicOf = (id, links = []) => ({ id, label: id, gist: '', kind: 'fact', chat: { cid: 1, summary: '' }, links, sources: [] })
 
 /** A page once the overview came back: the tree page has asked for the first workspace's map itself. */
@@ -163,13 +150,13 @@ async function openPage(workspaces, component = 'TreePage') {
   return { client, page, answer, fail }
 }
 
-test('a late map or topic answer does not replace the one asked for since', async () => {
+test('a late tree or topic answer does not replace the one asked for since', async () => {
   const { client, page, answer } = await openPage([{ key: 'a', title: 'A', indexed: 1, topics: 1 }, { key: 'b', title: 'B', indexed: 1, topics: 1 }])
   find(page(), (e) => e.type === 'button' && e.key === 'b').props.onClick() // before A's map came back
-  await answer('api/context-graph.map?w=b', mapOf('b'))
-  await answer('api/context-graph.map?w=a', mapOf('a'))
-  const drawn = () => find(page(), (e) => e.type === client.MemoryMap)
-  assert.equal(drawn().props.map.key, 'b', 'the map of the workspace picked')
+  await answer('api/context-graph.tree?w=b', mapOf('b'))
+  await answer('api/context-graph.tree?w=a', mapOf('a'))
+  const drawn = () => find(page(), (e) => e.type === client.MemoryTree)
+  assert.equal(drawn().props.data.key, 'b', 'the tree of the workspace picked')
   drawn().props.onOpen('c1n1')
   drawn().props.onOpen('c1n2')
   await answer('api/context-graph.topic?w=b&id=c1n2', topicOf('c1n2'))
@@ -179,18 +166,18 @@ test('a late map or topic answer does not replace the one asked for since', asyn
 
 test('a topic asked in one workspace and answered after switching to another is dropped', async () => {
   const { client, page, answer } = await openPage([{ key: 'a', title: 'A', indexed: 1, topics: 1 }, { key: 'b', title: 'B', indexed: 1, topics: 1 }])
-  await answer('api/context-graph.map?w=a', mapOf('a'))
-  find(page(), (e) => e.type === client.MemoryMap).props.onOpen('c1n1') // in A
+  await answer('api/context-graph.tree?w=a', mapOf('a'))
+  find(page(), (e) => e.type === client.MemoryTree).props.onOpen('c1n1') // in A
   find(page(), (e) => e.type === 'button' && e.key === 'b').props.onClick() // before the topic came back
-  await answer('api/context-graph.map?w=b', mapOf('b'))
+  await answer('api/context-graph.tree?w=b', mapOf('b'))
   await answer('api/context-graph.topic?w=a&id=c1n1', topicOf('c1n1'))
-  assert.equal(find(page(), (e) => e.type === client.TopicPanel), undefined, 'A\'s topic is not drawn under B\'s map, where its links would ask B')
+  assert.equal(find(page(), (e) => e.type === client.TopicPanel), undefined, 'A\'s topic is not drawn under B\'s tree, where its links would ask B')
 })
 
 test('each topic gets a new panel, two links to one topic stay two, and Copied means copied', async () => {
   const { client, page, answer } = await openPage([{ key: 'a', title: 'A', indexed: 1, topics: 2 }])
-  await answer('api/context-graph.map?w=a', mapOf('a'))
-  find(page(), (e) => e.type === client.MemoryMap).props.onOpen('c1n1')
+  await answer('api/context-graph.tree?w=a', mapOf('a'))
+  find(page(), (e) => e.type === client.MemoryTree).props.onOpen('c1n1')
   const links = [{ id: 'c1n2', label: 'node matrix', relation: 'uses', direction: 'out' }, { id: 'c1n2', label: 'node matrix', relation: 'part-of', direction: 'in' }]
   await answer('api/context-graph.topic?w=a&id=c1n1', topicOf('c1n1', links))
   const panel = find(page(), (e) => e.type === client.TopicPanel)
@@ -213,54 +200,99 @@ test('each topic gets a new panel, two links to one topic stay two, and Copied m
   assert.deepEqual(written, ['c1n1'])
 })
 
-test('the map view has the box\'s proportions: whole width from the newest row, dragged at pointer speed', () => {
-  const box = { clientWidth: 720, clientHeight: 460 } // not the 1000 x 460 the view starts from, so the measuring counts
-  /** MemoryMap in that box, measured as ResizeObserver reports it once mounted. */
-  const mount = (map) => {
-    let report
-    const effects = []
-    const react = fakeReact({ effects })
-    const client = loadClient({ react, globals: { ResizeObserver: class { constructor(fn) { report = fn } observe() {} disconnect() {} } } })
-    const draw = () => react.render(client.MemoryMap, { map, t, onOpen: () => {} })
-    draw()
-    for (const run of effects.splice(0)) run()
-    report?.([{ contentRect: { width: box.clientWidth, height: box.clientHeight } }])
-    const svg = () => find(draw(), (e) => e.type === 'svg')
-    return { draw, svg, viewBox: () => svg().props.viewBox.split(' ').map(Number) }
-  }
-  const big = mount({ width: 1400, height: 4420, chats: [], topics: [], edges: [] }) // 150 chats of 60 topics
-  assert.deepEqual(big.viewBox().map(Math.round), [0, 0, 1400, 894], 'the whole width from the top, as tall as the box allows (1400 x 460 / 720)')
-  // Dragging 100 px left and 50 px up moves the drawn map as far (`meet` scales by the tighter side).
-  big.svg().props.onPointerDown({ clientX: 500, clientY: 300 })
-  big.svg().props.onPointerMove({ clientX: 400, clientY: 250, currentTarget: box })
-  const [x, y, w, h] = big.viewBox()
-  const unitsPerPixel = Math.max(w / box.clientWidth, h / box.clientHeight)
-  assert.deepEqual([x / unitsPerPixel, y / unitsPerPixel].map(Math.round), [100, 50])
-  find(big.draw(), (e) => e.props?.children === '+').props.onClick()
-  const [, , zw, zh] = big.viewBox()
-  assert.ok(Math.abs(zh / zw - 460 / 720) < 1e-9, 'zooming keeps the proportions')
-  const [sx, sy, sw, sh] = mount({ width: 1400, height: 200, chats: [], topics: [], edges: [] }).viewBox()
-  assert.ok(sx <= 0 && sy <= 0 && sw >= 1400 && sh >= 200, 'one row of chats is shown whole')
+const branch = (cid, topics, extra = {}) => ({ cid, summary: `chat ${cid}`, shared: true, memory: true, total: topics.length, topics: topics.map((k, i) => [`n${i + 1}`, `topic ${cid}.${i + 1}`, k]), links: [], ...extra })
+
+/** MemoryTree drawn with state kept between renders. */
+function mountTree(data, onOpen = () => {}) {
+  const react = fakeReact()
+  const client = loadClient({ react })
+  const draw = () => react.render(client.MemoryTree, { data, t, onOpen })
+  const nodes = () => [...walk(draw())].filter((e) => e.type === 'g' && e.props.className === 'dshcg-node')
+  const node = (id) => nodes().find((g) => g.key === id)
+  return { client, draw, nodes, node, ids: () => nodes().map((g) => g.key) }
+}
+
+test('the tree draws the workspace, its chats and their topics; a chat opens and closes, a topic opens its details (#86)', () => {
+  const opened = []
+  const tree = mountTree({ key: 'a', title: 'Workspace', chats: [branch(2, ['decision', 'fact']), branch(1, ['fact'])] }, (id) => opened.push(id))
+  assert.deepEqual(tree.ids(), ['w', 'c2', 'c2n1', 'c2n2', 'c1', 'c1n1'], 'tree order: a parent before its children')
+  assert.equal([...walk(tree.draw())].filter((e) => e.type === 'path').length, 5, 'one link per node but the root')
+  tree.node('c2').props.onClick()
+  assert.deepEqual(tree.ids(), ['w', 'c2', 'c1', 'c1n1'], 'closed')
+  const count = find(tree.node('c2'), (e) => e.props?.className === 'dshcg-count')
+  assert.equal(count.props.children, '2', 'a closed chat says how many topics it holds')
+  tree.node('c2').props.onClick()
+  assert.deepEqual(tree.ids(), ['w', 'c2', 'c2n1', 'c2n2', 'c1', 'c1n1'], 'open again')
+  tree.node('c1n1').props.onClick()
+  assert.deepEqual(opened, ['c1n1'])
+  assert.equal(find(tree.node('c1n1'), (e) => e.type === 'title').props.children, 'c1n1 topic 1.1', 'the id to recall and the whole label on hover')
 })
 
-test('a chat label keeps its number and marks whole, cuts its summary to its slot in the row, and shows in full on hover', () => {
+test('the layout keeps the tidy-tree rules: a column per depth as wide as its widest node, parents centred, other parents\' children half a row further (#86)', () => {
+  const client = loadClient()
+  const data = { key: 'a', title: 'W', chats: [branch(1, ['fact', 'fact']), branch(2, ['fact']), branch(3, ['fact', 'fact', 'fact'])] }
+  const root = client.treeItems(data, t)
+  const { nodes, width, height } = client.layoutTree(root, new Set(['w', 'c1', 'c3']))
+  const at = Object.fromEntries(nodes.map((n) => [n.id, n]))
+  const rows = (a, b) => (at[b].y - at[a].y) / 30
+  assert.equal(rows('c1n1', 'c1n2'), 1, 'siblings one row apart')
+  assert.equal(rows('c1n2', 'c2'), 1.5, 'another parent\'s child half a row further')
+  assert.equal(rows('c2', 'c3n1'), 1.5)
+  assert.equal(at.c1.y, (at.c1n1.y + at.c1n2.y) / 2, 'a parent centred on its children')
+  assert.equal(at.w.y, (at.c1.y + at.c3.y) / 2)
+  for (const depth of [0, 1, 2]) assert.equal(new Set(nodes.filter((n) => n.depth === depth).map((n) => n.x)).size, 1, `one column for depth ${depth}`)
+  const widest = Math.max(...nodes.filter((n) => n.depth === 1).map((n) => n.w))
+  assert.equal(at.c1n1.x - at.c1.x, widest + 40, 'the next column starts after the widest chat')
+  assert.ok(nodes.every((n) => n.x + n.w <= width && n.y + 11 <= height && n.y - 11 >= 0), 'everything inside the drawing')
+  assert.equal(client.layoutTree(client.treeItems(data, t), new Set(['w', 'c1', 'c3'])).nodes.map((n) => [n.id, n.x, n.y]).join(), nodes.map((n) => [n.id, n.x, n.y]).join(), 'same tree, same picture')
+})
+
+test('the newest chats start open while their topics fit 40 rows, the newest at least (#86)', () => {
+  const client = loadClient()
+  const many = (n) => Array.from({ length: n }, () => 'fact')
+  const ids = (chats) => [...client.initialOpen({ chats })]
+  assert.deepEqual(ids([branch(5, many(20)), branch(4, many(15)), branch(3, many(10)), branch(2, many(1))]), ['w', 'c5', 'c4'], 'stops at the first chat that would pass 40, so the open ones stay the newest')
+  assert.deepEqual(ids([branch(9, many(120)), branch(8, many(1))]), ['w', 'c9'], 'one big chat still opens')
+})
+
+test('search opens the chats with a match and dims the other topics; a kind dims the other kinds (#86)', () => {
+  const tree = mountTree({ key: 'a', title: 'W', chats: [branch(2, many2(40)), branch(1, ['fact', 'decision'])] })
+  assert.deepEqual(tree.ids().slice(-1), ['c1'], 'c1 starts closed: c2 fills the 40 rows')
+  find(tree.draw(), (e) => e.type === 'input').props.onChange({ target: { value: 'TOPIC 1.2' } })
+  assert.ok(tree.ids().includes('c1n2'), 'its chat opened for the match')
+  assert.equal(tree.node('c1n2').props['data-match'], 'true')
+  assert.equal(tree.node('c1n1').props['data-dim'], 'true')
+  assert.equal(tree.node('c1').props['data-dim'], 'false', 'chats stay readable')
+  find(tree.draw(), (e) => e.type === 'input').props.onChange({ target: { value: '' } })
+  assert.ok(!tree.ids().includes('c1n2'), 'clearing the search leaves what was open as it was')
+  find(tree.draw(), (e) => e.type === 'button' && e.key === 'decision').props.onClick()
+  assert.equal(tree.node('c2n1').props['data-dim'], 'true')
+})
+
+function many2(n) { return Array.from({ length: n }, () => 'fact') }
+
+test('zoom scales the drawing, not the layout (#86)', () => {
+  const tree = mountTree({ key: 'a', title: 'W', chats: [branch(1, ['fact'])] })
+  const svg = () => find(tree.draw(), (e) => e.type === 'svg')
+  const [, , w, h] = svg().props.viewBox.split(' ').map(Number)
+  assert.deepEqual([svg().props.width, svg().props.height], [w, h])
+  find(tree.draw(), (e) => e.props?.children === '+').props.onClick()
+  assert.deepEqual([svg().props.width, svg().props.height], [Math.round(w * 1.25), Math.round(h * 1.25)])
+  assert.equal(svg().props.viewBox, `0 0 ${w} ${h}`)
+})
+
+test('a chat label keeps its number and marks whole, cuts its summary to its room, and shows in full on hover', () => {
   const words = { private: 'private', memoryOff: 'memory off' }
-  const chats = [
-    { cid: 12, x: 112, y: 130, r: 112, summary: 'Release checklist and the npm publish steps for v0.8', shared: false, memory: false, shown: 100, total: 100 },
-    { cid: 3, x: 280, y: 50, r: 32, summary: '设置持续集成流水线的缓存', shared: true, memory: true, shown: 1, total: 1 },
-    // Small chats: marks that do not fit in words become symbols, never cut ('c7 · memory…' would
-    // read as on) and never run into the next chat (second review).
-    { cid: 7, x: 368, y: 50, r: 32, summary: 'Release checklist', shared: true, memory: false, shown: 1, total: 1 },
-    { cid: 8, x: 472, y: 66, r: 48, summary: 'Release checklist', shared: false, memory: false, shown: 7, total: 7 }
-  ]
-  const tree = loadClient().MemoryMap({ map: { width: 1400, height: 260, chats, topics: [], edges: [] }, t: (key) => words[key] ?? `t:${key}`, onOpen: () => {} })
-  const labels = [...walk(tree)].filter((e) => e.type === 'g').map((g) => [find(g, (e) => e.type === 'text')?.props.children, find(g, (e) => e.type === 'title')?.props.children])
-  assert.deepEqual(labels, [
-    ['c12 · private · memory off · Release ch…', 'c12 · private · memory off · Release checklist and the npm publish steps for v0.8'],
-    ['c3 · 设置持…', 'c3 · 设置持续集成流水线的缓存'], // a CJK character counts as two letters
-    ['c7 · ⏸', 'c7 · memory off · Release checklist'],
-    ['c8 · 🔒⏸ · Releas…', 'c8 · private · memory off · Release checklist']
-  ])
+  const tt = (key) => words[key] ?? `t:${key}`
+  const client = loadClient()
+  const label = (c, room) => client.chatLabel(c, tt, room)
+  assert.equal(label({ cid: 12, summary: 'Release checklist and the npm publish steps for v0.8', shared: false, memory: false, shown: 100, total: 100 }, 41), 'c12 · private · memory off · Release ch…')
+  assert.equal(label({ cid: 3, summary: '设置持续集成流水线的缓存', shared: true, memory: true, shown: 1, total: 1 }, 14), 'c3 · 设置持…', 'a CJK character counts as two letters')
+  // Marks that do not fit in words become symbols, never cut ('c7 · memory…' would read as on).
+  assert.equal(label({ cid: 7, summary: 'Release checklist', shared: true, memory: false, shown: 1, total: 1 }, 14), 'c7 · ⏸')
+  assert.equal(label({ cid: 8, summary: 'Release checklist', shared: false, memory: false, shown: 7, total: 7 }, 20), 'c8 · 🔒⏸ · Releas…')
+  const tree = mountTree({ key: 'a', title: 'W', chats: [branch(12, ['fact'], { summary: 'Release checklist and the npm publish steps for v0.8, with the 2FA prompt and the tag push', shared: false })] })
+  assert.match(find(tree.node('c12'), (e) => e.type === 'title').props.children, /the tag push$/)
 })
 
 test('title follows the subcommand; line 1 is the summary; the rest opens on click', () => {
@@ -304,14 +336,14 @@ test('Plugins page metadata: icon, translated title and description, Chinese det
   for (const file of ['icon.svg', 'locale', 'src', 'README.zh.md']) assert.ok(pkg.files.includes(file), `${file} is published`)
 })
 
-test('a topic that cannot be read says so; a failed map can be asked again; Close drops a topic on its way (second review)', async () => {
+test('a topic that cannot be read says so; a failed tree can be asked again; Close drops a topic on its way (second review)', async () => {
   const { client, page, answer, fail } = await openPage([{ key: 'a', title: 'A', indexed: 1, topics: 2 }])
-  await fail('api/context-graph.map?w=a')
+  await fail('api/context-graph.tree?w=a')
   const retry = find(page(), (e) => e.type === 'button' && e.props.children === 't:retry')
-  assert.ok(retry, 'a Retry next to the map error, also with one workspace')
+  assert.ok(retry, 'a Retry next to the tree error, also with one workspace')
   retry.props.onClick()
-  await answer('api/context-graph.map?w=a', mapOf('a'))
-  const drawn = () => find(page(), (e) => e.type === client.MemoryMap)
+  await answer('api/context-graph.tree?w=a', mapOf('a'))
+  const drawn = () => find(page(), (e) => e.type === client.MemoryTree)
   drawn().props.onOpen('c1n1')
   await answer('api/context-graph.topic?w=a&id=c1n1', topicOf('c1n1'))
   drawn().props.onOpen('c1n2')
@@ -332,15 +364,10 @@ test('the page states the savings rule the code follows (second review)', () => 
   assert.doesNotMatch(dicts.zh.savingsRule, /减去/)
 })
 
-test('savings the host cannot read say so, and a big chat keeps its hidden-topic count among the symbols (third review)', () => {
-  const client = loadClient()
-  const words = { private: 'private', memoryOff: 'memory off', more: 'more not drawn', savingsUnavailable: 'unavailable' }
-  const tt = (key) => words[key] ?? `t:${key}`
-  assert.equal(client.MemoryMap === undefined, false)
-  const chats = [{ cid: 12, x: 112, y: 130, r: 112, summary: 'Release checklist and the npm publish steps for v0.8', shared: false, memory: false, shown: 120, total: 200 }]
-  const tree = client.MemoryMap({ map: { width: 1400, height: 260, chats, topics: [], edges: [] }, t: tt, onOpen: () => {} })
-  const label = find(tree, (e) => e.type === 'text')?.props.children
-  assert.match(label, /^c12 · 🔒⏸ · \+80/)
+test('a big chat keeps its hidden-topic count among the symbols (third review)', () => {
+  const words = { private: 'private', memoryOff: 'memory off', more: 'more not drawn' }
+  const c = { cid: 12, summary: 'Release checklist and the npm publish steps for v0.8', shared: false, memory: false, shown: 120, total: 200 }
+  assert.match(loadClient().chatLabel(c, (key) => words[key] ?? `t:${key}`, 41), /^c12 · 🔒⏸ · \+80/)
 })
 
 test('the page says the savings are unavailable when the host could not read them, instead of zeros (third review)', async () => {

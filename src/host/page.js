@@ -1,7 +1,8 @@
 /**
- * The plugin's page in Plugins (#35, #36): read-only routes for the client module.
+ * Read-only routes for the client module: the savings on the plugin's page in Plugins (#35) and
+ * the Memory tree page (#85, #86).
  *   GET api/context-graph.overview                 workspaces with memory: chats, topics, savings
- *   GET api/context-graph.map?w=<key>              one workspace, laid out: chats, topics, links
+ *   GET api/context-graph.tree?w=<key>             one workspace as a tree: chats, their topics, links (#86)
  *   GET api/context-graph.topic?w=<key>&id=c3n12   one topic: gist, aliases, links, its sources
  *
  * Nested plugin with `inject: ['connection']`: it starts only where dsh's connection exists, and
@@ -17,7 +18,7 @@ import { isAbsolute, join } from 'node:path'
 
 import { memoryOn, sharedOn } from '../core/chat.js'
 import { has, neighbors } from '../core/graph.js'
-import { layoutMap } from '../core/layout.js'
+import { memoryTree } from '../core/tree.js'
 import { addCounters, balance, counters, emptyCounters } from '../core/ledger.js'
 import { chatSummary } from '../core/render.js'
 import { chatDir, listChats, loadGraph } from '../store/chats.js'
@@ -46,7 +47,7 @@ export function registerPage(ctx, rt) {
     return out
   }
 
-  /** The ledger, or none for this answer while it cannot be read (a sync tool holding it): chats and the map still load. */
+  /** The ledger, or none for this answer while it cannot be read (a sync tool holding it): chats and the tree still load. */
   const ledgerOf = (dir) => loadLedger(dir).catch((error) => {
     console.error(`context-graph: page reads no savings for ${dir} (${error?.code ?? error?.message})`)
     return { v: 1, chats: {}, unreadable: true }
@@ -90,7 +91,7 @@ export function registerPage(ctx, rt) {
   }
 
   /**
-   * The chats the map draws, which are the chats the topic route opens: each needs topics and its
+   * The chats the tree draws, which are the chats the topic route opens: each needs topics and its
    * own number (a meta that could not be read has none until it is written again, and a copied
    * folder can repeat one: the first chat with topics keeps it).
    */
@@ -99,19 +100,17 @@ export function registerPage(ctx, rt) {
     return (await chatsOf(dir, options)).filter((c) => Number.isInteger(c.cid) && Object.keys(c.graph.nodes).length > 0 && !seen.has(c.cid) && seen.add(c.cid))
   }
 
-  async function map(w) {
+  async function tree(w) {
     const chats = await drawn(w.dir)
-    const layout = layoutMap(chats.map((c) => ({ cid: c.cid, lastActiveAt: c.meta.lastActiveAt, graph: c.graph })))
     const byCid = new Map(chats.map((c) => [c.cid, c]))
     return {
       key: w.key,
       title: w.title,
-      width: layout.width,
-      height: layout.height,
-      chats: layout.chats.map((spot) => {
-        const c = byCid.get(spot.cid)
+      // Labels only: gists and sources are fetched when a topic is opened.
+      chats: memoryTree(chats.map((c) => ({ cid: c.cid, lastActiveAt: c.meta.lastActiveAt, graph: c.graph }))).map((branch) => {
+        const c = byCid.get(branch.cid)
         return {
-          ...spot,
+          ...branch,
           title: c.meta.title ?? '',
           summary: chatSummary({ meta: c.meta, graph: c.graph }),
           shared: sharedOn(c.meta),
@@ -121,13 +120,7 @@ export function registerPage(ctx, rt) {
           savings: c.unreadable ? null : balance(c.c),
           used: c.c.used
         }
-      }),
-      // Labels only: gists and sources are fetched when a topic is opened.
-      topics: layout.topics.map((t) => {
-        const node = byCid.get(t.cid).graph.nodes[t.id]
-        return [t.cid, t.id, node.label, node.kind, t.x, t.y, t.degree]
-      }),
-      edges: layout.edges
+      })
     }
   }
 
@@ -181,7 +174,7 @@ export function registerPage(ctx, rt) {
     name: 'context-graph-page',
     inject: ['connection'],
     apply(pageCtx) {
-      for (const r of [route('overview'), route('map', (w) => map(w)), route('topic', (w, q) => topic(w, q.get('id')))]) {
+      for (const r of [route('overview'), route('tree', (w) => tree(w)), route('topic', (w, q) => topic(w, q.get('id')))]) {
         pageCtx.effect(function* () {
           yield pageCtx.connection.fetch.register(r)
         }, `context-graph page: ${r.path}`)
@@ -189,5 +182,5 @@ export function registerPage(ctx, rt) {
     }
   })
 
-  return { overview, map, topic, known }
+  return { overview, tree, topic, known }
 }
