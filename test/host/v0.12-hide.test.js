@@ -4,7 +4,7 @@
  *   DSH_NODE_MODULES=<dsh install>/node_modules node --import ./test/helpers/resolve-dsh.mjs --test test/host/v0.12-hide.test.js
  */
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, stat, writeFile, mkdir } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, stat, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -93,13 +93,15 @@ test('memory is deleted only for a chat dsh archived or deleted, and goes with i
   listed = ['sB'] // dsh deleted sA
   assert.equal((await call('tree', `?w=${w}`)).body.chats.find((c) => c.cid === 1).gone, true)
   assert.deepEqual((await call('forget', `?w=${w}&cid=1`, { post: true })).body, { forgotten: true })
-  assert.equal(await exists(folder), false)
+  // Only a tombstone is left (#97): no topics, no messages, every listing skips it.
+  assert.deepEqual(await readdir(folder), ['meta.json'])
+  assert.ok(JSON.parse(await readFile(join(folder, 'meta.json'), 'utf8')).forgotten)
   assert.equal(await exists(join(cwd, '.context-graph', 'ledger', 'sA.json')), false)
   assert.equal((await call('forget', `?w=${w}&cid=1`, { post: true })).status, 404, 'gone already')
   // Archived (the session menu's Archive & forget names the chat by its session).
   archived = ['sB']
   assert.deepEqual((await call('forget', '?sid=sB', { post: true })).body, { forgotten: true })
-  assert.equal(await exists(join(cwd, '.context-graph', 'chats', 'sB')), false)
+  assert.deepEqual(await readdir(join(cwd, '.context-graph', 'chats', 'sB')), ['meta.json'])
 }))
 
 test('while dsh cannot list its sessions, no chat counts as deleted (#91)', { skip }, () => inWorkspace(async (cwd) => {

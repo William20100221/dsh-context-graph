@@ -541,10 +541,11 @@ window.__ModuleLoader__.load({
         for (const c of chats) buckets.get(TYPES.includes(c.type) ? c.type : 'none').push(c)
         return order.filter((k) => buckets.get(k).length > 0).map((k) => ({ key: `g:type:${k}`, label: t(`type.${k}`), chats: buckets.get(k) }))
       }
-      if (!chats.some((c) => subjectKeyOf(c.subject))) return null
+      if (!chats.some((c) => c.subjectKey ?? subjectKeyOf(c.subject))) return null
       const groups = new Map()
       for (const c of chats) {
-        const key = subjectKeyOf(c.subject)
+        // The host's key is the one search uses (#98); this one only for an answer without it.
+        const key = c.subjectKey ?? subjectKeyOf(c.subject)
         if (!groups.has(key)) groups.set(key, { key: `g:subject:${key}`, label: key ? String(c.subject).trim() : t('unsorted'), chats: [] })
         groups.get(key).chats.push(c)
       }

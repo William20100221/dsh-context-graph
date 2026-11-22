@@ -63,5 +63,37 @@
     "title": "A subject layer above chats, searched first",
     "body": "**Problem**\nAll chats hang directly off the workspace. Several chats about one subject (Earth and space science, say) are not grouped, in the tree or in the search.\n\n**Fix**\n- Indexing names each chat's broad subject, reusing a subject the workspace already has when it fits; chats indexed before are given one in a single small call after the next build in their workspace.\n- Memory tree: workspace, subjects, chats, topics, sources.\n- Search goes through the layers: the subjects closest to the message first, then the topics of their chats; if those hold no match, the topics of every chat; if there is still none, the search stops there. When a subject matched but none of its topics did, the model gets one line naming that subject's chats, so it can `recall` one (the deepest layer was not found); with no subject and no topic, nothing is added.",
     "number": 96
+  },
+  {
+    "key": "R-4",
+    "milestone": "v0.15.0",
+    "labels": [
+      "bug",
+      "data-safety",
+      "security"
+    ],
+    "title": "Deleted memory can come back: an index in flight, the backfill, or a restored chat rewrites it",
+    "body": "**Problem** (medium)\nDelete memory and Archive & forget remove a chat's folder, but every store write creates missing folders (`writeJson` makes its directory). So:\n1. An index already running when the memory is deleted (its model call takes seconds, and Archive & forget is likely right after a turn ends) still writes the messages it read, the topics and the meta.\n2. The once-per-run backfill (#93) can write the chat's messages back if it reaches that chat while it is being deleted.\n3. A chat restored from the archive and used again has no index position left, so its next index starts at its first turn and rebuilds the memory that was deleted.\nThe confirmation promises the memory is deleted for good.\n\n**Where**: src/store/chats.js `removeChat`, src/store/messages.js `saveMessages`, src/store/chats.js `saveGraph`/`updateMeta`, src/host/builder.js.\n\n**Fix**\n- Deleting leaves a tombstone meta (`forgotten`, and the index position at the end of the chat's log), not an empty folder; every listing skips it.\n- Writes of messages, topics and meta refuse a forgotten chat, under the locks deletion takes, so a write either lands before the deletion (and is removed by it) or sees the tombstone and is dropped.\n- A restored chat that is used again is indexed from where it was forgotten, as a new chat number: only what was said after.\n\n_Found by the review of v0.12-v0.15._",
+    "number": 97
+  },
+  {
+    "key": "R-5",
+    "milestone": "v0.15.0",
+    "labels": [
+      "bug"
+    ],
+    "title": "Memory tree groups subjects by a different spelling rule than search",
+    "body": "**Problem** (low)\nSearch reads a subject by its words as matching folds them (`Earth & Space Science` and `Earth and Space Science` are one subject), but Memory tree groups chats by their lower-cased characters, so the same subject can show as two branches.\n\n**Fix**: the host sends each chat's subject key (core `subjectKey`) with the tree, and the page groups by it.\n\n_Found by the review of v0.12-v0.15._",
+    "number": 98
+  },
+  {
+    "key": "R-6",
+    "milestone": "v0.15.0",
+    "labels": [
+      "bug"
+    ],
+    "title": "Memory tree crashes when a chat's header chip opens a chat the tree does not draw",
+    "body": "**Problem** (medium)\nThe header chip appears as soon as a chat has a memory number, but the tree draws only chats with topics. Clicking the chip of a chat that has a number and no topics yet (its first index found nothing worth keeping) chooses a chat that is not in the tree: the details panel is given no chat and the whole Memory tree page fails to render.\n\n**Where**: src/client/client.js, TreePage (the jump the chip asks for, and the panel).\n\n**Fix**: the page chooses only a chat the tree has, and the panel is shown only for one; a chip of a chat without topics opens the workspace's tree with nothing chosen.\n\n_Found by the review of v0.12-v0.15._",
+    "number": 99
   }
 ]

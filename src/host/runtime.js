@@ -415,7 +415,9 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
    * Locked read-modify-write of this agent's meta; creates it (with a chat number) on first use. An
    * older meta is brought up to date before `change` sees it, so a title the change sets is kept.
    */
-  const updateFor = (agent, change) => updateMeta(dirFor(agent), sidOf(agent), (meta) => withForkPoint(agent, change(upToDate(agent, withForkPoint(agent, meta)))), () => initialMeta(agent))
+  // A forgotten chat's tombstone (#97) is changed only as asked: nothing about the deleted chat (its
+  // first prompt's fingerprint, its fork point) is written back until it is used again.
+  const updateFor = (agent, change) => updateMeta(dirFor(agent), sidOf(agent), (meta) => (meta?.forgotten ? change(meta) : withForkPoint(agent, change(upToDate(agent, withForkPoint(agent, meta))))), () => initialMeta(agent))
 
   /** Set flags such as `memoryOff` or `private`, creating the chat's meta if needed. */
   const setFlags = (agent, flags) => updateFor(agent, (meta) => ({ ...meta, ...flags, lastActiveAt: new Date().toISOString() }))

@@ -63,6 +63,8 @@ export async function storeComplete(chat) {
  */
 export function saveMessages(chat, messages, { complete = false } = {}) {
   return locked(`${chat}#msgs`, async () => {
+    // A chat whose memory was deleted (#97) gets nothing back; removeChat takes this lock too.
+    if ((await readJson(join(chat, 'meta.json')).catch(() => undefined))?.forgotten) return
     const store = (await readJson(file(chat))) ?? { v: 2, m: {} }
     if (typeof store.m !== 'object' || store.m === null) store.m = {}
     let changed = false

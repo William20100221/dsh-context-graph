@@ -27,6 +27,7 @@ import { isAbsolute, join } from 'node:path'
 
 import { hiddenOn, memoryOn, sharedOn } from '../core/chat.js'
 import { has, neighbors } from '../core/graph.js'
+import { subjectKey } from '../core/subjects.js'
 import { memoryTree } from '../core/tree.js'
 import { addCounters, balance, counters, emptyCounters } from '../core/ledger.js'
 import { chatSummary } from '../core/render.js'
@@ -147,6 +148,7 @@ export function registerPage(ctx, rt) {
           hidden: hiddenOn(c.meta),
           // What the chat is for (#94): its type, project and parts (turn ranges).
           subject: c.meta.subject,
+          subjectKey: subjectKey(c.meta.subject),
           type: c.meta.type,
           project: c.meta.project,
           parts: Array.isArray(c.meta.parts) ? c.meta.parts.map((p) => ({ turns: p.turns, type: p.type, about: p.about })) : [],
@@ -270,7 +272,18 @@ export function registerPage(ctx, rt) {
     }
     if (!w || !sid) return undefined
     if (!removable(await sessionStates(), sid)) return { status: 409, error: 'this chat still exists: hide it, or archive it first' }
-    await removeChat(w.dir, sid)
+    // The end of the chat's log: a chat restored and used again is indexed from there only (#97).
+    let builtSeq
+    const observation = await rt.observe(sid)
+    if (observation) {
+      try {
+        builtSeq = observation.events.reduce((last, event, i) => Math.max(last, Number.isInteger(event?.seq) ? event.seq : i), -1)
+      } finally {
+        observation[Symbol.dispose]?.()
+      }
+    }
+    const meta = (await listChats(w.dir)).find((c) => c.sid === sid)?.meta
+    await removeChat(w.dir, sid, { builtSeq: builtSeq ?? meta?.builtSeq })
     return { forgotten: true }
   }
 

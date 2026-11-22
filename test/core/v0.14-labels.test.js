@@ -62,12 +62,17 @@ test('among topics a message matches, those in a chat whose label it names come 
     return { sid: `s${cid}`, cid, meta: { cid, ...meta }, graph, own: false }
   }
   const views = [
-    view(1, { type: 'planning' }, 'cache settings for the build', 'the ci cache keeps node_modules for a week'),
+    view(1, { type: 'planning' }, 'cache settings for the build', 'the ci cache keeps node_modules and artifacts for a week'),
     view(2, { type: 'debugging' }, 'cache settings for the build', 'the ci cache kept stale node_modules, cleared on lockfile change'),
     view(3, { type: 'debugging' }, 'homework reminders', 'a weekly reminder for the physics homework')
   ]
-  const ids = (q) => matchAcross(views, q, { collapse: false }).hits.map((h) => h.id)
+  const ids = (q, max) => matchAcross(views, q, { collapse: false, ...(max ? { max } : {}) }).hits.map((h) => h.id)
   assert.equal(ids('the cache settings bug we fixed')[0], 'c2n1', 'the bug fixing chat first')
+  // The planning chat's topic has more evidence (its gist holds "artifacts" too); the bug fixing one
+  // still comes first, in the one slot there is and in the order of two.
+  const message = 'the cache settings bug we fixed for the artifacts'
+  assert.deepEqual(ids(message, 1), ['c2n1'], 'the slot goes to the chat the message names')
+  assert.deepEqual(ids(message, 2), ['c2n1', 'c1n1'], 'and it comes first when both are sent')
   assert.equal(ids('the cache settings plan')[0], 'c1n1', 'the planning chat first')
   assert.ok(!ids('the cache settings bug we fixed').includes('c3n1'), 'the label alone matches nothing')
 })

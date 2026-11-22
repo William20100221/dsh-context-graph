@@ -55,7 +55,16 @@ export async function loadGraph(chat, { writable = false } = {}) {
   return graph ?? emptyGraph()
 }
 
-export const saveGraph = (chat, graph) => locked(chat, () => writeJson(join(chat, TOPICS), graph))
+/** Whether a chat's memory was deleted (#97): its meta is the tombstone removeChat leaves. */
+export async function forgottenChat(chat) {
+  return Boolean((await readJson(join(chat, 'meta.json')).catch(() => undefined))?.forgotten)
+}
+
+/** Under the chat's lock, which removeChat takes too: a write after a deletion is dropped (#97). */
+export const saveGraph = (chat, graph) => locked(chat, async () => {
+  if (await forgottenChat(chat)) return
+  await writeJson(join(chat, TOPICS), graph)
+})
 
 /**
  * A chat's meta (read-only). One that exists but cannot be read, or is gone while a set-aside copy
@@ -155,23 +164,29 @@ export function updateMeta(dir, sid, change = (meta) => meta, init = () => ({}))
       if (!Number.isInteger(meta.cid)) meta.cid = await claimCid(dir)
     }
     const next = change({ ...meta }) ?? meta
+    // A chat used again after its memory was deleted comes back as a new chat number (#97).
+    if (!next.forgotten && !Number.isInteger(next.cid)) next.cid = await claimCid(dir)
     await writeJson(file, next)
     return next
   })
 }
 
 /**
- * A chat's memory removed for good (#91): its folder and its savings file. Under the chat's lock, so
- * a meta write in flight finishes first. Callers pass a sid read from the chats folder, never one
- * taken from a request.
- * ponytail: a build already running for that chat can still write after this; callers only remove
- * chats dsh archived or deleted, which start no new builds.
+ * A chat's memory removed for good (#91): its folder and its savings file, leaving a tombstone meta
+ * (#97): `forgotten`, and `builtSeq`, the end of the chat's log when it was deleted. Every listing
+ * skips it; writes of its messages, topics or index position refuse it (they take the locks this
+ * takes), so an index in flight or the backfill cannot bring it back; a chat restored and used again
+ * is indexed from there only, as a new chat number. Callers pass a sid read from the chats folder,
+ * never one taken from a request.
+ * ponytail: a turn ending in that chat afterwards can still add its savings counters (no text).
  */
-export function removeChat(dir, sid) {
-  return locked(chatDir(dir, sid), async () => {
-    await rm(chatDir(dir, sid), { recursive: true, force: true, maxRetries: 10 })
+export function removeChat(dir, sid, { builtSeq } = {}) {
+  const chat = chatDir(dir, sid)
+  return locked(chat, () => locked(`${chat}#msgs`, async () => {
+    await rm(chat, { recursive: true, force: true, maxRetries: 10 })
     await rm(join(dir, 'ledger', `${sid}.json`), { force: true, maxRetries: 10 })
-  })
+    await writeJson(join(chat, 'meta.json'), { forgotten: new Date().toISOString(), ...(Number.isInteger(builtSeq) ? { builtSeq } : {}) })
+  }))
 }
 
 /** Every chat folder with a readable meta.json, unsorted. Folders starting with '.' are bookkeeping. */
@@ -186,7 +201,8 @@ async function readChats(dir) {
       return undefined
     })
   })))
-  return metas.filter((c) => c.meta && typeof c.meta === 'object')
+  // A forgotten chat's tombstone (#97) is no chat.
+  return metas.filter((c) => c.meta && typeof c.meta === 'object' && !c.meta.forgotten)
 }
 
 const migrations = new Map()

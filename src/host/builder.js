@@ -157,8 +157,10 @@ export function registerBuilder(ctx, rt, meter, { sort = true } = {}) {
       const target = rt.resolveTarget(agent)
       if (!target) return { status: 'unavailable', reason: 'no provider/model routed yet' }
       // A chat gets its folder and chat number only when it is first indexed (#38); a fork has its
-      // meta, with its inherited flags, from the moment it is first seen (runtime.js).
+      // meta, with its inherited flags, from the moment it is first seen (runtime.js). A chat used
+      // again after its memory was deleted comes back as a new chat, from where it was forgotten (#97).
       if (!meta) meta = await rt.updateFor(agent, (m) => m)
+      else if (meta.forgotten) meta = await rt.updateFor(agent, ({ forgotten, ...rest }) => rest)
       const chat = chatDir(rt.dirFor(agent), sid)
       const graph = await loadGraph(chat, { writable: true })
       // The indexing call's usage is this chat's cost in the savings estimate (meter.js).
@@ -228,6 +230,8 @@ export function registerBuilder(ctx, rt, meter, { sort = true } = {}) {
       // The chat's labels (#94): parts are kept as seq ranges (to meet a topic's sources) and turns (to show).
       const parts = (delta.parts ?? []).filter((p) => read[p.msgs[0]] && read[p.msgs[1]]).map((p) => ({ from: read[p.msgs[0]].seq, to: read[p.msgs[1]].seq, turns: [read[p.msgs[0]].turn, read[p.msgs[1]].turn], type: p.type, about: p.about }))
       await rt.updateFor(agent, (latest) => {
+        // Deleted while this index ran (#97): nothing of it lands.
+        if (latest.forgotten) return latest
         return {
           ...latest,
           // dsh's own title (model-made or the user's rename) once there is one (#41). A meta whose
