@@ -107,7 +107,8 @@ window.__ModuleLoader__.load({
       'type.question': 'Quick question',
       'type.chat': 'Everyday chat',
       'type.none': 'Not labelled yet',
-      parts: 'Parts of this chat'
+      parts: 'Parts of this chat',
+      byLabel: 'Sort by label'
     }
     const zh = {
       stats: '上下文图谱',
@@ -195,7 +196,8 @@ window.__ModuleLoader__.load({
       'type.question': '快速提问',
       'type.chat': '日常聊天',
       'type.none': '尚未标注',
-      parts: '对话的几个部分'
+      parts: '对话的几个部分',
+      byLabel: '按标签排序'
     }
     const KINDS = ['decision', 'fact', 'task', 'artifact', 'open-question']
     const COLORS = { decision: '#4A65E8', fact: '#2BA471', task: '#E5973C', artifact: '#8E5BE8', 'open-question': '#E5484D' }
@@ -235,7 +237,9 @@ window.__ModuleLoader__.load({
       '.dshcg-count{font-size:11px;fill:var(--dsw-alias-label-secondary)}',
       '.dshcg-node[data-dim="true"],.dshcg-link[data-dim="true"]{opacity:.18}',
       // #91: the Hidden branch and what is in it are greyed; deleting asks first, in the panel.
-      '.dshcg-node[data-kind="group"] .dshcg-label{font-style:italic;fill:var(--dsw-alias-label-secondary)}',
+      '.dshcg-node[data-group="hidden"] .dshcg-label{font-style:italic;fill:var(--dsw-alias-label-secondary)}',
+      '.dshcg-node[data-group="set"] .dshcg-label{font-weight:500}',
+      '.dshcg-spacer{flex:1}',
       '.dshcg-node[data-hidden="true"]{opacity:.55}',
       '.dshcg-btn-danger{color:var(--dsw-alias-state-error-primary,#E5484D)}',
       // #92: the header chip sits beside dsh's own preset label; the fallback dialog opts into pointer
@@ -515,7 +519,36 @@ window.__ModuleLoader__.load({
      * read so far. `details` maps a topic id to its answer, `{ loading: true }` or `{ error: true }`;
      * a topic not read yet has no children, a loading one shows …, a failed one !.
      */
-    function treeItems(data, t, details = {}) {
+    /** Chat types in the order a tree grouped by label lists them (core/labels.js CHAT_TYPES). */
+    const TYPES = ['coding', 'debugging', 'research', 'study', 'writing', 'planning', 'setup', 'data', 'creative', 'language', 'question', 'chat']
+
+    /**
+     * How a tree groups the chats under its workspace (#95): `by` 'label' groups them by type, chats
+     * not labelled yet last; anything else leaves them ungrouped, newest first.
+     * @returns [{ key, label, chats }] or null
+     */
+    function groupsOf(chats, by, t) {
+      if (by !== 'label') return null
+      const order = [...TYPES, 'none']
+      const buckets = new Map(order.map((k) => [k, []]))
+      for (const c of chats) buckets.get(TYPES.includes(c.type) ? c.type : 'none').push(c)
+      return order.filter((k) => buckets.get(k).length > 0).map((k) => ({ key: `g:type:${k}`, label: t(`type.${k}`), chats: buckets.get(k) }))
+    }
+
+    /** Each node's parent, by id: what a search or a choice opens to show a node. */
+    function parentsOf(root) {
+      const parents = new Map()
+      const walk = (item) => {
+        for (const child of item.children ?? []) {
+          parents.set(child.id, item.id)
+          walk(child)
+        }
+      }
+      walk(root)
+      return parents
+    }
+
+    function treeItems(data, t, details = {}, by = null) {
       const topic = (cid, [id, label, kind], links) => {
         const tid = `c${cid}${id}`
         const detail = details[tid]
@@ -541,25 +574,29 @@ window.__ModuleLoader__.load({
           children: c.topics.map((entry) => topic(c.cid, entry, c.links ?? []))
         }
       }
-      // Hidden chats (#91) hang from a branch of their own, closed at first.
+      // Hidden chats (#91) hang from a branch of their own, closed at first, never grouped.
       const hidden = data.chats.filter((c) => c.hidden)
+      const visible = data.chats.filter((c) => !c.hidden)
+      const groups = groupsOf(visible, by, t)
       return {
         id: 'w',
         kind: 'workspace',
         label: data.title,
         children: [
-          ...data.chats.filter((c) => !c.hidden).map(chatItem),
+          ...(groups ? groups.map((g) => ({ id: g.key, kind: 'group', label: `${g.label} (${g.chats.length})`, full: g.label, children: g.chats.map(chatItem) })) : visible.map(chatItem)),
           ...(hidden.length ? [{ id: 'hidden', kind: 'group', label: `${t('hiddenGroup')} (${hidden.length})`, full: t('hiddenGroupHint'), children: hidden.map(chatItem) }] : [])
         ]
       }
     }
 
     /** Ids open at first: the workspace and the newest chats, while their topics fit OPEN_ROWS (one at least). */
-    function initialOpen(data) {
-      const open = new Set(['w'])
+    function initialOpen(data, by = null) {
+      // Every group starts open (they are few); the newest chats open as before (#95).
+      const open = new Set(['w', ...(groupsOf(data.chats.filter((x) => !x.hidden), by, (k) => k) ?? []).map((g) => g.key)])
+      const groups = open.size - 1
       let rows = 0
       for (const c of data.chats.filter((x) => !x.hidden)) {
-        if (open.size > 1 && rows + c.topics.length > OPEN_ROWS) break
+        if (open.size > 1 + groups && rows + c.topics.length > OPEN_ROWS) break
         open.add(`c${c.cid}`)
         rows += c.topics.length
       }
@@ -688,7 +725,7 @@ window.__ModuleLoader__.load({
     }
 
     /** Search, kind filter and zoom, above the tree and its panel. */
-    function TreeTools({ t, query, kind, onQuery, onKind, onScale }) {
+    function TreeTools({ t, query, kind, by = null, onQuery, onKind, onScale, onGroup = () => {} }) {
       return jsxs('div', {
         className: 'dshcg-row',
         children: [
@@ -697,7 +734,10 @@ window.__ModuleLoader__.load({
           ...KINDS.map((k) => jsxs('button', { type: 'button', className: 'dshcg-btn', 'aria-pressed': kind === k ? 'true' : 'false', onClick: () => onKind(kind === k ? '' : k), children: [jsx('span', { className: 'dshcg-dot', style: { background: COLORS[k] } }), t(k)] }, k)),
           jsx('button', { type: 'button', className: 'dshcg-btn', 'aria-label': t('zoomOut'), onClick: () => onScale((s) => Math.max(0.5, s / 1.25)), children: '−' }),
           jsx('button', { type: 'button', className: 'dshcg-btn', 'aria-label': t('zoomIn'), onClick: () => onScale((s) => Math.min(2, s * 1.25)), children: '+' }),
-          jsx('button', { type: 'button', className: 'dshcg-btn', onClick: () => onScale(1), children: t('resetView') })
+          jsx('button', { type: 'button', className: 'dshcg-btn', onClick: () => onScale(1), children: t('resetView') }),
+          // #95: at the right end, above the details; a second click goes back.
+          jsx('span', { className: 'dshcg-spacer' }),
+          jsx('button', { type: 'button', className: 'dshcg-btn', 'aria-pressed': by === 'label' ? 'true' : 'false', onClick: () => onGroup(by === 'label' ? null : 'label'), children: t('byLabel') })
         ]
       })
     }
@@ -706,27 +746,37 @@ window.__ModuleLoader__.load({
      * The tree: a click opens or closes a branch and shows its details beside the tree (a chat's, or a
      * topic's, which also brings its messages in as its children, #87); search and kinds dim the rest.
      */
-    function MemoryTree({ data, t, query = '', kind = '', scale = 1, details = {}, selected = null, onOpen, onChat = () => {} }) {
-      const [open, setOpen] = useState(initialOpen(data))
+    function MemoryTree({ data, t, query = '', kind = '', scale = 1, by = null, details = {}, selected = null, onOpen, onChat = () => {} }) {
+      const [open, setOpen] = useState(initialOpen(data, by))
       const [hover, setHover] = useState(null) // the node under the pointer
       const [focused, setFocused] = useState(null) // the node with keyboard focus
       const [active, setActive] = useState('w') // the tree's one tab stop
       const els = React.useRef(new Map())
       // A topic chosen while its chat is closed (a linked topic opened from the panel) opens that chat
       // once, so the selection is drawn; the chat can be closed again as any other (#89).
-      // A chat chosen from its header chip (#92) may be in the closed Hidden branch: that opens too.
-      const pickedChat = selected?.topic ? /^c(\d+)n/.exec(selected.topic)?.[1] : selected?.chat
-      const picked = data.chats.find((c) => String(c.cid) === String(pickedChat ?? ''))
-      const reveal = [selected?.topic && picked ? `c${picked.cid}` : undefined, picked?.hidden ? 'hidden' : undefined].filter(Boolean)
+      const root = treeItems(data, t, details, by)
+      const parents = parentsOf(root)
+      const ancestors = (id) => {
+        const out = []
+        for (let up = parents.get(id); up; up = parents.get(up)) out.push(up)
+        return out
+      }
+      // A chosen chat or topic is drawn: its chat, group and the Hidden branch open once (#89, #92, #95).
+      const reveal = selected?.topic ? ancestors(selected.topic) : selected?.chat !== undefined ? ancestors(`c${selected.chat}`) : []
       React.useEffect(() => {
         if (reveal.length) setOpen((was) => (reveal.every((id) => was.has(id)) ? was : new Set([...was, ...reveal])))
       }, [selected?.topic, selected?.chat])
       const q = query.trim().toLowerCase()
-      const root = treeItems(data, t, details)
       const hit = (item) => item.kind === 'topic' && q !== '' && item.full.toLowerCase().includes(q)
-      // A search opens every chat with a match, without changing what is open once it is cleared.
+      // A search opens every chat (and group) with a match, without changing what is open once it is cleared.
       const shown = new Set(open)
-      if (q) for (const chat of root.children) if (chat.children.some(hit)) shown.add(chat.id)
+      if (q) {
+        const visit = (item) => {
+          if (hit(item)) for (const up of ancestors(item.id)) shown.add(up)
+          for (const child of item.children ?? []) visit(child)
+        }
+        visit(root)
+      }
       const layout = layoutTree(root, shown)
       // Closes what is shown open (a chat opened by the search stays open until the search is cleared).
       const toggle = (id) => setOpen((was) => {
@@ -799,6 +849,7 @@ window.__ModuleLoader__.load({
                 'aria-selected': chosen(n.item) ? 'true' : 'false',
                 tabIndex: n.id === stop ? 0 : -1,
                 'data-kind': n.item.kind,
+                'data-group': n.item.kind === 'group' ? (n.id === 'hidden' ? 'hidden' : 'set') : undefined,
                 'data-hidden': n.item.chat?.hidden ? 'true' : undefined,
                 'data-family': kin(n.id),
                 'data-dim': dim(n.item) ? 'true' : 'false',
@@ -965,6 +1016,18 @@ window.__ModuleLoader__.load({
       })
     }
 
+    // The tree's grouping, kept in the app's local storage so it outlives a restart (#95).
+    const GROUP_KEY = 'dsh-context-graph:tree-group'
+    function readGroup() {
+      try { return globalThis.localStorage?.getItem(GROUP_KEY) || null } catch { return null }
+    }
+    function saveGroup(value) {
+      try {
+        if (value) globalThis.localStorage?.setItem(GROUP_KEY, value)
+        else globalThis.localStorage?.removeItem(GROUP_KEY)
+      } catch { /* storage refused (a private window): the choice lasts this visit */ }
+    }
+
     /** Memory tree, the page the sidebar entry opens in the main column (#85). */
     function TreePage(props) {
       const t = translator(props.t)
@@ -975,6 +1038,11 @@ window.__ModuleLoader__.load({
       const [query, setQuery] = useState('')
       const [kind, setKind] = useState('')
       const [scale, setScale] = useState(1)
+      const [by, setBy] = useState(readGroup())
+      const group = (next) => {
+        setBy(next)
+        saveGroup(next)
+      }
       // Each workspace shown is a new generation: an answer asked in an older one is dropped, so a
       // late tree or topic cannot land in the workspace chosen since.
       const generation = React.useRef(0)
@@ -1041,10 +1109,11 @@ window.__ModuleLoader__.load({
               : jsxs('div', {
                 className: 'dshcg-page',
                 children: [
-                  jsx(TreeTools, { t, query, kind, onQuery: setQuery, onKind: setKind, onScale: setScale }),
+                  jsx(TreeTools, { t, query, kind, by, onQuery: setQuery, onKind: setKind, onScale: setScale, onGroup: group }),
                   jsxs('div', {
                     className: panel ? 'dshcg-split' : undefined,
-                    children: [jsx(MemoryTree, { data: map, t, query, kind, scale, details, selected, onOpen: open, onChat: (cid) => setSelected({ chat: cid }) }, map.key), panel]
+                    // A new grouping is a new tree: it opens as a fresh one would.
+                    children: [jsx(MemoryTree, { data: map, t, query, kind, scale, by, details, selected, onOpen: open, onChat: (cid) => setSelected({ chat: cid }) }, `${map.key}:${by ?? ''}`), panel]
                   })
                 ]
               })
@@ -1275,6 +1344,7 @@ window.__ModuleLoader__.load({
     exports.layoutTree = layoutTree
     exports.treeItems = treeItems
     exports.initialOpen = initialOpen
+    exports.groupsOf = groupsOf
     exports.chatLabel = chatLabel
     exports.TopicPanel = TopicPanel
     exports.ChatPanel = ChatPanel

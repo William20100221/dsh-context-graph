@@ -848,3 +848,69 @@ test('a chat\'s panel shows its type, project and parts (#94)', () => {
   assert.match(text, /t4–t6 · t:type\.debugging"/)
   assert.match(JSON.stringify(client.ChatPanel({ chat: { cid: 5, total: 1, shared: true, memory: true }, t, onClose() {} })), /t:type\.none/, 'a chat indexed before labels says so')
 })
+
+// ---- v0.14.0: sort by label, remembered (#95) ----------------------------------------------------
+
+test('sorted by label, chats hang from one open group per type, unlabelled last, hidden chats apart (#95)', () => {
+  const data = { key: 'a', title: 'W', chats: [branch(4, ['fact'], { type: 'study' }), branch(3, ['fact'], { type: 'coding' }), branch(2, ['fact']), branch(1, ['fact'], { type: 'study', hidden: true })] }
+  const tree = mountTree(data, () => {}, { by: 'label' })
+  assert.deepEqual(tree.ids(), ['w', 'g:type:coding', 'c3', 'c3n1', 'g:type:study', 'c4', 'c4n1', 'g:type:none', 'c2', 'c2n1', 'hidden'])
+  assert.equal(find(tree.node('g:type:study'), (e) => e.props?.className === 'dshcg-label').props.children, 't:type.study (1)')
+  assert.equal(tree.node('g:type:study').props['data-group'], 'set')
+  assert.equal(tree.node('hidden').props['data-group'], 'hidden')
+  assert.deepEqual(mountTree(data).ids().slice(0, 4), ['w', 'c4', 'c4n1', 'c3'], 'not sorted: no groups')
+})
+
+test('sorted by label, a search or a choice opens the group and the chat it needs (#95)', () => {
+  const chats = [branch(9, many2(40), { type: 'coding' }), branch(8, ['fact', 'decision'], { type: 'study' })]
+  const more = { by: 'label' }
+  const tree = mountTree({ key: 'a', title: 'W', chats }, () => {}, more)
+  tree.node('g:type:study').props.onClick() // the user closes the group
+  assert.ok(!tree.ids().includes('c8'))
+  more.query = 'topic 8.2'
+  assert.ok(tree.ids().includes('c8n2'), 'the group and the chat open for the match')
+  more.query = ''
+  more.selected = { topic: 'c8n1' }
+  tree.settle()
+  assert.ok(tree.ids().includes('c8n1'), 'a chosen topic opens its group too')
+})
+
+test('the toolbar toggle sorts by label and back, and the page remembers it across a restart (#95)', async () => {
+  const client = loadClient()
+  const calls = []
+  const bar = (by) => client.TreeTools({ t, query: '', kind: '', by, onQuery() {}, onKind() {}, onScale() {}, onGroup: (v) => calls.push(v) })
+  const toggle = (tree) => find(tree, (e) => e.type === 'button' && e.props.children === 't:byLabel')
+  assert.equal(toggle(bar(null)).props['aria-pressed'], 'false')
+  toggle(bar(null)).props.onClick()
+  toggle(bar('label')).props.onClick()
+  assert.deepEqual(calls, ['label', null], 'a second click goes back')
+  assert.equal(bar(null).props.children.at(-2).props.className, 'dshcg-spacer', 'at the right end of the toolbar')
+  // The page keeps the choice in local storage: a new page (after a restart) starts with it.
+  const storage = new Map()
+  const localStorage = { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, String(v)), removeItem: (k) => storage.delete(k) }
+  const open = async () => {
+    const effects = []
+    const react = fakeReact({ effects })
+    const own = loadClient({ react, globals: { localStorage }, fetch: async (url) => ({ ok: true, json: async () => (url.includes('overview') ? { workspaces: [{ key: 'a', title: 'A', indexed: 1, topics: 1 }] } : { key: 'a', title: 'A', chats: [branch(1, ['fact'], { type: 'coding' })] }) }) })
+    const page = () => react.render(own.TreePage, { t })
+    page()
+    for (const run of effects.splice(0)) run()
+    await settle()
+    await settle()
+    return { own, page }
+  }
+  const first = await open()
+  find(first.page(), (e) => e.type === first.own.TreeTools).props.onGroup('label')
+  assert.equal(storage.get('dsh-context-graph:tree-group'), 'label')
+  assert.equal(find(first.page(), (e) => e.type === first.own.MemoryTree).props.by, 'label')
+  const again = await open()
+  assert.equal(find(again.page(), (e) => e.type === again.own.MemoryTree).props.by, 'label', 'remembered')
+  find(again.page(), (e) => e.type === again.own.TreeTools).props.onGroup(null)
+  assert.equal(storage.has('dsh-context-graph:tree-group'), false)
+  // Storage that refuses (a private window) costs nothing but the memory of the choice.
+  const refusing = { getItem() { throw new Error('denied') }, setItem() { throw new Error('denied') }, removeItem() {} }
+  const effects = []
+  const react = fakeReact({ effects })
+  const own = loadClient({ react, globals: { localStorage: refusing }, fetch: async () => new Promise(() => {}) })
+  assert.doesNotThrow(() => react.render(own.TreePage, { t }))
+})
