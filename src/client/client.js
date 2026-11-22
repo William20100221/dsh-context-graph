@@ -42,10 +42,11 @@ window.__ModuleLoader__.load({
       noWorkspaces: 'No memory yet. Chats index themselves every 4 turns; /context-graph build indexes one now.',
       chats: 'chats',
       topics: 'topics',
-      saved: 'Saved (estimate)',
-      cost: 'Memory cost',
-      net: 'Net',
-      savingsRule: 'Saved: for each topic the model used (it recalled it, or its answer says two of the topic\'s words your message did not), its newest messages as stored, each counted once per chat. Cost: notes and recalls sent, their cached re-sends (x0.1), the recall tool, and indexing (output x4). In input tokens.',
+      saved: 'Old total (estimate)',
+      making: 'Memory making',
+      searching: 'Searching',
+      net: 'Saved',
+      savingsRule: 'Saved = old total - memory making - searching, in input tokens. Old total: for each earlier chat whose memory a chat used (it recalled a topic, or its answer says two of a topic\'s words your message did not), that chat\'s whole kept conversation, the history that would otherwise have been input; once per chat that used it. Memory making: the indexing calls (cached input x0.1, output x4). Searching: the notes and recalls sent, their cached re-sends (x0.1), and the recall tool (x0.1).',
       topicFailed: 'Could not read this topic.',
       savingsUnavailable: 'Savings: unavailable for now (the ledger could not be read).',
       search: 'Search topics',
@@ -132,10 +133,11 @@ window.__ModuleLoader__.load({
       noWorkspaces: '还没有记忆。对话每 4 轮会自动索引；/context-graph build 可以立即索引当前对话。',
       chats: '个对话',
       topics: '个主题',
-      saved: '节省（估算）',
-      cost: '记忆开销',
-      net: '净值',
-      savingsRule: '节省：模型用到的每个主题（被取回，或回答里出现了它的两个词而你的消息里没有）最新的几条消息，按保存的长度计，同一条消息在一个对话里只算一次。开销：发送的笔记和取回内容、它们作为缓存再次发送的部分（×0.1）、recall 工具、以及索引（输出 ×4）。单位为输入 token。',
+      saved: '原本的总量（估算）',
+      making: '生成记忆',
+      searching: '搜索',
+      net: '节省',
+      savingsRule: '节省 = 原本的总量 − 生成记忆 − 搜索，单位为输入 token。原本的总量：一个对话用到了哪些之前对话的记忆（取回了主题，或回答里出现了主题的两个词而你的消息里没有），就算上那些对话保存的完整对话内容，也就是本来要作为输入的历史；每个使用它的对话只算一次。生成记忆：索引调用（缓存输入 ×0.1，输出 ×4）。搜索：发送的笔记和取回内容、它们作为缓存再次发送的部分（×0.1），以及 recall 工具（×0.1）。',
       topicFailed: '无法读取这个主题。',
       savingsUnavailable: '节省：暂时无法读取（账本文件读不到）。',
       search: '搜索主题',
@@ -421,8 +423,10 @@ window.__ModuleLoader__.load({
       return jsxs('div', {
         className: 'dshcg-cards',
         children: [
-          jsxs('div', { className: 'dshcg-card', children: [jsx('div', { className: 'dshcg-muted', children: t('saved') }), jsx('div', { className: 'dshcg-big', children: number(s?.saved) })] }),
-          jsxs('div', { className: 'dshcg-card', children: [jsx('div', { className: 'dshcg-muted', children: t('cost') }), jsx('div', { className: 'dshcg-big', children: number(s?.cost) })] }),
+          // #104: saved = old total - memory making - searching, each term on its own card.
+          jsxs('div', { className: 'dshcg-card', children: [jsx('div', { className: 'dshcg-muted', children: t('saved') }), jsx('div', { className: 'dshcg-big', children: number(s?.history) })] }),
+          jsxs('div', { className: 'dshcg-card', children: [jsx('div', { className: 'dshcg-muted', children: t('making') }), jsx('div', { className: 'dshcg-big', children: number(s?.making) })] }),
+          jsxs('div', { className: 'dshcg-card', children: [jsx('div', { className: 'dshcg-muted', children: t('searching') }), jsx('div', { className: 'dshcg-big', children: number(s?.searching) })] }),
           jsxs('div', { className: 'dshcg-card', children: [jsx('div', { className: 'dshcg-muted', children: t('net') }), jsx('div', { className: `dshcg-big ${net >= 0 ? 'dshcg-good' : 'dshcg-bad'}`, children: `${net >= 0 ? '+' : '−'}${number(Math.abs(net))}` })] })
         ]
       })
@@ -1010,7 +1014,7 @@ window.__ModuleLoader__.load({
           jsx('div', { className: 'dshcg-muted', children: `${chat.total} ${t('topics')} · ${day(chat.startedAt)} – ${day(chat.lastActiveAt)}` }),
           s === null || s === undefined
             ? jsx('div', { className: 'dshcg-muted', children: t('savingsUnavailable') })
-            : jsx('div', { children: `${t('saved')} ${number(s.saved)} · ${t('cost')} ${number(s.cost)} · ${t('net')} ${s.net >= 0 ? '+' : '−'}${number(Math.abs(s.net))}` }),
+            : jsx('div', { children: `${t('saved')} ${number(s.history)} − ${t('making')} ${number(s.making)} − ${t('searching')} ${number(s.searching)} = ${t('net')} ${s.net >= 0 ? '+' : '−'}${number(Math.abs(s.net))}` }),
           chat.hidden ? jsx('div', { className: 'dshcg-muted', children: t('hiddenHint') }) : null,
           chat.gone ? jsx('div', { className: 'dshcg-muted', children: t('goneHint') }) : chat.archived ? jsx('div', { className: 'dshcg-muted', children: t('archivedHint') }) : null,
           jsxs('div', {

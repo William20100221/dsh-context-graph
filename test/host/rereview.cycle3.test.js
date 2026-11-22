@@ -153,7 +153,7 @@ test('a turn\'s uses survive a failed index and an unreadable ledger: credited a
   h.listeners['agent/turn-stopping']({ agent: b })
   const entry = await until(async () => (await ledgerOf(cwd).catch(() => undefined))?.chats?.sB)
   assert.equal(entry.c.used, 1, 'the first turn\'s use')
-  assert.ok(entry.c.stoodIn > 0)
+  assert.ok(entry.c.history > 0, 'the history of the chat it drew on (#104)')
 }))
 
 test('a subagent forked from a chat is charged to it: the blocks it carries and the recall tool (second review of #35)', { skip }, () => inWorkspace(async (cwd) => {

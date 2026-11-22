@@ -427,21 +427,21 @@ test('a topic on its way shows …, one that failed shows !, a chosen node is ma
 test('a chat\'s panel shows its marks, dates and savings, or says the savings cannot be read (#87)', () => {
   const client = loadClient()
   const text = (panel) => JSON.stringify(panel)
-  const chat = { cid: 4, title: 'NZQA research', summary: 'Earth and Space Science', shared: false, memory: true, total: 9, startedAt: '2026-11-01T00:00:00Z', lastActiveAt: '2026-11-20T00:00:00Z', savings: { saved: 2590, cost: 6838, net: -4248 } }
+  const chat = { cid: 4, title: 'NZQA research', summary: 'Earth and Space Science', shared: false, memory: true, total: 9, startedAt: '2026-11-01T00:00:00Z', lastActiveAt: '2026-11-20T00:00:00Z', savings: { history: 2590, making: 4800, searching: 2038, saved: 2590, cost: 6838, net: -4248 } }
   const shown = text(client.ChatPanel({ chat, t, onClose: () => {} }))
   assert.match(shown, /t:private/)
   assert.doesNotMatch(shown, /t:memoryOff/)
   assert.match(shown, /9 t:topics/)
-  assert.match(shown, /t:saved 2,590 · t:cost 6,838 · t:net −4,248/)
+  assert.match(shown, /t:saved 2,590 − t:making 4,800 − t:searching 2,038 = t:net −4,248/, 'old total - making - searching = saved (#104)')
   assert.match(text(client.ChatPanel({ chat: { ...chat, savings: null }, t, onClose: () => {} })), /t:savingsUnavailable/)
 })
 
 test('the page states the savings rule the code follows (second review)', () => {
   const dicts = {}
   loadClient().apply({ effect: (fn) => fn(), locale: { register: (ns, dict) => Object.assign(dicts, dict) }, slots: { inject: (name, fn) => fn(), register: () => {} } })
-  assert.doesNotMatch(dicts.en.savingsRule, /minus/)
-  assert.match(dicts.en.savingsRule, /newest messages as stored, each counted once per chat/)
-  assert.doesNotMatch(dicts.zh.savingsRule, /减去/)
+  // #104: the old total (the history of the earlier chats used) minus making and searching.
+  assert.match(dicts.en.savingsRule, /^Saved = old total - memory making - searching, in input tokens. Old total: [^.]*whole kept conversation/)
+  assert.match(dicts.zh.savingsRule, /^节省 = 原本的总量 − 生成记忆 − 搜索/)
 })
 
 test('a big chat keeps its hidden-topic count among the symbols (third review)', () => {
@@ -975,4 +975,12 @@ test('a chip asking for a chat the tree does not draw opens the tree with nothin
   // A chat chosen, then gone from the tree (its memory deleted elsewhere): no panel, no failure.
   find(page(), (e) => e.type === client.MemoryTree).props.onChat(9)
   assert.equal(find(page(), (e) => e.type === client.ChatPanel), undefined)
+})
+
+test('the plugin page shows saved = old total - memory making - searching, each on a card (#104)', async () => {
+  const savings = { history: 12000, making: 3000, searching: 1500, saved: 12000, cost: 4500, net: 7500 }
+  const { page } = await openPage([{ key: 'a', title: 'A', indexed: 1, topics: 1, savings }], 'SavingsPage')
+  const element = find(page(), (e) => e.type?.name === 'Savings')
+  const cards = element.type(element.props).props.children.map((card) => card.props.children.map((part) => part.props.children))
+  assert.deepEqual(JSON.parse(JSON.stringify(cards)), [['t:saved', '12,000'], ['t:making', '3,000'], ['t:searching', '1,500'], ['t:net', '+7,500']])
 })

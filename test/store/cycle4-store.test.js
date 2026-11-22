@@ -28,24 +28,27 @@ test('#83 #78 a turn end writes only its own chat\'s small file; 0.9.0\'s ledger
   await writeFile(join(dir, 'ledger.json'), old, 'utf8')
   const before = await workspaceTotal(dir)
   assert.equal(before.tool, 50, 'a workspace 0.9.0 left keeps its total')
-  assert.deepEqual((await chatEntry(dir, 'sA')).msgs, ['1:2', '1:4'])
+  assert.deepEqual((await chatEntry(dir, 'sA')).used, ['c1n1', 'c1n2'])
 
   const delta = { sent: 10, requests: 1 }
-  await addToLedger(dir, 'sA', delta, ['c1n3'], ['1:6'])
+  await addToLedger(dir, 'sA', delta, ['c1n3'], ['c2'])
   assert.equal(await readFile(join(dir, 'ledger.json'), 'utf8'), old, 'the old file is only read')
   assert.deepEqual(await readdir(join(dir, 'ledger')), ['sA.json'], 'one file, the chat\'s own')
+  // Converted in the same write (#104): the old stand-in count goes, the chats it used are named
+  // (chat 1 is not in this folder, so its history counts nothing); no zero, no time.
   assert.deepEqual(JSON.parse(await readFile(join(dir, 'ledger', 'sA.json'), 'utf8')), {
-    c: { sent: 110, resent: 50, tool: 20, indexIn: 300, indexOut: 40, stoodIn: 900, used: 2, requests: 6 },
+    v: 2,
+    c: { sent: 110, resent: 50, tool: 20, indexIn: 300, indexOut: 40, used: 2, requests: 6 },
     used: ['c1n1', 'c1n2', 'c1n3'],
-    msgs: ['1:2', '1:4', '1:6']
-  }, 'every counter, used id and credited message carried over; no zero, no time')
+    chats: ['c1', 'c2']
+  }, 'every cost counter and used id carried over')
   assert.deepEqual((await chatEntry(dir, 'sA')).used, ['c1n1', 'c1n2', 'c1n3'], 'the chat\'s own file wins')
   assert.deepEqual(Object.keys((await loadLedger(dir)).chats).sort(), ['sA', 'sB'])
   assert.deepEqual(balance(await workspaceTotal(dir)), balance(addCounters(before, delta)), 'the same counters give the same savings')
 
   // A chat that only made requests stores just those.
   await addToLedger(dir, 'sC', { tool: 25, requests: 1 })
-  assert.equal(await readFile(join(dir, 'ledger', 'sC.json'), 'utf8'), '{"c":{"tool":25,"requests":1}}')
+  assert.equal(await readFile(join(dir, 'ledger', 'sC.json'), 'utf8'), '{"v":2,"c":{"tool":25,"requests":1}}')
 }))
 
 test('#78 the meta of memory moved from v0.1-v0.3 holds no local path', () => workspace(async (dir) => {

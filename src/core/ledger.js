@@ -8,22 +8,24 @@
  *   tool        the recall tool's definition, cached input on every request
  *   recalled    recall results, once (they stay in context like a block: also in resent)
  *   indexIn / indexCached / indexOut   the indexing calls for this chat, as dsh reported them
- *   stoodIn     for each topic the chat USED, its newest cited messages (up to 3) as stored, each
- *               counted once per chat (one answer often gives several topics): what the user
- *               would otherwise have had to bring back into the chat (an estimate that errs low).
- *               What memory sent instead is the cost.
+ *   history     the old total (#104): for each earlier chat whose memory this chat USED (a recall, or
+ *               an answer saying two of a topic's words the prompt did not), that chat's whole
+ *               conversation as kept (#93), counted once per chat that used it, at its first use:
+ *               the history that would otherwise have been input to bring that chat back
  *   used        topics used, once each per chat
+ * Saved = history - memory making (indexing) - searching (notes, recalls, their cached re-sends,
+ * the recall tool): what memory spared against taking the earlier conversations in as input.
  * Prices differ by kind, so the balance is in input-token equivalents: cached input and output are
  * weighted (WEIGHTS), uncached input counts 1.
  */
 
 import { nodeTokens, wordsIn } from './match.js'
-import { capText, estimateTokens, tokenize } from './text.js'
+import { estimateTokens, tokenize } from './text.js'
 
 /** Price of a token relative to an uncached input token (DeepSeek: cache hits ~1/10, output ~4x). */
 export const WEIGHTS = { cached: 0.1, output: 4 }
 
-export const emptyCounters = () => ({ sent: 0, resent: 0, tool: 0, recalled: 0, indexIn: 0, indexCached: 0, indexOut: 0, stoodIn: 0, used: 0, requests: 0 })
+export const emptyCounters = () => ({ sent: 0, resent: 0, tool: 0, recalled: 0, indexIn: 0, indexCached: 0, indexOut: 0, history: 0, used: 0, requests: 0 })
 
 const COUNTERS = Object.keys(emptyCounters())
 
@@ -44,19 +46,22 @@ export function addCounters(a, b) {
   return out
 }
 
-/** What memory cost and what it stood in for, in input-token equivalents. */
+/**
+ * The estimate in input-token equivalents (#104): the old total (history), memory making (the
+ * indexing calls) and searching (what memory sent and the tool it rides on); saved = history - making
+ * - searching. `saved` is the old total and `net` what is left after the cost, as the page shows them.
+ */
 export function balance(c, weights = WEIGHTS) {
-  const cost = c.sent + c.recalled + c.indexIn + weights.cached * (c.resent + c.tool + c.indexCached) + weights.output * c.indexOut
-  return { cost: Math.round(cost), saved: Math.round(c.stoodIn), net: Math.round(c.stoodIn - cost) }
+  const making = c.indexIn + weights.cached * c.indexCached + weights.output * c.indexOut
+  const searching = c.sent + c.recalled + weights.cached * (c.resent + c.tool)
+  const cost = making + searching
+  return { history: Math.round(c.history), making: Math.round(making), searching: Math.round(searching), cost: Math.round(cost), saved: Math.round(c.history), net: Math.round(c.history - cost) }
 }
 
-const OMITTED = /…\[(\d+) chars omitted; the full turn is in the chat's dsh log\]…/
-
-/**
- * Tokens of a stored message as it is stored now: its head and tail. A source kept whole by an
- * older version (migrated from v0.4-v0.6) counts as if it had been cut the same way (review).
- */
-export const storedTokens = (text) => estimateTokens(capText(text).replace(OMITTED, ''))
+/** Tokens of a chat's whole kept conversation (#93, #104): every message stored, whole. */
+export function historyTokens(stored) {
+  return Object.values(stored ?? {}).reduce((n, m) => n + (typeof m?.x === 'string' ? estimateTokens(m.x) : 0), 0)
+}
 
 /**
  * Whether an answer used a topic it was shown: it says two of the topic's words (label, aliases or
@@ -70,14 +75,13 @@ export function usedIn(answer, node, prompt = '') {
 }
 
 /**
- * What a used topic stood in for, erring low: its newest `max` cited messages at their stored size,
- * each counted once per chat (one answer often gives several topics). `credited` holds the
- * `<cid>:<seq>` keys already counted; returns the tokens and the keys this topic adds.
+ * What a used topic stands in for (#104): its chat's whole kept conversation, once per chat that
+ * used it. `credited` holds the chats already counted (`c3`); returns the tokens and the key this adds.
  */
-export function standIn(node, stored, cid, credited, max = 3) {
-  const newest = [...new Set(node.refs ?? [])].sort((a, b) => b - a).slice(0, max)
-  const fresh = newest.filter((seq) => !credited.has(`${cid}:${seq}`))
-  return { tokens: fresh.reduce((n, seq) => n + storedTokens(stored[String(seq)]?.x), 0), keys: fresh.map((seq) => `${cid}:${seq}`) }
+export function standInChat(stored, cid, credited) {
+  const key = `c${cid}`
+  if (credited.has(key)) return { tokens: 0, keys: [] }
+  return { tokens: historyTokens(stored), keys: [key] }
 }
 
 /** "about 8,600": rounded so a reader does not take the estimate for an exact count. */
@@ -97,12 +101,13 @@ export function savingsLine(chat, workspace) {
   return `Savings (estimate): ${here} · ${said(balance(workspace).net)} in this workspace`
 }
 
-/** The card's details: each term of the estimate, so the number can be checked. */
+/** The card's details: each term of the estimate, so the number can be checked (#104). */
 export function savingsDetail(c, weights = WEIGHTS) {
-  const { cost, saved } = balance(c, weights)
+  const b = balance(c, weights)
   return [
-    `Estimate (input-token equivalents; cached input x${weights.cached}, output x${weights.output}):`,
-    `- stood in for: ${saved} (${c.used} topic${c.used === 1 ? '' : 's'} used: their newest messages as stored, each counted once)`,
-    `- memory cost: ${cost} = notes sent ${c.sent} + recalls ${c.recalled} + re-sent as cached ${c.resent} + recall tool ${c.tool} + indexing in ${c.indexIn} / cached ${c.indexCached} / out ${c.indexOut}`
+    `Estimate (input-token equivalents; cached input x${weights.cached}, output x${weights.output}): saved = old total - making - searching = ${b.net}`,
+    `- old total: ${b.history} (the whole kept conversations of the earlier chats whose memory this chat used, each once; ${c.used} topic${c.used === 1 ? '' : 's'} used)`,
+    `- memory making: ${b.making} = indexing in ${c.indexIn} / cached ${c.indexCached} / out ${c.indexOut}`,
+    `- searching: ${b.searching} = notes sent ${c.sent} + recalls ${c.recalled} + re-sent as cached ${c.resent} + recall tool ${c.tool}`
   ].join('\n')
 }

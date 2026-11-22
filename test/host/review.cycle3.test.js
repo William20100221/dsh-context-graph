@@ -335,8 +335,8 @@ const requestFor = (h, sid) => async () => {
   for await (const _ of h.listeners['llm/stream'](request, () => (async function* () { yield { type: 'usage', usage: { inputTokens: 900, outputTokens: 40 } } })())) { /* drain */ }
 }
 
-test('one source message stands in once per chat, and a recall stands in for its messages as stored (second review of #35)', { skip }, () => inWorkspace(async (cwd) => {
-  const { storedTokens } = await import('../../src/core/index.js')
+test('an earlier chat stands in once per chat that used it, however many of its topics; a recall counts it too (second review of #35, #104)', { skip }, () => inWorkspace(async (cwd) => {
+  const { historyTokens } = await import('../../src/core/index.js')
   // Two topics cut from one long answer.
   const reply = JSON.stringify({ nodes: [
     { label: 'builder timeout', gist: 'thirty seconds per call', aliases: [], kind: 'decision', msgs: [1] },
@@ -346,7 +346,7 @@ test('one source message stands in once per chat, and a recall stands in for its
   const answer = 'The builder waits thirty seconds per call, then makes three attempts with backoff. '.repeat(40)
   await h.run(agentOf('sA', cwd, [system(), user('how should the builder behave?'), assistant(answer), ...chatEvents(3).slice(1)]), 'build')
   const stored = JSON.parse(await readFile(join(cwd, '.context-graph', 'chats', 'sA', 'msgs.json'), 'utf8')).m
-  const original = storedTokens(stored['2'].x)
+  const original = historyTokens(stored)
   const b = agentOf('sB', cwd, [system()])
   const out = await h.step(b, ask('builder timeout and builder retries?'))
   assert.match(out.messages.at(-1).content[0].text, /c1n1[\s\S]*c1n2/, 'both shown')
@@ -354,14 +354,14 @@ test('one source message stands in once per chat, and a recall stands in for its
   h.listeners['agent/turn-stopping']({ agent: b })
   const entry = await until(async () => (await ledgerOf(cwd).catch(() => undefined))?.chats?.sB)
   assert.equal(entry.c.used, 2)
-  assert.equal(entry.c.stoodIn, original, 'the one answer, once')
-  assert.deepEqual(entry.msgs, ['1:2'])
+  assert.equal(entry.c.history, original, 'chat 1 once, for both of its topics')
+  assert.deepEqual(entry.chats, ['c1'])
   // A recall stands in for the topic's original messages; what it returned is on the cost side.
   const c = agentOf('sC', cwd, [system()])
   await h.recall(c, 'c1n1')
   h.listeners['agent/turn-stopping']({ agent: c })
   const recalled = await until(async () => (await ledgerOf(cwd)).chats.sC)
-  assert.equal(recalled.c.stoodIn, original)
+  assert.equal(recalled.c.history, original)
   assert.ok(recalled.c.recalled > 0)
 }))
 
@@ -445,7 +445,7 @@ test('the tree leaves out a chat without a chat number, and a repeated number (s
   assert.ok(map.chats.every((c) => c.topics.length > 0), 'only chats with topics')
 }))
 
-test('a source message credited before a restart is not credited again for a sibling topic (second review of #35)', { skip }, () => inWorkspace(async (cwd) => {
+test('a chat credited before a restart is not credited again for a sibling topic (second review of #35, #104)', { skip }, () => inWorkspace(async (cwd) => {
   const reply = JSON.stringify({ nodes: [
     { label: 'builder timeout', gist: 'thirty seconds per call', aliases: [], kind: 'decision', msgs: [1] },
     { label: 'builder retries', gist: 'three attempts with backoff', aliases: [], kind: 'decision', msgs: [1] }
@@ -461,7 +461,7 @@ test('a source message credited before a restart is not credited again for a sib
   await restarted.recall(e, 'c1n2')
   restarted.listeners['agent/turn-stopping']({ agent: e })
   const second = await until(async () => { const entry = (await ledgerOf(cwd)).chats.sE; return entry.c.used === 2 && entry })
-  assert.equal(second.c.stoodIn, first.c.stoodIn, 'the same answer, still counted once')
+  assert.equal(second.c.history, first.c.history, 'the same chat, still counted once')
 }))
 
 test('on during a running turn of a memory-off chat waits for the turn to end (second review of #59)', { skip }, () => inWorkspace(async (cwd) => {
@@ -505,5 +505,5 @@ test('an answer that only repeats the question does not count its topic as used,
   h.listeners['agent/turn-stopping']({ agent: b })
   const entry = await until(async () => (await ledgerOf(cwd).catch(() => undefined))?.chats?.sB)
   assert.equal(entry.c.used, 0)
-  assert.equal(entry.c.stoodIn, 0)
+  assert.equal(entry.c.history, 0)
 }))

@@ -150,8 +150,8 @@ export function registerRecall(ctx, rt, meter) {
     st.delta.recalled += tokens
     st.inContext += tokens
     st.justSent += tokens
-    // A recalled topic is used: its messages stand in for it, the recall itself is cost. Credited
-    // at turn end with the turn's other uses (builder.js settle), so a ledger that cannot be read
+    // A recalled topic is used: its chat's history counts in the old total (#104), the recall itself
+    // is searching cost. Credited at turn end with the turn's other uses (builder.js settle), so a ledger that cannot be read
     // now loses nothing (review).
     if (used) st.toCredit.push({ id: used.id, node: used.node, cid: used.view.cid, sid: used.view.sid })
   }

@@ -111,3 +111,37 @@ test('the page reads a whole turn from the stored messages, and shows sources wh
   assert.equal(topic.complete, true)
   assert.ok(topic.sources.every((s) => s.text.length <= LONG.length) && topic.sources.some((s) => s.text.length > 600 || s.text.endsWith('the plan.')), 'not cut at 600 characters')
 }))
+
+test('savings counted before #104 are converted once, at start, to the old total of the chats they used (#104)', { skip }, () => inWorkspace(async (cwd) => {
+  const { historyTokens } = await import('../../src/core/index.js')
+  const { h } = await withLogs(cwd)
+  await h.run(agentOf('sA', cwd, chatEvents(4)), 'build')
+  const dir = join(cwd, '.context-graph')
+  const { mkdir } = await import('node:fs/promises')
+  await mkdir(join(dir, 'ledger'), { recursive: true })
+  // As 0.16 left it: chat B used two topics of chat 1, counted by their newest messages.
+  await writeFile(join(dir, 'ledger', 'sB.json'), JSON.stringify({ c: { sent: 40, stoodIn: 300, used: 2 }, used: ['c1n1', 'c1n2'], msgs: ['1:2'] }), 'utf8')
+  await h.plugin.keeper.sweep()
+  const entry = JSON.parse(await readFile(join(dir, 'ledger', 'sB.json'), 'utf8'))
+  assert.deepEqual(entry, { v: 2, c: { sent: 40, used: 2, history: historyTokens((await storeOf(cwd, 'sA')).m) }, used: ['c1n1', 'c1n2'], chats: ['c1'] })
+  await h.plugin.keeper.sweep()
+  assert.deepEqual(JSON.parse(await readFile(join(dir, 'ledger', 'sB.json'), 'utf8')), entry, 'once')
+}))
+
+test('a chat whose old savings already used an earlier chat does not count that chat twice on its next use (#104)', { skip }, () => inWorkspace(async (cwd) => {
+  const { historyTokens } = await import('../../src/core/index.js')
+  const { h } = await withLogs(cwd)
+  await h.run(agentOf('sA', cwd, chatEvents(4)), 'build')
+  const dir = join(cwd, '.context-graph')
+  const { mkdir } = await import('node:fs/promises')
+  await mkdir(join(dir, 'ledger'), { recursive: true })
+  // Before the sweep ran: chat B's 0.16 entry already used a topic of chat 1.
+  await writeFile(join(dir, 'ledger', 'sB.json'), JSON.stringify({ c: { used: 1 }, used: ['c1n9'] }), 'utf8')
+  const b = agentOf('sB', cwd, [system()])
+  await h.recall(b, 'c1n1')
+  h.listeners['agent/turn-stopping']({ agent: b })
+  const { until } = await import('../helpers/harness.js')
+  const entry = await until(async () => { const e = JSON.parse(await readFile(join(dir, 'ledger', 'sB.json'), 'utf8')); return e.c.used === 2 && e })
+  assert.equal(entry.c.history, historyTokens((await storeOf(cwd, 'sA')).m), 'chat 1 once')
+  assert.deepEqual(entry.chats, ['c1'])
+}))

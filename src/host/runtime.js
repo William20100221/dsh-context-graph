@@ -7,10 +7,10 @@ import { createHash } from 'node:crypto'
 import { basename, isAbsolute, join } from 'node:path'
 
 import { closedAt, memoryOn, offPoint, reachable, sharedOn, walkGaps } from '../core/chat.js'
-import { emptyCounters, standIn } from '../core/ledger.js'
+import { emptyCounters, standInChat } from '../core/ledger.js'
 import { collectSpan, eventText, inGap, isPrompt, mergeGaps, promptText, shownContext, titleOf } from '../core/session.js'
 import { chatDir, listChats, loadGraph, loadMeta, updateMeta } from '../store/chats.js'
-import { chatEntry } from '../store/ledger.js'
+import { chatEntry, convertLedger } from '../store/ledger.js'
 import { capText, keepText, loadMessages } from '../store/messages.js'
 
 const ownParts = new WeakMap()
@@ -195,20 +195,22 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
   const indexStart = (agent, meta) => (Number.isInteger(meta?.builtSeq) ? meta.builtSeq : (forkSeqOf(agent.session) ?? 0) - 1)
 
   /**
-   * Count a topic this chat used (#35): once per chat, standing in for its newest messages, each of
-   * which also counts once per chat (review). `stored` is the topic's chat's msgs.json.
+   * Count a topic this chat used (#35): once per topic, and its chat's whole kept conversation once
+   * per chat that used it (#104), the history memory stood in for. `stored` is that chat's msgs.json.
+   * An entry from before #104 is converted first, so a chat it already counted is not counted again.
    */
   async function creditUse(agent, { id, node, cid, stored }) {
     const sid = sidOf(agent)
     const st = state(sid)
     if (!st.usedIds || !st.credited) {
+      await convertLedger(dirFor(agent), sid)
       const entry = await chatEntry(dirFor(agent), sid)
       st.usedIds ??= new Set(entry.used)
-      st.credited ??= new Set(entry.msgs)
+      st.credited ??= new Set(entry.chats)
     }
     if (st.usedIds.has(id)) return
-    const { tokens, keys } = standIn(node, stored, cid, st.credited, cfg.sourceMaxMessages)
-    st.delta.stoodIn += tokens
+    const { tokens, keys } = standInChat(stored, cid, st.credited)
+    st.delta.history += tokens
     st.delta.used++
     st.usedIds.add(id)
     st.newlyUsed.push(id)

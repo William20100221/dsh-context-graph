@@ -3,16 +3,19 @@
  * so the estimate survives restarts and a turn end writes only its own chat's entry, not the whole
  * workspace's (#83). Written at most once per turn per chat, off the critical path; a chat needs no
  * folder of its own to have an entry.
- * Format: `{ c: counters, used: [topic ids], msgs: ["<cid>:<seq>"] }`, zero counters and empty lists
- * left out (#78): `msgs` are the source messages already counted as stood in for, so each counts
- * once per chat. `<dir>/ledger.json`, the one file 0.9.0 kept (`{ v: 1, chats: { "<sessionId>":
- * entry } }`), is only read: a chat's entry there is where its own file starts.
+ * Format: `{ v: 2, c: counters, used: [topic ids], chats: ["c3"] }`, zero counters and empty lists
+ * left out (#78): `chats` are the earlier chats whose history this chat already counted, each once
+ * (#104). An entry without `v: 2` (0.16 and before counted source messages, `msgs`) is converted
+ * once by convertLedger. `<dir>/ledger.json`, the one file 0.9.0 kept (`{ v: 1, chats: {
+ * "<sessionId>": entry } }`), is only read: a chat's entry there is where its own file starts.
  */
 
 import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import { addCounters, counters, emptyCounters } from '../core/ledger.js'
+import { addCounters, counters, emptyCounters, historyTokens } from '../core/ledger.js'
+import { chatDir, listChats } from './chats.js'
+import { loadMessages } from './messages.js'
 import { locked, readJson, readJsonCached, writeJson } from './files.js'
 
 const folder = (dir) => join(dir, 'ledger')
@@ -20,7 +23,7 @@ const file = (dir, sid) => join(folder(dir), `${sid}.json`)
 
 /** Topic ids remembered per chat as used, so each counts once; the newest are kept. */
 const USED_MAX = 500
-const MSGS_MAX = 1000
+const CHATS_MAX = 1000
 
 /** The entries 0.9.0 kept in one file, read-only (cached: nothing writes that file any more). */
 async function oldEntries(dir) {
@@ -38,10 +41,45 @@ export async function loadLedger(dir) {
   return { v: 1, chats }
 }
 
-/** One chat's counters, used topic ids and credited source messages. */
+/** One chat's counters, used topic ids and the earlier chats whose history it counted. */
 export async function chatEntry(dir, sid) {
   const entry = (await readJsonCached(file(dir, sid))) ?? (await oldEntries(dir))[String(sid)]
-  return { c: counters(entry?.c), used: Array.isArray(entry?.used) ? entry.used : [], msgs: Array.isArray(entry?.msgs) ? entry.msgs : [] }
+  return { v: entry?.v, c: counters(entry?.c), used: Array.isArray(entry?.used) ? entry.used : [], chats: Array.isArray(entry?.chats) ? entry.chats : [] }
+}
+
+/**
+ * An entry written before #104 as the old-total rule would have it: from the topics it recorded as
+ * used, each earlier chat they came from counts its whole kept conversation, once. The cost terms
+ * are kept; the old stand-in count goes (counters() drops it). An entry already converted is kept.
+ */
+async function upgraded(dir, prev) {
+  if (!prev || prev.v === 2) return prev
+  const used = Array.isArray(prev.used) ? prev.used : []
+  const cids = [...new Set(used.map((id) => /^c(\d+)n/.exec(String(id))?.[1]).filter(Boolean))]
+  const chats = cids.length > 0 ? await listChats(dir) : []
+  let history = 0
+  for (const cid of cids) {
+    const chat = chats.find((c) => String(c.meta.cid) === cid)
+    if (chat) history += historyTokens(await loadMessages(chatDir(dir, chat.sid)).catch(() => ({})))
+  }
+  return { v: 2, c: { ...counters(prev.c), history }, used, chats: cids.map((cid) => `c${cid}`) }
+}
+
+/** The entry as written: version 2, zero counters and empty lists left out. */
+const written = (entry) => {
+  const c = Object.fromEntries(Object.entries(counters(entry.c)).filter(([, n]) => n !== 0))
+  return { v: 2, c, ...(entry.used?.length ? { used: entry.used } : {}), ...(entry.chats?.length ? { chats: entry.chats } : {}) }
+}
+
+/** Convert a chat's entry written before #104, once (the start-up sweep, a chat's first credit). */
+export function convertLedger(dir, sid) {
+  const path = file(dir, sid)
+  return locked(path, async () => {
+    const prev = (await readJson(path)) ?? (await oldEntries(dir))[String(sid)]
+    if (!prev || prev.v === 2) return false
+    await writeJson(path, written(await upgraded(dir, prev)))
+    return true
+  })
 }
 
 /** The workspace total. */
@@ -53,13 +91,14 @@ export async function workspaceTotal(dir) {
  * Add `delta` to a chat's counters and remember newly used topic ids. Locked read-modify-write of
  * the chat's own file, so two writes for one chat (a slow turn end, then the next) cannot undo each other.
  */
-export function addToLedger(dir, sid, delta, usedIds = [], msgKeys = []) {
+export function addToLedger(dir, sid, delta, usedIds = [], chatKeys = []) {
   const path = file(dir, sid)
   return locked(path, async () => {
-    const prev = (await readJson(path)) ?? (await oldEntries(dir))[String(sid)] ?? {}
+    // An entry from before #104 is converted in the same write, so it is never marked converted
+    // without its old total (a turn that only adds costs comes first, say).
+    const prev = (await upgraded(dir, (await readJson(path)) ?? (await oldEntries(dir))[String(sid)])) ?? {}
     const used = [...new Set([...(Array.isArray(prev.used) ? prev.used : []), ...usedIds])].slice(-USED_MAX)
-    const msgs = [...new Set([...(Array.isArray(prev.msgs) ? prev.msgs : []), ...msgKeys])].slice(-MSGS_MAX)
-    const c = Object.fromEntries(Object.entries(addCounters(counters(prev.c), delta)).filter(([, n]) => n !== 0))
-    await writeJson(path, { c, ...(used.length ? { used } : {}), ...(msgs.length ? { msgs } : {}) })
+    const chats = [...new Set([...(Array.isArray(prev.chats) ? prev.chats : []), ...chatKeys])].slice(-CHATS_MAX)
+    await writeJson(path, written({ c: addCounters(counters(prev.c), delta), used, chats }))
   })
 }

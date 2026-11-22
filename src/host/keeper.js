@@ -10,6 +10,7 @@
 import { closedAt } from '../core/chat.js'
 import { collectSpan } from '../core/session.js'
 import { chatDir, listChats } from '../store/chats.js'
+import { convertLedger, loadLedger } from '../store/ledger.js'
 import { saveMessages, storeComplete } from '../store/messages.js'
 
 const DELAY_MS = 60000
@@ -48,6 +49,10 @@ export function registerKeeper(rt, { dirs }) {
           return 'failed'
         })
         done[outcome] = (done[outcome] ?? 0) + 1
+      }
+      // Savings counted before #104 move to the old-total rule, once, after the stores are whole.
+      for (const sid of Object.keys((await loadLedger(dir).catch(() => ({ chats: {} }))).chats)) {
+        await convertLedger(dir, sid).catch((error) => console.error(`context-graph: savings of chat ${sid} not converted (non-fatal)`, error?.message ?? error))
       }
     }
     return done

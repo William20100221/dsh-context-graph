@@ -4,7 +4,7 @@
  *   DSH_NODE_MODULES=<dsh install>/node_modules node --import ./test/helpers/resolve-dsh.mjs --test test/host/savings.test.js
  */
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -50,15 +50,19 @@ test('a topic the answer uses counts as saved; the card shows it, also after a r
   h.listeners['agent/turn-stopping']({ agent: b })
   const entry = await until(async () => (await ledgerOf(cwd).catch(() => undefined))?.chats?.sB)
   assert.equal(entry.c.used, 1)
-  assert.ok(entry.c.stoodIn > 0, 'its original messages')
+  // The old total (#104): chat 1's whole kept conversation, the history memory stood in for.
+  const { historyTokens } = await import('../../src/core/index.js')
+  const stored = JSON.parse(await readFile(join(cwd, '.context-graph', 'chats', 'sA', 'msgs.json'), 'utf8')).m
+  assert.equal(entry.c.history, historyTokens(stored))
+  assert.deepEqual(entry.chats, ['c1'])
   assert.ok(entry.c.sent > 0 && entry.c.tool > 0 && entry.c.requests === 2)
   assert.equal(entry.c.resent, entry.c.sent, 'sent once, then re-sent once with the second request')
   assert.deepEqual(entry.used, ['c1n1'])
   const card = (await h.run(b, '')).text
   assert.match(card, /\nSavings \(estimate\): (saved|cost) about [\d,]+ tokens[^\n]* in this chat · /)
-  assert.match(card, /stood in for: \d+ \(1 topic used/)
+  assert.match(card, /- old total: \d+ \([^)]*1 topic used\)\n- memory making: \d+[^\n]*\n- searching: \d+/)
   const restarted = (await (await setup()).run(b, '')).text
-  assert.match(restarted, /stood in for: \d+ \(1 topic used/, 'the ledger survives a restart')
+  assert.match(restarted, /- old total: \d+ \([^)]*1 topic used\)/, 'the ledger survives a restart')
 }))
 
 test('a recalled topic counts once as used; an unused line counts only as cost', { skip }, () => inWorkspace(async (cwd) => {
