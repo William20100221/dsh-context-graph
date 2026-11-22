@@ -4,6 +4,22 @@ All notable changes to dsh-context-graph. Versions follow semver; each minor ver
 is one development cycle (audit, issues, fixes, independent review), documented in
 [docs/cycles](docs/cycles).
 
+## 0.13.0 — 2026-11-23 — whole messages, kept
+
+**Complete sources** (#93)
+- Indexing keeps every message it reads, whole (up to 200,000 characters; a longer pasted log keeps
+  its first 160,000 and last 40,000), not only the messages a topic cites cut to their first 4,500
+  and last 1,000 characters. Never what was typed while memory was off.
+- Chats indexed before are completed from dsh's log once, a minute after the first start, one at a
+  time, while their session still exists, reading the log with the same off stretches as every
+  reader; a fork keeps only its own part. A copy cut by an older version is replaced by the whole
+  message.
+- Memory tree shows a source whole (folded after 1,500 characters until Show all) and reads its
+  whole turn (Whole turn t7) from the kept messages, also for a chat whose session was deleted.
+- `recall("c3t7")` of a chat whose dsh log is gone returns the whole turn from the kept messages.
+  What the model is sent keeps its budgets (`sourceMaxTokens`, `turnMaxTokens`); the savings
+  estimate still counts a source by its head and tail.
+
 ## 0.12.0 — 2026-11-22 — hide, forget, and see which chat is which
 
 **Hide a chat, delete a chat's memory** (#91)

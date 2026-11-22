@@ -30,7 +30,7 @@ summary of the chat. Memory is a tree that a new chat reads from the top, cheape
 | Chat | `c3 Postgres tuning for the orders dashboard` | once per chat, with its first topic lines or its first question about earlier work (about 200 tokens for all chats); not again after a restart |
 | Topic | `- c3n12 orders index: (customer_id, created_at) cut the query to 40 ms` | on a message about it; unrelated messages get nothing |
 | Source | the cited messages, each naming its turn (`c3t7`) | `recall("c3n12")` |
-| Turn | the whole turn from dsh's own log | `recall("c3t7")` |
+| Turn | the whole turn from dsh's own log, or from the chat's kept messages once dsh's copy is gone | `recall("c3t7")` |
 
 A message about something earlier gets a few lines like this appended:
 
@@ -329,16 +329,20 @@ Remove with `dsh plugin --profile desktop remove dsh-context-graph`.
 ## On disk
 
 ```
-.context-graph/chats/<sessionId>/meta.json    cid, title (dsh's own), summary, firstKey (a fingerprint of the first prompt), startedAt, lastActiveAt, builtSeq (how far the chat is indexed); memoryOff / private only after off / unshare
+.context-graph/chats/<sessionId>/meta.json    cid, title (dsh's own), summary, firstKey (a fingerprint of the first prompt), startedAt, lastActiveAt, builtSeq (how far the chat is indexed); memoryOff / private / hidden only after off / unshare / Hide
 .context-graph/chats/<sessionId>/topics.json  topics and links; every topic has its time and the seqs of its sources
-.context-graph/chats/<sessionId>/msgs.json    the messages topics cite, each stored once
+.context-graph/chats/<sessionId>/msgs.json    every message indexing read, whole (up to 200,000 characters each), each stored once; never what was typed while memory was off
 .context-graph/chats/.cid/                    one empty file per chat number in use
 .context-graph/ledger/<sessionId>.json        the savings estimate of one chat: its counters that are not zero
 ```
 
 A chat gets its folder when it is first indexed; quick chats that never reach an index leave
-nothing behind. Whole turns are never copied: they stay in dsh's own session log, which `c3t7`
-reads. Delete a chat's folder to forget it. Delete `.context-graph/` to forget the workspace.
+nothing behind. Since 0.13.0 a chat keeps every message indexing read, whole (the user's and the
+model's text, not tool output), so its topics and turns can be read in full even after its dsh
+session is deleted; chats indexed before are completed from dsh's log once, at the first start of
+0.13.0, while their session still exists. What the model is sent is unchanged: recall keeps its
+token budgets. Delete a chat's memory from Memory tree (once dsh archived or deleted the chat), or
+delete `.context-graph/` to forget the workspace.
 
 Memory from older versions is upgraded on first use: v0.1-v0.3 kept one `graph.json` for the
 whole workspace, v0.4-v0.6 one `graph.json` plus `src/` per chat. Those files are kept unchanged
