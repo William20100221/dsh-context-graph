@@ -181,6 +181,12 @@ export function renderRange(views, range, { maxChats = 10, maxTopics = 10, maxTo
   return lines.join('\n')
 }
 
+/**
+ * What a chat is told about itself (#103): its number in memory, so the ids it meets (its own c7t3,
+ * other chats' c3n12) and what the user calls it ("c7") make sense to it. About 20 tokens.
+ */
+export const selfLine = (cid) => `[context-graph] This chat is c${cid} in memory; recall("t3") or recall("c${cid}t3") reads its own turn 3.`
+
 /** The /context-graph map: workspace → chats (newest first) → topics. */
 export function renderMap(views, { maxTopics = 8 } = {}) {
   if (views.length === 0) return 'No chats indexed in this workspace yet. Chats index themselves every few turns; /context-graph build indexes this one now.'

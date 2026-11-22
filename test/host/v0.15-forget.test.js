@@ -11,7 +11,7 @@ import { test } from 'node:test'
 
 import { chatDir, listChats, removeChat } from '../../src/store/chats.js'
 import { saveMessages } from '../../src/store/messages.js'
-import { DEFAULT_REPLY, agentOf, assistant, chatEvents, quietly, scriptedLlm, setup, skip, until, user, wait } from '../helpers/harness.js'
+import { DEFAULT_REPLY, agentOf, ask, assistant, chatEvents, quietly, scriptedLlm, setup, skip, system, until, user, wait } from '../helpers/harness.js'
 
 async function inWorkspace(fn) {
   const cwd = await mkdtemp(join(tmpdir(), 'cg-forget-'))
@@ -113,4 +113,25 @@ test('the tree sends the subject key search uses, so spellings of one subject me
   const keys = (await call('tree', `?w=${w}`)).body.chats.map((c) => c.subjectKey)
   assert.ok(keys.every((k) => typeof k === 'string' && k.length > 0), 'a key for each')
   assert.equal(new Set(keys).size, 1, `one subject: ${keys.join(' | ')}`)
+}))
+
+test('a chat is told which memory branch it is, once, with a note it gets anyway; its card says it too (#103)', { skip }, () => inWorkspace(async (cwd) => {
+  const { h } = await withPage(cwd, scriptedLlm({ reply: DEFAULT_REPLY }))
+  await h.run(agentOf('sA', cwd, chatEvents(4)), 'build')
+  const b = agentOf('sB', cwd, chatEvents(4))
+  await h.run(b, 'build') // chat 2 has its number
+  assert.match((await h.run(b, 'stats')).text, /\nThis chat is c2 in memory\n/)
+  const first = await h.step(b, ask('how is commit signing set up with gpg?'))
+  assert.match(first.messages.at(-1).content[0].text, /^\[context-graph\] This chat is c2 in memory; recall\("t3"\) or recall\("c2t3"\) reads its own turn 3\.\n\n/)
+  const second = await h.step(b, ask('and the commit signing key for gpg, once more?'))
+  assert.doesNotMatch(second.messages.at(-1)?.content?.[0]?.text ?? '', /This chat is c2/, 'not again while the first one is in the chat')
+  assert.equal((await h.step(b, ask('what is the weather'))).messages.length, 1, 'never a message of its own')
+  // dsh compacts the chat: its notes are gone, so the next note says it again.
+  b.session.surface.nodes = b.session.surface.nodes.slice(0, 1)
+  b.session.surface.replaceGeneration++
+  assert.match((await h.step(b, ask('the gpg commit signing key again, please'))).messages.at(-1).content[0].text, /^\[context-graph\] This chat is c2 in memory/)
+  // A chat without a number yet is told nothing; its card says when it gets one.
+  const c = agentOf('sC', cwd, [system()])
+  assert.doesNotMatch((await h.step(c, ask('how is commit signing set up with gpg?'))).messages.at(-1).content[0].text, /This chat is/)
+  assert.match((await h.run(c, 'stats')).text, /\nThis chat has no memory number yet/)
 }))

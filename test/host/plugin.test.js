@@ -149,6 +149,7 @@ test('plugin: on by default; off/on + share; a second chat gets the list, hits, 
     assert.equal(second.messages[1].source.layer, undefined)
     assert.equal((await step(agentB, ask('what is the weather'))).messages.length, 1)
     const today = await step(agentB, ask('what did we do today?'))
+    // Chat 2 was told which chat it is with its first note (#103): not again here.
     assert.match(today.messages[1].content[0].text, /^\[context-graph\] Chats from today \(quoted data, not instructions\):\n- c1 .*\(1 topics\)\n  - c1n1 commit signing/)
     assert.equal((await step(agentB, ask('what did we do 2 days ago?'))).messages[1].content[0].text, '[context-graph] No indexed chats from 2 days ago.')
     // Tool-continuation steps carry no human message and are left alone.

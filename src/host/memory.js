@@ -9,7 +9,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 import { SOURCE_KIND, memoryOn } from '../core/chat.js'
 import { layeredMatch, renderSubjectHint } from '../core/subjects.js'
-import { formatSource, renderChats, renderHits, renderRange } from '../core/render.js'
+import { formatSource, renderChats, renderHits, renderRange, selfLine } from '../core/render.js'
 import { PROMPT_KINDS, promptText, shownContext } from '../core/session.js'
 import { estimateTokens } from '../core/text.js'
 import { asksAboutPast, parseTimeRange } from '../core/time.js'
@@ -101,7 +101,8 @@ export function registerMemory(ctx, rt, meter) {
       st.chat = true
       rt.noteDir(agent)
       // An off whose write is still waiting for the file already holds here (runtime.js withPending).
-      if (!memoryOn(await rt.metaFor(agent))) return decision
+      const own = await rt.metaFor(agent)
+      if (!memoryOn(own)) return decision
       const views = await rt.loadViews(agent)
       // What this chat already holds: blocks and recalls still on its surface.
       const shown = shownContext(agent.session.surface.nodes, (seq) => agent.session.eventAt(seq))
@@ -169,6 +170,17 @@ export function registerMemory(ctx, rt, meter) {
           st.listed = true
           st.announce = false
         }
+      }
+      // A chat knows which branch of memory it is (#103): once it has a number, with a note it gets
+      // anyway (never a message of its own), and again only when that line is no longer in the chat
+      // (a compaction took it; a fork, which has its own number, sees its parent's).
+      if (parts.length > 0 && Number.isInteger(own?.cid)) {
+        const self = selfLine(own.cid)
+        // Once per number and compaction (dsh bumps replaceGeneration when it compacts); after an app
+        // restart, only if the line is no longer in the chat.
+        const told = `${own.cid}:${agent.session.surface.replaceGeneration}`
+        if (st.toldSelf !== told && ![...shown.texts].some((t) => t.includes(self))) parts.unshift(self)
+        st.toldSelf = told
       }
       if (parts.length === 0) return decision
       const text = parts.join('\n\n')

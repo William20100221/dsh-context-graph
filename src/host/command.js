@@ -142,6 +142,8 @@ export function registerCommand(ctx, rt, { build, turnOn, onAtIdle, meter, updat
                 ledger ? savingsLine(here, everywhere) : 'Savings: unavailable for now (the savings ledger could not be read)',
                 lastLine,
                 `Version ${version}: ${updates.current() ?? 'no newer version found'}`,
+                // Which branch of memory this chat is (#103), as its header and Memory tree show it.
+                Number.isInteger(meta?.cid) ? `This chat is c${meta.cid} in memory` : 'This chat has no memory number yet: it gets one at its first index',
                 `Graph folder: ${rt.dirFor(agent)}`,
                 ...(ledger ? [savingsDetail(here)] : []),
                 'Counters below are since the app started:',
