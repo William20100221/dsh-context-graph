@@ -151,6 +151,11 @@ window.__ModuleLoader__.load({
       '.dshcg-node[data-kind="workspace"] .dshcg-label{font-weight:600}',
       '.dshcg-count{font-size:11px;fill:var(--dsw-alias-label-secondary)}',
       '.dshcg-node[data-dim="true"],.dshcg-link[data-dim="true"]{opacity:.18}',
+      '.dshcg-node[data-selected="true"] .dshcg-pill{stroke:var(--dsw-alias-brand-primary,#4A65E8);stroke-width:2}',
+      // The details sit beside the tree, and below it on a narrow window (#87).
+      '.dshcg-split{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,360px);gap:12px;align-items:start}',
+      '.dshcg-split>.dshcg-panel{position:sticky;top:12px;max-height:calc(100vh - 220px);overflow:auto}',
+      '@media (max-width:900px){.dshcg-split{grid-template-columns:minmax(0,1fr)}}',
       '.dshcg-panel{border:1px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-lg,10px);padding:12px;background:var(--dsw-alias-bg-layer-2);display:flex;flex-direction:column;gap:8px}',
       '.dshcg-pre{white-space:pre-wrap;word-break:break-word;font-family:var(--dsw-font-mono,monospace);font-size:12px;margin:0;padding:8px;border-radius:var(--dsw-radius-md,8px);background:var(--dsw-alias-bg-layer-1)}',
       '.dshcg-input{border:1px solid var(--dsw-alias-border-l3);background:var(--dsw-alias-bg-layer-1);color:inherit;border-radius:var(--dsw-radius-md,8px);padding:4px 8px;font:inherit;min-width:180px}',
@@ -344,10 +349,30 @@ window.__ModuleLoader__.load({
     const HGAP = 40 // px from a column's widest node to the next column
     const PAD = 16
     const OPEN_ROWS = 40 // the newest chats start open while their topics stay within this many rows
-    const ROOM = [32, 48, 44, 64] // letters a label keeps, by depth; the full text shows on hover
+    const ROOM = [32, 48, 44, 52] // letters a label keeps, by depth; the full text shows on hover
 
-    /** The host's tree as nested items: workspace, chats, topics. */
-    function treeItems(data, t) {
+    /** A source message in one line: who, its turn, and its text with the line breaks flattened. */
+    const sourceLine = (s) => `${s.role}${s.turn ? ` t${s.turn}` : ''} · ${String(s.text ?? '').replace(/\s+/g, ' ').trim()}`
+
+    /**
+     * The host's tree as nested items: workspace, chats, topics, and (#87) the messages of each topic
+     * read so far. `details` maps a topic id to its answer, `{ loading: true }` or `{ error: true }`;
+     * a topic not read yet has no children, a loading one shows …, a failed one !.
+     */
+    function treeItems(data, t, details = {}) {
+      const topic = (cid, [id, label, kind]) => {
+        const tid = `c${cid}${id}`
+        const detail = details[tid]
+        return {
+          id: tid,
+          kind: 'topic',
+          topicKind: kind,
+          label: fit(String(label), ROOM[2]),
+          full: detail?.error ? `${tid} ${label}: ${t('topicFailed')}` : `${tid} ${label}`,
+          badge: detail?.loading ? '…' : detail?.error ? '!' : undefined,
+          children: detail?.sources?.map((s, i) => ({ id: `${tid}s${i}`, kind: 'source', topic: tid, label: fit(sourceLine(s), ROOM[3]), full: sourceLine(s) }))
+        }
+      }
       return {
         id: 'w',
         kind: 'workspace',
@@ -360,7 +385,7 @@ window.__ModuleLoader__.load({
             chat: c,
             label: chatLabel(chat, t, ROOM[1]),
             full: chatLabel(chat, t),
-            children: c.topics.map(([id, label, kind]) => ({ id: `c${c.cid}${id}`, kind: 'topic', topicKind: kind, label: fit(String(label), ROOM[2]), full: `c${c.cid}${id} ${label}` }))
+            children: c.topics.map((entry) => topic(c.cid, entry))
           }
         })
       }
@@ -378,8 +403,8 @@ window.__ModuleLoader__.load({
       return open
     }
 
-    /** What a closed node with children shows at its end: how many it holds. */
-    const countOf = (item, open) => (item.children?.length && !open.has(item.id) ? String(item.children.length) : '')
+    /** What a node shows at its end: a topic's … or !, else how many a closed branch holds. */
+    const countOf = (item, open) => item.badge ?? (item.children?.length && !open.has(item.id) ? String(item.children.length) : '')
 
     /** A node's width: dot, label, and the count of a closed branch. */
     const widthOf = (item, open) => {
@@ -430,17 +455,33 @@ window.__ModuleLoader__.load({
       return `M${x0},${from.y}C${mid},${from.y} ${mid},${to.y} ${to.x},${to.y}`
     }
 
-    // Topics are dots in their kind's colour; the workspace and chats, which hold them, are rings.
-    const dotStyle = (item) => (item.kind === 'topic' ? { fill: COLORS[item.topicKind] ?? '#888' } : { fill: 'none', stroke: 'var(--dsw-alias-label-secondary)', strokeWidth: 1.5 })
+    // Topics are dots in their kind's colour; the workspace and chats, which hold them, are rings; a
+    // topic's messages are small grey dots.
+    const dotStyle = (item) => (item.kind === 'topic' ? { fill: COLORS[item.topicKind] ?? '#888' } : item.kind === 'source' ? { fill: 'var(--dsw-alias-label-secondary)' } : { fill: 'none', stroke: 'var(--dsw-alias-label-secondary)', strokeWidth: 1.5 })
 
-    /** The tree: click a chat to open or close it, a topic to read it; search and kinds dim the rest. */
-    function MemoryTree({ data, t, onOpen }) {
-      const [query, setQuery] = useState('')
-      const [kind, setKind] = useState('')
-      const [scale, setScale] = useState(1)
+    /** Search, kind filter and zoom, above the tree and its panel. */
+    function TreeTools({ t, query, kind, onQuery, onKind, onScale }) {
+      return jsxs('div', {
+        className: 'dshcg-row',
+        children: [
+          jsx('input', { className: 'dshcg-input', type: 'search', placeholder: t('search'), 'aria-label': t('search'), value: query, onChange: (e) => onQuery(e.target.value) }),
+          jsx('button', { type: 'button', className: 'dshcg-btn', 'aria-pressed': kind === '' ? 'true' : 'false', onClick: () => onKind(''), children: t('allKinds') }),
+          ...KINDS.map((k) => jsxs('button', { type: 'button', className: 'dshcg-btn', 'aria-pressed': kind === k ? 'true' : 'false', onClick: () => onKind(kind === k ? '' : k), children: [jsx('span', { className: 'dshcg-dot', style: { background: COLORS[k] } }), t(k)] }, k)),
+          jsx('button', { type: 'button', className: 'dshcg-btn', 'aria-label': t('zoomOut'), onClick: () => onScale((s) => Math.max(0.5, s / 1.25)), children: '−' }),
+          jsx('button', { type: 'button', className: 'dshcg-btn', 'aria-label': t('zoomIn'), onClick: () => onScale((s) => Math.min(2, s * 1.25)), children: '+' }),
+          jsx('button', { type: 'button', className: 'dshcg-btn', onClick: () => onScale(1), children: t('resetView') })
+        ]
+      })
+    }
+
+    /**
+     * The tree: a click opens or closes a branch and shows its details beside the tree (a chat's, or a
+     * topic's, which also brings its messages in as its children, #87); search and kinds dim the rest.
+     */
+    function MemoryTree({ data, t, query = '', kind = '', scale = 1, details = {}, selected = null, onOpen, onChat = () => {} }) {
       const [open, setOpen] = useState(initialOpen(data))
       const q = query.trim().toLowerCase()
-      const root = treeItems(data, t)
+      const root = treeItems(data, t, details)
       const hit = (item) => item.kind === 'topic' && q !== '' && item.full.toLowerCase().includes(q)
       // A search opens every chat with a match, without changing what is open once it is cleared.
       const shown = new Set(open)
@@ -452,55 +493,46 @@ window.__ModuleLoader__.load({
         else now.add(id)
         return now
       })
-      const activate = (item) => (item.kind === 'topic' ? onOpen(item.id) : toggle(item.id))
+      const activate = (item) => {
+        if (item.kind === 'source') return onOpen(item.topic)
+        toggle(item.id)
+        if (item.kind === 'chat') onChat(item.chat.cid)
+        if (item.kind === 'topic') onOpen(item.id)
+      }
+      const chosen = (item) => (item.kind === 'chat' ? selected?.chat === item.chat.cid : item.kind === 'topic' && selected?.topic === item.id)
       const dim = (item) => item.kind === 'topic' && ((kind && item.topicKind !== kind) || (q && !hit(item)))
-      return jsxs('div', {
-        className: 'dshcg-page',
-        children: [
-          jsxs('div', {
-            className: 'dshcg-row',
-            children: [
-              jsx('input', { className: 'dshcg-input', type: 'search', placeholder: t('search'), 'aria-label': t('search'), value: query, onChange: (e) => setQuery(e.target.value) }),
-              jsx('button', { type: 'button', className: 'dshcg-btn', 'aria-pressed': kind === '' ? 'true' : 'false', onClick: () => setKind(''), children: t('allKinds') }),
-              ...KINDS.map((k) => jsxs('button', { type: 'button', className: 'dshcg-btn', 'aria-pressed': kind === k ? 'true' : 'false', onClick: () => setKind(kind === k ? '' : k), children: [jsx('span', { className: 'dshcg-dot', style: { background: COLORS[k] } }), t(k)] }, k)),
-              jsx('button', { type: 'button', className: 'dshcg-btn', 'aria-label': t('zoomOut'), onClick: () => setScale((s) => Math.max(0.5, s / 1.25)), children: '−' }),
-              jsx('button', { type: 'button', className: 'dshcg-btn', 'aria-label': t('zoomIn'), onClick: () => setScale((s) => Math.min(2, s * 1.25)), children: '+' }),
-              jsx('button', { type: 'button', className: 'dshcg-btn', onClick: () => setScale(1), children: t('resetView') })
-            ]
-          }),
-          jsx('div', {
-            className: 'dshcg-treebox',
-            children: jsxs('svg', {
-              className: 'dshcg-tree',
-              role: 'img',
-              'aria-label': t('tree_label'),
-              width: Math.round(layout.width * scale),
-              height: Math.round(layout.height * scale),
-              viewBox: `0 0 ${layout.width} ${layout.height}`,
-              children: [
-                ...layout.nodes.filter((n) => n.parent).map((n) => jsx('path', { className: 'dshcg-link', d: linkPath(n.parent, n), 'data-dim': dim(n.item) ? 'true' : 'false' }, `l${n.id}`)),
-                ...layout.nodes.map((n) => {
-                  const count = countOf(n.item, shown)
-                  return jsxs('g', {
-                    className: 'dshcg-node',
-                    'data-kind': n.item.kind,
-                    'data-dim': dim(n.item) ? 'true' : 'false',
-                    'data-match': hit(n.item) ? 'true' : 'false',
-                    style: { transform: `translate(${n.x}px,${n.y}px)` },
-                    onClick: () => activate(n.item),
-                    children: [
-                      jsx('title', { children: n.item.full ?? n.item.label }),
-                      jsx('rect', { className: 'dshcg-pill', x: 0, y: -PILL / 2, width: n.w, height: PILL, rx: PILL / 2 }),
-                      jsx('circle', { cx: 12, cy: 0, r: 4, style: dotStyle(n.item) }),
-                      jsx('text', { className: 'dshcg-label', x: 24, y: 4, children: n.item.label }),
-                      count ? jsx('text', { className: 'dshcg-count', x: n.w - 10, y: 4, textAnchor: 'end', children: count }) : null
-                    ]
-                  }, n.id)
-                })
-              ]
+      return jsx('div', {
+        className: 'dshcg-treebox',
+        children: jsxs('svg', {
+          className: 'dshcg-tree',
+          role: 'img',
+          'aria-label': t('tree_label'),
+          width: Math.round(layout.width * scale),
+          height: Math.round(layout.height * scale),
+          viewBox: `0 0 ${layout.width} ${layout.height}`,
+          children: [
+            ...layout.nodes.filter((n) => n.parent).map((n) => jsx('path', { className: 'dshcg-link', d: linkPath(n.parent, n), 'data-dim': dim(n.item) ? 'true' : 'false' }, `l${n.id}`)),
+            ...layout.nodes.map((n) => {
+              const count = countOf(n.item, shown)
+              return jsxs('g', {
+                className: 'dshcg-node',
+                'data-kind': n.item.kind,
+                'data-dim': dim(n.item) ? 'true' : 'false',
+                'data-match': hit(n.item) ? 'true' : 'false',
+                'data-selected': chosen(n.item) ? 'true' : 'false',
+                style: { transform: `translate(${n.x}px,${n.y}px)` },
+                onClick: () => activate(n.item),
+                children: [
+                  jsx('title', { children: n.item.full ?? n.item.label }),
+                  jsx('rect', { className: 'dshcg-pill', x: 0, y: -PILL / 2, width: n.w, height: PILL, rx: PILL / 2 }),
+                  jsx('circle', { cx: 12, cy: 0, r: 4, style: dotStyle(n.item) }),
+                  jsx('text', { className: 'dshcg-label', x: 24, y: 4, children: n.item.label }),
+                  count ? jsx('text', { className: 'dshcg-count', x: n.w - 10, y: 4, textAnchor: 'end', children: count }) : null
+                ]
+              }, n.id)
             })
-          })
-        ]
+          ]
+        })
       })
     }
 
@@ -562,43 +594,90 @@ window.__ModuleLoader__.load({
       })
     }
 
+    /** A chat, selected in the tree: its marks, summary, dates and what memory saved in it (#87). */
+    function ChatPanel({ chat, t, onClose }) {
+      const marks = [chat.shared ? '' : t('private'), chat.memory ? '' : t('memoryOff')].filter(Boolean).join(' · ')
+      const day = (iso) => (iso ? new Date(iso).toLocaleDateString() : '?')
+      const s = chat.savings
+      return jsxs('div', {
+        className: 'dshcg-panel',
+        role: 'region',
+        'aria-label': `c${chat.cid}`,
+        children: [
+          jsxs('div', {
+            className: 'dshcg-row',
+            children: [
+              jsx('strong', { children: `c${chat.cid}` }),
+              marks ? jsx('span', { className: 'dshcg-muted', children: marks }) : null,
+              jsx('button', { type: 'button', className: 'dshcg-btn', onClick: onClose, children: t('close') })
+            ]
+          }),
+          chat.title ? jsx('div', { children: chat.title }) : null,
+          chat.summary ? jsx('div', { className: 'dshcg-muted', children: chat.summary }) : null,
+          jsx('div', { className: 'dshcg-muted', children: `${chat.total} ${t('topics')} · ${day(chat.startedAt)} – ${day(chat.lastActiveAt)}` }),
+          s === null || s === undefined
+            ? jsx('div', { className: 'dshcg-muted', children: t('savingsUnavailable') })
+            : jsx('div', { children: `${t('saved')} ${number(s.saved)} · ${t('cost')} ${number(s.cost)} · ${t('net')} ${s.net >= 0 ? '+' : '−'}${number(Math.abs(s.net))}` })
+        ]
+      })
+    }
+
     /** Memory tree, the page the sidebar entry opens in the main column (#85). */
     function TreePage(props) {
       const t = translator(props.t)
       const [map, setMap] = useState(null)
-      const [detail, setDetail] = useState(null)
-      // Answers can come back out of order (a slow map, then a quick one): requests of each kind are
-      // numbered, and only the latest one's answer is taken.
-      const asked = React.useRef({ map: 0, topic: 0 })
-      const ask = (kind) => {
-        const n = ++asked.current[kind]
-        return (take) => (value) => { if (asked.current[kind] === n) take(value) }
-      }
+      // Topics read so far (#87): id -> the host's answer, { loading: true } or { error: true }.
+      const [details, setDetails] = useState({})
+      const [selected, setSelected] = useState(null) // { topic: id } or { chat: cid }
+      const [query, setQuery] = useState('')
+      const [kind, setKind] = useState('')
+      const [scale, setScale] = useState(1)
+      // Each workspace shown is a new generation: an answer asked in an older one is dropped, so a
+      // late tree or topic cannot land in the workspace chosen since.
+      const generation = React.useRef(0)
       const show = (next) => {
-        const latest = ask('map')
-        ask('topic') // a topic still on its way was asked in the workspace being left
+        const n = ++generation.current
         setMap(null)
-        setDetail(null)
-        getJson('tree', { w: next }).then(latest(setMap), latest(() => setMap({ error: true })))
+        setDetails({})
+        setSelected(null)
+        getJson('tree', { w: next }).then((value) => { if (generation.current === n) setMap(value) }, () => { if (generation.current === n) setMap({ error: true }) })
       }
       const ws = useWorkspaces(show)
-      const open = (id) => {
-        const latest = ask('topic')
-        // A topic that cannot be read says so instead of leaving the last one open (review).
-        getJson('topic', { w: ws.key, id }).then(latest(setDetail), latest(() => setDetail({ id, error: true })))
+      const read = (id) => {
+        const n = generation.current
+        const take = (value) => { if (generation.current === n) setDetails((was) => ({ ...was, [id]: value })) }
+        setDetails((was) => ({ ...was, [id]: { loading: true } }))
+        getJson('topic', { w: ws.key, id }).then(take, () => take({ id, error: true }))
       }
-      // Close also drops a topic still on its way, so a late answer cannot reopen the panel.
-      const close = () => { ask('topic'); setDetail(null) }
+      // A topic is read once; one that failed is asked again when opened again.
+      const open = (id) => {
+        setSelected({ topic: id })
+        if (!details[id] || details[id].error) read(id)
+      }
+      const close = () => setSelected(null)
+      const detail = selected?.topic ? details[selected.topic] : undefined
+      const panel = !selected || !map?.chats ? null
+        : selected.chat !== undefined ? jsx(ChatPanel, { chat: map.chats.find((c) => c.cid === selected.chat), t, onClose: close }, `c${selected.chat}`)
+          : detail?.error ? jsxs('div', { className: 'dshcg-panel', children: [jsx('div', { className: 'dshcg-bad', children: t('topicFailed') }), jsxs('div', { className: 'dshcg-row', children: [jsx('button', { type: 'button', className: 'dshcg-btn', onClick: () => read(selected.topic), children: t('retry') }), jsx('button', { type: 'button', className: 'dshcg-btn', onClick: close, children: t('close') })] })] })
+            : !detail || detail.loading ? jsx('div', { className: 'dshcg-panel dshcg-muted', children: t('loading') })
+              // Keyed by topic: another topic gets a new panel, not this one's buttons and Copied.
+              : jsx(TopicPanel, { detail, t, onOpen: open, onClose: close }, detail.id)
       const notice = overviewNotice(ws, t)
       const body = notice ? [notice] : [
         workspaceButtons(ws, t),
         !map ? jsx('div', { className: 'dshcg-muted', children: t('loading') })
           : map.error ? jsxs('div', { className: 'dshcg-row', children: [jsx('div', { className: 'dshcg-bad', children: t('loadFailed') }), jsx('button', { type: 'button', className: 'dshcg-btn', onClick: () => show(ws.key), children: t('retry') })] })
             : map.chats.length === 0 ? jsx('div', { className: 'dshcg-muted', children: t('noWorkspaces') })
-              : jsx(MemoryTree, { data: map, t, onOpen: open }, map.key),
-        // Keyed by topic: another topic gets a new panel, not this one's buttons and Copied.
-        detail?.error ? jsxs('div', { className: 'dshcg-row', children: [jsx('div', { className: 'dshcg-bad', children: t('topicFailed') }), jsx('button', { type: 'button', className: 'dshcg-btn', onClick: close, children: t('close') })] })
-          : detail ? jsx(TopicPanel, { detail, t, onOpen: open, onClose: close }, detail.id) : null
+              : jsxs('div', {
+                className: 'dshcg-page',
+                children: [
+                  jsx(TreeTools, { t, query, kind, onQuery: setQuery, onKind: setKind, onScale: setScale }),
+                  jsxs('div', {
+                    className: panel ? 'dshcg-split' : undefined,
+                    children: [jsx(MemoryTree, { data: map, t, query, kind, scale, details, selected, onOpen: open, onChat: (cid) => setSelected({ chat: cid }) }, map.key), panel]
+                  })
+                ]
+              })
       ]
       return jsx('div', {
         className: 'dshcg-main',
@@ -641,11 +720,13 @@ window.__ModuleLoader__.load({
     exports.TreePage = TreePage
     exports.TreeIcon = TreeIcon
     exports.MemoryTree = MemoryTree
+    exports.TreeTools = TreeTools
     exports.layoutTree = layoutTree
     exports.treeItems = treeItems
     exports.initialOpen = initialOpen
     exports.chatLabel = chatLabel
     exports.TopicPanel = TopicPanel
+    exports.ChatPanel = ChatPanel
     exports.subcommandOf = subcommandOf
     exports.splitText = splitText
     return module.exports

@@ -119,16 +119,20 @@ const settle = () => new Promise((resolve) => setImmediate(resolve))
 /** A fetch the test answers itself, one URL at a time and in any order. */
 function lateFetch() {
   const waiting = new Map()
+  const asked = []
   return {
-    fetch: (url) => new Promise((resolve) => waiting.set(url, resolve)),
+    asked,
+    fetch: (url) => { asked.push(url); return new Promise((resolve) => waiting.set(url, resolve)) },
     answer: (url, body) => {
       assert.ok(waiting.has(url), `the page asked for ${url}`)
       waiting.get(url)({ ok: true, json: async () => body })
+      waiting.delete(url) // answered: asking again must be a new request
       return settle()
     },
     fail: (url) => {
       assert.ok(waiting.has(url), `the page asked for ${url}`)
       waiting.get(url)({ ok: false, status: 500, json: async () => ({ error: 'failed' }) })
+      waiting.delete(url)
       return settle()
     }
   }
@@ -141,13 +145,13 @@ const topicOf = (id, links = []) => ({ id, label: id, gist: '', kind: 'fact', ch
 async function openPage(workspaces, component = 'TreePage') {
   const effects = []
   const react = fakeReact({ effects })
-  const { fetch, answer, fail } = lateFetch()
+  const { fetch, answer, fail, asked } = lateFetch()
   const client = loadClient({ fetch, react })
   const page = () => react.render(client[component], { t })
   page()
   for (const run of effects.splice(0)) run()
   await answer('api/context-graph.overview', { workspaces })
-  return { client, page, answer, fail }
+  return { client, page, answer, fail, asked }
 }
 
 test('a late tree or topic answer does not replace the one asked for since', async () => {
@@ -165,13 +169,16 @@ test('a late tree or topic answer does not replace the one asked for since', asy
 })
 
 test('a topic asked in one workspace and answered after switching to another is dropped', async () => {
-  const { client, page, answer } = await openPage([{ key: 'a', title: 'A', indexed: 1, topics: 1 }, { key: 'b', title: 'B', indexed: 1, topics: 1 }])
+  const { client, page, answer, asked } = await openPage([{ key: 'a', title: 'A', indexed: 1, topics: 1 }, { key: 'b', title: 'B', indexed: 1, topics: 1 }])
   await answer('api/context-graph.tree?w=a', mapOf('a'))
   find(page(), (e) => e.type === client.MemoryTree).props.onOpen('c1n1') // in A
   find(page(), (e) => e.type === 'button' && e.key === 'b').props.onClick() // before the topic came back
   await answer('api/context-graph.tree?w=b', mapOf('b'))
   await answer('api/context-graph.topic?w=a&id=c1n1', topicOf('c1n1'))
   assert.equal(find(page(), (e) => e.type === client.TopicPanel), undefined, 'A\'s topic is not drawn under B\'s tree, where its links would ask B')
+  // B has a c1n1 of its own: opening it asks B, not A's late answer (#87 keeps topics read).
+  find(page(), (e) => e.type === client.MemoryTree).props.onOpen('c1n1')
+  assert.ok(asked.includes('api/context-graph.topic?w=b&id=c1n1'))
 })
 
 test('each topic gets a new panel, two links to one topic stay two, and Copied means copied', async () => {
@@ -203,10 +210,10 @@ test('each topic gets a new panel, two links to one topic stay two, and Copied m
 const branch = (cid, topics, extra = {}) => ({ cid, summary: `chat ${cid}`, shared: true, memory: true, total: topics.length, topics: topics.map((k, i) => [`n${i + 1}`, `topic ${cid}.${i + 1}`, k]), links: [], ...extra })
 
 /** MemoryTree drawn with state kept between renders. */
-function mountTree(data, onOpen = () => {}) {
+function mountTree(data, onOpen = () => {}, more = {}) {
   const react = fakeReact()
   const client = loadClient({ react })
-  const draw = () => react.render(client.MemoryTree, { data, t, onOpen })
+  const draw = () => react.render(client.MemoryTree, { data, t, onOpen, ...more })
   const nodes = () => [...walk(draw())].filter((e) => e.type === 'g' && e.props.className === 'dshcg-node')
   const node = (id) => nodes().find((g) => g.key === id)
   return { client, draw, nodes, node, ids: () => nodes().map((g) => g.key) }
@@ -256,27 +263,37 @@ test('the newest chats start open while their topics fit 40 rows, the newest at 
 })
 
 test('search opens the chats with a match and dims the other topics; a kind dims the other kinds (#86)', () => {
-  const tree = mountTree({ key: 'a', title: 'W', chats: [branch(2, many2(40)), branch(1, ['fact', 'decision'])] })
+  const more = {} // the page's toolbar state, changed between draws
+  const tree = mountTree({ key: 'a', title: 'W', chats: [branch(2, many2(40)), branch(1, ['fact', 'decision'])] }, () => {}, more)
   assert.deepEqual(tree.ids().slice(-1), ['c1'], 'c1 starts closed: c2 fills the 40 rows')
-  find(tree.draw(), (e) => e.type === 'input').props.onChange({ target: { value: 'TOPIC 1.2' } })
+  more.query = 'TOPIC 1.2'
   assert.ok(tree.ids().includes('c1n2'), 'its chat opened for the match')
   assert.equal(tree.node('c1n2').props['data-match'], 'true')
   assert.equal(tree.node('c1n1').props['data-dim'], 'true')
   assert.equal(tree.node('c1').props['data-dim'], 'false', 'chats stay readable')
-  find(tree.draw(), (e) => e.type === 'input').props.onChange({ target: { value: '' } })
+  more.query = ''
   assert.ok(!tree.ids().includes('c1n2'), 'clearing the search leaves what was open as it was')
-  find(tree.draw(), (e) => e.type === 'button' && e.key === 'decision').props.onClick()
+  more.kind = 'decision'
   assert.equal(tree.node('c2n1').props['data-dim'], 'true')
 })
 
 function many2(n) { return Array.from({ length: n }, () => 'fact') }
 
-test('zoom scales the drawing, not the layout (#86)', () => {
-  const tree = mountTree({ key: 'a', title: 'W', chats: [branch(1, ['fact'])] })
+test('the toolbar sets the search, the kind and the zoom; zoom scales the drawing, not the layout (#86)', () => {
+  const client = loadClient()
+  const calls = []
+  const bar = client.TreeTools({ t, query: '', kind: 'fact', onQuery: (q) => calls.push(['query', q]), onKind: (k) => calls.push(['kind', k]), onScale: (s) => calls.push(['scale', typeof s === 'function' ? s(1) : s]) })
+  find(bar, (e) => e.type === 'input').props.onChange({ target: { value: 'cache' } })
+  find(bar, (e) => e.type === 'button' && e.key === 'fact').props.onClick() // the kind shown: pressed again, all kinds
+  find(bar, (e) => e.type === 'button' && e.key === 'task').props.onClick()
+  for (const label of ['+', '−', 't:resetView']) find(bar, (e) => e.props?.children === label).props.onClick()
+  assert.deepEqual(calls, [['query', 'cache'], ['kind', ''], ['kind', 'task'], ['scale', 1.25], ['scale', 0.8], ['scale', 1]])
+  const more = { scale: 1 }
+  const tree = mountTree({ key: 'a', title: 'W', chats: [branch(1, ['fact'])] }, () => {}, more)
   const svg = () => find(tree.draw(), (e) => e.type === 'svg')
   const [, , w, h] = svg().props.viewBox.split(' ').map(Number)
   assert.deepEqual([svg().props.width, svg().props.height], [w, h])
-  find(tree.draw(), (e) => e.props?.children === '+').props.onClick()
+  more.scale = 1.25
   assert.deepEqual([svg().props.width, svg().props.height], [Math.round(w * 1.25), Math.round(h * 1.25)])
   assert.equal(svg().props.viewBox, `0 0 ${w} ${h}`)
 })
@@ -336,12 +353,12 @@ test('Plugins page metadata: icon, translated title and description, Chinese det
   for (const file of ['icon.svg', 'locale', 'src', 'README.zh.md']) assert.ok(pkg.files.includes(file), `${file} is published`)
 })
 
-test('a topic that cannot be read says so; a failed tree can be asked again; Close drops a topic on its way (second review)', async () => {
-  const { client, page, answer, fail } = await openPage([{ key: 'a', title: 'A', indexed: 1, topics: 2 }])
+test('a topic that cannot be read says so and can be asked again; a failed tree too; a late topic does not take the panel back (second review, #87)', async () => {
+  const { client, page, answer, fail } = await openPage([{ key: 'a', title: 'A', indexed: 1, topics: 3 }])
   await fail('api/context-graph.tree?w=a')
-  const retry = find(page(), (e) => e.type === 'button' && e.props.children === 't:retry')
-  assert.ok(retry, 'a Retry next to the tree error, also with one workspace')
-  retry.props.onClick()
+  const retry = () => find(page(), (e) => e.type === 'button' && e.props.children === 't:retry')
+  assert.ok(retry(), 'a Retry next to the tree error, also with one workspace')
+  retry().props.onClick()
   await answer('api/context-graph.tree?w=a', mapOf('a'))
   const drawn = () => find(page(), (e) => e.type === client.MemoryTree)
   drawn().props.onOpen('c1n1')
@@ -350,10 +367,64 @@ test('a topic that cannot be read says so; a failed tree can be asked again; Clo
   await fail('api/context-graph.topic?w=a&id=c1n2')
   assert.equal(find(page(), (e) => e.type === client.TopicPanel), undefined, 'not the last topic, as if it were c1n2')
   assert.ok(find(page(), (e) => e.props?.children === 't:topicFailed'))
+  assert.equal(drawn().props.details.c1n2.error, true, 'the tree marks it too')
+  drawn().props.onOpen('c1n2') // opened again: asked again
+  await fail('api/context-graph.topic?w=a&id=c1n2')
+  retry().props.onClick() // and the panel's Retry asks too
+  await answer('api/context-graph.topic?w=a&id=c1n2', topicOf('c1n2'))
+  assert.equal(find(page(), (e) => e.type === client.TopicPanel).props.detail.id, 'c1n2', 'asked again and shown')
+  drawn().props.onOpen('c1n3')
+  drawn().props.onChat(1) // before c1n3 came back
+  await answer('api/context-graph.topic?w=a&id=c1n3', topicOf('c1n3'))
+  assert.equal(find(page(), (e) => e.type === client.TopicPanel), undefined, 'the chat chosen since keeps the panel')
+  assert.equal(find(page(), (e) => e.type === client.ChatPanel).props.chat.cid, 1)
+  find(page(), (e) => e.type === client.ChatPanel).props.onClose()
+  assert.equal(find(page(), (e) => e.type === client.ChatPanel), undefined)
+})
+
+test('a topic is read once; its messages become its children in the tree, newest last, and lead back to it (#87)', async () => {
+  const { client, page, answer, asked: requests } = await openPage([{ key: 'a', title: 'A', indexed: 1, topics: 1 }])
+  await answer('api/context-graph.tree?w=a', mapOf('a'))
+  const drawn = () => find(page(), (e) => e.type === client.MemoryTree)
   drawn().props.onOpen('c1n1')
-  find(page(), (e) => e.type === 'button' && e.props.children === 't:close').props.onClick()
-  await answer('api/context-graph.topic?w=a&id=c1n1', topicOf('c1n1'))
-  assert.equal(find(page(), (e) => e.type === client.TopicPanel), undefined, 'a late answer does not reopen a closed panel')
+  const sources = [{ role: 'user', turn: 7, text: 'Which cache\nshould we use?' }, { role: 'assistant', text: 'pnpm store' }]
+  await answer('api/context-graph.topic?w=a&id=c1n1', { ...topicOf('c1n1'), sources })
+  drawn().props.onOpen('c1n1')
+  assert.equal(requests.filter((url) => url.includes('id=c1n1')).length, 1, 'read already: nothing is asked')
+  assert.equal(find(page(), (e) => e.type === client.TopicPanel).props.detail.id, 'c1n1')
+  const asked = []
+  // The tree with that answer, the topic open.
+  const tree = mountTree(mapOf('a'), (id) => asked.push(id), { details: { c1n1: { ...topicOf('c1n1'), sources } } })
+  tree.node('c1n1').props.onClick() // opens it
+  assert.deepEqual(tree.ids(), ['w', 'c1', 'c1n1', 'c1n1s0', 'c1n1s1'])
+  assert.equal(find(tree.node('c1n1s0'), (e) => e.props?.className === 'dshcg-label').props.children, 'user t7 · Which cache should we use?')
+  tree.node('c1n1s1').props.onClick()
+  assert.deepEqual(asked, ['c1n1', 'c1n1'], 'a message leads back to its topic')
+})
+
+test('a topic on its way shows …, one that failed shows !, a chosen node is marked, and a chat click shows the chat (#87)', () => {
+  const chats = []
+  const tree = mountTree(mapOf('a'), () => {}, { details: { c1n1: { loading: true } }, selected: { chat: 1 }, onChat: (cid) => chats.push(cid) })
+  const badge = (id) => find(tree.node(id), (e) => e.props?.className === 'dshcg-count')?.props.children
+  assert.equal(badge('c1n1'), '…')
+  assert.equal(tree.node('c1').props['data-selected'], 'true')
+  tree.node('c1').props.onClick()
+  assert.deepEqual(chats, [1])
+  const failed = mountTree(mapOf('a'), () => {}, { details: { c1n1: { error: true } } })
+  assert.equal(find(failed.node('c1n1'), (e) => e.props?.className === 'dshcg-count').props.children, '!')
+  assert.match(find(failed.node('c1n1'), (e) => e.type === 'title').props.children, /t:topicFailed$/)
+})
+
+test('a chat\'s panel shows its marks, dates and savings, or says the savings cannot be read (#87)', () => {
+  const client = loadClient()
+  const text = (panel) => JSON.stringify(panel)
+  const chat = { cid: 4, title: 'NZQA research', summary: 'Earth and Space Science', shared: false, memory: true, total: 9, startedAt: '2026-11-01T00:00:00Z', lastActiveAt: '2026-11-20T00:00:00Z', savings: { saved: 2590, cost: 6838, net: -4248 } }
+  const shown = text(client.ChatPanel({ chat, t, onClose: () => {} }))
+  assert.match(shown, /t:private/)
+  assert.doesNotMatch(shown, /t:memoryOff/)
+  assert.match(shown, /9 t:topics/)
+  assert.match(shown, /t:saved 2,590 · t:cost 6,838 · t:net −4,248/)
+  assert.match(text(client.ChatPanel({ chat: { ...chat, savings: null }, t, onClose: () => {} })), /t:savingsUnavailable/)
 })
 
 test('the page states the savings rule the code follows (second review)', () => {
