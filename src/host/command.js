@@ -95,7 +95,7 @@ export function registerCommand(ctx, rt, { build, turnOn, onAtIdle, meter, updat
               const all = await rt.loadViews(agent, { all: true })
               // dsh keeps the card's whole text in the chat's session log, at every call: the newest
               // chats only (loadViews keeps listChats' order, newest first), the page has the rest (#82).
-              const more = all.length > MAP_MAX_CHATS ? `\n… ${plural(all.length - MAP_MAX_CHATS, 'more chat')}; Plugins → Context Graph has the full map` : ''
+              const more = all.length > MAP_MAX_CHATS ? `\n… ${plural(all.length - MAP_MAX_CHATS, 'more chat')}; Memory tree in the sidebar has them all` : ''
               return { kind: 'success', text: `${plural(all.length, 'chat')} in ${rt.dirFor(agent)}\n${renderMap(all.slice(0, MAP_MAX_CHATS))}${more}` }
             }
             const views = await rt.loadViews(agent)

@@ -1,11 +1,12 @@
 // The browser side of dsh-context-graph, hand-written in dsh's client-bundle format (no build step).
 // The shell loads this file as a plain script; `require` reaches only the shell's shared modules.
-// Two contributions:
+// Three contributions:
 //   - the chat card for `/context-graph`: dsh's own DisclosureRow, a one-line summary that opens
 //     to the details;
-//   - the plugin's page in Plugins (`plugins.bundle.config`, #35, #36): what memory saved and cost
-//     in each workspace, and a map of the memory. Data comes from the host's owner-only routes
-//     (src/host/page.js), already laid out, so this file only draws.
+//   - the plugin's page in Plugins (`plugins.bundle.config`, #35): what memory saved and cost in
+//     each workspace;
+//   - Memory tree, an entry of its own in the sidebar's panel list with a page in the main column
+//     (#85): what the memory holds. Data comes from the host's owner-only routes (src/host/page.js).
 window.__ModuleLoader__.load({
   id: 'dsh-context-graph',
   factory: (require) => {
@@ -28,7 +29,10 @@ window.__ModuleLoader__.load({
       find: 'Find topics',
       running: 'Working…',
       failed: 'Failed',
-      pageIntro: 'What memory saved and cost in each workspace, and a map of what it holds. Numbers marked as estimates follow the rule shown under them.',
+      pageIntro: 'What memory saved and cost in each workspace. Numbers marked as estimates follow the rule shown under them.',
+      treeHint: 'What the memory holds is drawn as a tree: Memory tree in the left sidebar.',
+      panel: 'Memory tree',
+      treeIntro: 'Each workspace\'s memory: its chats, their topics, and the messages each topic came from.',
       loading: 'Loading…',
       loadFailed: 'Could not read the memory. Try again in a moment.',
       retry: 'Retry',
@@ -73,7 +77,10 @@ window.__ModuleLoader__.load({
       find: '查找主题',
       running: '处理中…',
       failed: '失败',
-      pageIntro: '每个工作区里记忆节省和花费了多少，以及记忆里有什么。标为估算的数字按下面写明的规则计算。',
+      pageIntro: '每个工作区里记忆节省和花费了多少。标为估算的数字按下面写明的规则计算。',
+      treeHint: '记忆里有什么画成了一棵树：左侧边栏的“记忆树”。',
+      panel: '记忆树',
+      treeIntro: '每个工作区的记忆：它的对话、对话里的主题，以及每个主题来自哪些消息。',
       loading: '正在读取…',
       loadFailed: '无法读取记忆，请稍后再试。',
       retry: '重试',
@@ -116,6 +123,13 @@ window.__ModuleLoader__.load({
       '.dshcg-summary[data-error]{color:var(--dsw-alias-state-error-primary,#d64545);opacity:1}',
       '.dshcg-body{padding:6px 0 6px 24px;font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word}',
       '.dshcg-page{display:flex;flex-direction:column;gap:12px;font-size:13px;color:var(--dsw-alias-label-primary)}',
+      // The Memory tree page, laid out like dsh's own first-level pages (Plugins, Automation tasks):
+      // a 20px title row 28px from the top, a centred column with responsive side insets.
+      '.dshcg-main{width:100%;height:100%;min-width:0;min-height:0;overflow:auto;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)}',
+      '.dshcg-column{max-width:1280px;margin:0 auto;padding:28px clamp(24px,4vw,48px) 48px;box-sizing:border-box}',
+      '[data-platform="darwin"] .dshcg-column{padding-top:calc(28px + var(--dsh-frame-top-clearance,0px))}',
+      '.dshcg-heading{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px}',
+      '.dshcg-heading h1{margin:0;font-size:20px;line-height:28px;font-weight:500}',
       '.dshcg-muted{color:var(--dsw-alias-label-secondary)}',
       '.dshcg-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}',
       '.dshcg-btn{border:1px solid var(--dsw-alias-border-l3);background:var(--dsw-alias-bg-layer-1);color:inherit;border-radius:var(--dsw-radius-md,8px);padding:4px 10px;cursor:pointer;font:inherit}',
@@ -162,6 +176,27 @@ window.__ModuleLoader__.load({
         jsx('circle', { cx: 10, cy: 17, r: 2, fill: 'currentColor' })
       ]
     })
+
+    /** The sidebar's Memory tree entry: a root and two branches, at the size and colour the row asks for. */
+    function TreeIcon({ size }) {
+      const edge = typeof size === 'number' ? size : 20
+      return jsxs('svg', {
+        width: edge,
+        height: edge,
+        viewBox: '0 0 20 20',
+        fill: 'none',
+        stroke: 'currentColor',
+        strokeWidth: 1.5,
+        strokeLinecap: 'round',
+        'aria-hidden': true,
+        children: [
+          jsx('path', { d: 'M6 10C10 10 10 5 14 5M6 10C10 10 10 15 14 15' }),
+          jsx('circle', { cx: 4, cy: 10, r: 2 }),
+          jsx('circle', { cx: 16, cy: 5, r: 2 }),
+          jsx('circle', { cx: 16, cy: 15, r: 2 })
+        ]
+      })
+    }
 
     const SUBCOMMANDS = ['stats', 'on', 'off', 'share', 'unshare', 'build', 'map', 'find']
 
@@ -386,19 +421,16 @@ window.__ModuleLoader__.load({
       })
     }
 
-    /** The plugin's page in Plugins: one workspace at a time, its savings, then its map. */
-    function MemoryPage(props) {
-      const t = translator(props.t)
+    /**
+     * The workspaces with memory, and the one shown: both pages start from the overview. `onChoose`
+     * runs when a workspace is chosen, the first one included.
+     */
+    function useWorkspaces(onChoose) {
       const [state, setState] = useState({ status: 'loading' })
       const [key, setKey] = useState(null)
-      const [map, setMap] = useState(null)
-      const [detail, setDetail] = useState(null)
-      // Answers can come back out of order (a slow map, then a quick one): requests of each kind are
-      // numbered, and only the latest one's answer is taken.
-      const asked = React.useRef({ map: 0, topic: 0 })
-      const ask = (kind) => {
-        const n = ++asked.current[kind]
-        return (take) => (value) => { if (asked.current[kind] === n) take(value) }
+      const choose = (next) => {
+        setKey(next)
+        onChoose?.(next)
       }
       const load = () => {
         setState({ status: 'loading' })
@@ -408,46 +440,97 @@ window.__ModuleLoader__.load({
           if (first) choose(first.key)
         }, () => setState({ status: 'error' }))
       }
-      const choose = (next) => {
-        const latest = ask('map')
-        ask('topic') // a topic still on its way was asked in the workspace being left
-        setKey(next)
-        setMap(null)
-        setDetail(null)
-        getJson('map', { w: next }).then(latest(setMap), latest(() => setMap({ error: true })))
-      }
-      const open = (id) => {
-        const latest = ask('topic')
-        // A topic that cannot be read says so instead of leaving the last one open (review).
-        getJson('topic', { w: key, id }).then(latest(setDetail), latest(() => setDetail({ id, error: true })))
-      }
-      // Close also drops a topic still on its way, so a late answer cannot reopen the panel.
-      const close = () => { ask('topic'); setDetail(null) }
       React.useEffect(load, [])
-      if (state.status === 'loading') return jsx('div', { className: 'dshcg-page dshcg-muted', children: t('loading') })
-      if (state.status === 'error') {
-        return jsxs('div', { className: 'dshcg-page', children: [jsx('div', { className: 'dshcg-bad', children: t('loadFailed') }), jsx('button', { type: 'button', className: 'dshcg-btn', onClick: load, children: t('retry') })] })
+      return { state, key, load, choose }
+    }
+
+    /** Loading, failed or empty overview: what a page shows instead of its body, or null once ready. */
+    function overviewNotice(ws, t) {
+      if (ws.state.status === 'loading') return jsx('div', { className: 'dshcg-muted', children: t('loading') })
+      if (ws.state.status === 'error') {
+        return jsxs('div', { className: 'dshcg-row', children: [jsx('div', { className: 'dshcg-bad', children: t('loadFailed') }), jsx('button', { type: 'button', className: 'dshcg-btn', onClick: ws.load, children: t('retry') })] })
       }
-      if (state.workspaces.length === 0) return jsx('div', { className: 'dshcg-page dshcg-muted', children: t('noWorkspaces') })
-      const current = state.workspaces.find((w) => w.key === key)
+      if (ws.state.workspaces.length === 0) return jsx('div', { className: 'dshcg-muted', children: t('noWorkspaces') })
+      return null
+    }
+
+    /** One button per workspace, shown only when there is more than one. */
+    function workspaceButtons(ws, t) {
+      if (ws.state.workspaces.length < 2) return null
+      return jsx('div', { className: 'dshcg-row', children: ws.state.workspaces.map((w) => jsx('button', { type: 'button', className: 'dshcg-btn', 'aria-pressed': w.key === ws.key ? 'true' : 'false', onClick: () => ws.choose(w.key), children: `${w.title} · ${w.indexed} ${t('chats')} · ${w.topics} ${t('topics')}` }, w.key)) })
+    }
+
+    /** The plugin's page in Plugins: one workspace at a time and its savings; the tree has its own page (#85). */
+    function SavingsPage(props) {
+      const t = translator(props.t)
+      const ws = useWorkspaces()
+      const notice = overviewNotice(ws, t)
+      if (notice) return jsx('div', { className: 'dshcg-page', children: notice })
+      const current = ws.state.workspaces.find((w) => w.key === ws.key)
       return jsxs('div', {
         className: 'dshcg-page',
         children: [
           jsx('div', { className: 'dshcg-muted', children: t('pageIntro') }),
-          state.workspaces.length > 1
-            ? jsx('div', { className: 'dshcg-row', children: state.workspaces.map((w) => jsx('button', { type: 'button', className: 'dshcg-btn', 'aria-pressed': w.key === key ? 'true' : 'false', onClick: () => choose(w.key), children: `${w.title} · ${w.indexed} ${t('chats')} · ${w.topics} ${t('topics')}` }, w.key)) })
-            : null,
+          workspaceButtons(ws, t),
           current ? jsx(Savings, { s: current.savings, t }) : null,
           jsx('div', { className: 'dshcg-muted', children: t('savingsRule') }),
-          !map ? jsx('div', { className: 'dshcg-muted', children: t('loading') })
-            : map.error ? jsxs('div', { className: 'dshcg-row', children: [jsx('div', { className: 'dshcg-bad', children: t('loadFailed') }), jsx('button', { type: 'button', className: 'dshcg-btn', onClick: () => choose(key), children: t('retry') })] })
-              : jsx(MemoryMap, { map, t, onOpen: open }),
-          // Keyed by topic: another topic gets a new panel, not this one's buttons and Copied.
-          detail?.error ? jsxs('div', { className: 'dshcg-row', children: [jsx('div', { className: 'dshcg-bad', children: t('topicFailed') }), jsx('button', { type: 'button', className: 'dshcg-btn', onClick: close, children: t('close') })] })
-            : detail ? jsx(TopicPanel, { detail, t, onOpen: open, onClose: close }, detail.id) : null
+          jsx('div', { children: t('treeHint') })
         ]
       })
     }
+
+    /** Memory tree, the page the sidebar entry opens in the main column (#85). */
+    function TreePage(props) {
+      const t = translator(props.t)
+      const [map, setMap] = useState(null)
+      const [detail, setDetail] = useState(null)
+      // Answers can come back out of order (a slow map, then a quick one): requests of each kind are
+      // numbered, and only the latest one's answer is taken.
+      const asked = React.useRef({ map: 0, topic: 0 })
+      const ask = (kind) => {
+        const n = ++asked.current[kind]
+        return (take) => (value) => { if (asked.current[kind] === n) take(value) }
+      }
+      const show = (next) => {
+        const latest = ask('map')
+        ask('topic') // a topic still on its way was asked in the workspace being left
+        setMap(null)
+        setDetail(null)
+        getJson('map', { w: next }).then(latest(setMap), latest(() => setMap({ error: true })))
+      }
+      const ws = useWorkspaces(show)
+      const open = (id) => {
+        const latest = ask('topic')
+        // A topic that cannot be read says so instead of leaving the last one open (review).
+        getJson('topic', { w: ws.key, id }).then(latest(setDetail), latest(() => setDetail({ id, error: true })))
+      }
+      // Close also drops a topic still on its way, so a late answer cannot reopen the panel.
+      const close = () => { ask('topic'); setDetail(null) }
+      const notice = overviewNotice(ws, t)
+      const body = notice ? [notice] : [
+        workspaceButtons(ws, t),
+        !map ? jsx('div', { className: 'dshcg-muted', children: t('loading') })
+          : map.error ? jsxs('div', { className: 'dshcg-row', children: [jsx('div', { className: 'dshcg-bad', children: t('loadFailed') }), jsx('button', { type: 'button', className: 'dshcg-btn', onClick: () => show(ws.key), children: t('retry') })] })
+            : jsx(MemoryMap, { map, t, onOpen: open }),
+        // Keyed by topic: another topic gets a new panel, not this one's buttons and Copied.
+        detail?.error ? jsxs('div', { className: 'dshcg-row', children: [jsx('div', { className: 'dshcg-bad', children: t('topicFailed') }), jsx('button', { type: 'button', className: 'dshcg-btn', onClick: close, children: t('close') })] })
+          : detail ? jsx(TopicPanel, { detail, t, onOpen: open, onClose: close }, detail.id) : null
+      ]
+      return jsx('div', {
+        className: 'dshcg-main',
+        children: jsxs('div', {
+          className: 'dshcg-column dshcg-page',
+          children: [
+            jsx('div', { className: 'dshcg-heading', children: jsx('h1', { children: t('panel') }) }),
+            jsx('div', { className: 'dshcg-muted', children: t('treeIntro') }),
+            ...body
+          ]
+        })
+      })
+    }
+
+    // The sidebar entry and the page it opens share this id, as dsh's own Automation tasks do.
+    const PANEL = 'dsh-context-graph'
 
     const inject = ['slots', 'locale']
     function apply(ctx) {
@@ -457,14 +540,22 @@ window.__ModuleLoader__.load({
       )
       // The plugin's own page in Plugins, keyed by the package name (rc.5 renders it with { view: 'page' }).
       ctx.slots.inject('plugins.bundle.config', () =>
-        ctx.slots.register({ name: 'plugins.bundle.config', key: 'dsh-context-graph', locale: NAMESPACE }, MemoryPage)
+        ctx.slots.register({ name: 'plugins.bundle.config', key: 'dsh-context-graph', locale: NAMESPACE }, SavingsPage)
+      )
+      ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL, locale: NAMESPACE }, TreePage))
+      // The label is read again at every projection, so it follows the app's language.
+      const label = translator(typeof ctx.locale.bind === 'function' ? ctx.locale.bind(NAMESPACE) : undefined)
+      ctx.slots.inject('sidebar.panellist', () =>
+        ctx.slots.register({ name: 'sidebar.panellist', id: PANEL, order: 30, locale: NAMESPACE, label: () => label('panel') }, TreeIcon)
       )
     }
 
     exports.inject = inject
     exports.apply = apply
     exports.ContextGraphCard = ContextGraphCard
-    exports.MemoryPage = MemoryPage
+    exports.SavingsPage = SavingsPage
+    exports.TreePage = TreePage
+    exports.TreeIcon = TreeIcon
     exports.MemoryMap = MemoryMap
     exports.TopicPanel = TopicPanel
     exports.subcommandOf = subcommandOf

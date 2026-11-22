@@ -177,5 +177,5 @@ test('#82 /context-graph map lists the newest 40 chats and points to the page fo
   assert.match(text, /^c45 /m, 'the newest')
   assert.match(text, /^c6 /m)
   assert.doesNotMatch(text, /^c5 /m, 'not the oldest')
-  assert.match(text, /\n… 5 more chats; Plugins → Context Graph has the full map$/)
+  assert.match(text, /\n… 5 more chats; Memory tree in the sidebar has them all$/)
 }))

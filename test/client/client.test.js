@@ -50,20 +50,49 @@ function loadClient({ openState = false, fetch, effects = [], globals = {}, reac
 const t = (key) => `t:${key}`
 const row = (card) => card.props.children.props
 
-test('registers one card keyed to the /context-graph command, with en and zh text', () => {
+test('registers the command card, the savings page in Plugins, and Memory tree in the sidebar with its page (#85)', () => {
   const calls = []
+  const labels = []
   loadClient().apply({
     effect: (fn) => fn(),
-    locale: { register: (ns, dict) => calls.push(['locale', ns, Object.keys(dict)]) },
-    slots: { inject: (name, fn) => { calls.push(['inject', name]); fn() }, register: (options, component) => calls.push(['register', options, component.name]) }
+    locale: { register: (ns, dict) => calls.push(['locale', ns, Object.keys(dict)]), bind: (ns) => (key) => `${ns}:${key}` },
+    slots: { inject: (name, fn) => { calls.push(['inject', name]); fn() }, register: (options, component) => { if (options.label) labels.push(options.label()); calls.push(['register', options, component.name]) } }
   })
   assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
     ['locale', 'dsh-context-graph', ['en', 'zh']],
     ['inject', 'conversation.chat.commandview'],
     ['register', { name: 'conversation.chat.commandview', key: 'context-graph', locale: 'dsh-context-graph' }, 'ContextGraphCard'],
     ['inject', 'plugins.bundle.config'],
-    ['register', { name: 'plugins.bundle.config', key: 'dsh-context-graph', locale: 'dsh-context-graph' }, 'MemoryPage']
+    ['register', { name: 'plugins.bundle.config', key: 'dsh-context-graph', locale: 'dsh-context-graph' }, 'SavingsPage'],
+    // The entry and its page share one id, as dsh's own Automation tasks do.
+    ['inject', 'main'],
+    ['register', { name: 'main', key: 'dsh-context-graph', locale: 'dsh-context-graph' }, 'TreePage'],
+    ['inject', 'sidebar.panellist'],
+    ['register', { name: 'sidebar.panellist', id: 'dsh-context-graph', order: 30, locale: 'dsh-context-graph' }, 'TreeIcon']
   ])
+  assert.deepEqual(labels, ['dsh-context-graph:panel'], 'the label is read through the app\'s locale, so it follows the language')
+})
+
+test('the sidebar icon takes the size the row asks for (#85)', () => {
+  const client = loadClient()
+  assert.equal(client.TreeIcon({ size: 16, active: false }).props.width, 16)
+  assert.equal(client.TreeIcon({}).props.width, 20)
+})
+
+test('the plugin page keeps the savings and says where the tree is; it asks for no map (#85)', async () => {
+  const effects = []
+  const react = fakeReact({ effects })
+  const { fetch, answer } = lateFetch()
+  const asked = []
+  const client = loadClient({ fetch: (url) => { asked.push(url); return fetch(url) }, react })
+  const page = () => react.render(client.SavingsPage, { t })
+  page()
+  for (const run of effects.splice(0)) run()
+  await answer('api/context-graph.overview', { workspaces: [{ key: 'a', title: 'A', indexed: 1, topics: 1, savings: { saved: 5, cost: 2, net: 3 } }] })
+  assert.ok(find(page(), (e) => e.type?.name === 'Savings'))
+  assert.ok(find(page(), (e) => e.props?.children === 't:treeHint'))
+  assert.equal(find(page(), (e) => e.type === client.MemoryMap), undefined)
+  assert.deepEqual(asked, ['api/context-graph.overview'])
 })
 
 /** Every element of a rendered tree, depth first. */
@@ -78,7 +107,7 @@ test('the plugin page asks the host for the overview and shows loading meanwhile
   const asked = []
   const effects = []
   const client = loadClient({ effects, fetch: (url) => { asked.push(url); return new Promise(() => {}) } })
-  const page = client.MemoryPage({ t })
+  const page = client.SavingsPage({ t })
   assert.match(JSON.stringify(page), /t:loading/)
   for (const run of effects) run()
   assert.deepEqual(asked, ['api/context-graph.overview'], 'document-relative, like dsh\'s own routes')
@@ -121,13 +150,13 @@ function lateFetch() {
 const mapOf = (key) => ({ key, width: 1400, height: 100, chats: [], topics: [], edges: [] })
 const topicOf = (id, links = []) => ({ id, label: id, gist: '', kind: 'fact', chat: { cid: 1, summary: '' }, links, sources: [] })
 
-/** The plugin page once the overview came back: it has asked for the first workspace's map itself. */
-async function openPage(workspaces) {
+/** A page once the overview came back: the tree page has asked for the first workspace's map itself. */
+async function openPage(workspaces, component = 'TreePage') {
   const effects = []
   const react = fakeReact({ effects })
   const { fetch, answer, fail } = lateFetch()
   const client = loadClient({ fetch, react })
-  const page = () => react.render(client.MemoryPage, { t })
+  const page = () => react.render(client[component], { t })
   page()
   for (const run of effects.splice(0)) run()
   await answer('api/context-graph.overview', { workspaces })
@@ -315,8 +344,7 @@ test('savings the host cannot read say so, and a big chat keeps its hidden-topic
 })
 
 test('the page says the savings are unavailable when the host could not read them, instead of zeros (third review)', async () => {
-  const { page, answer } = await openPage([{ key: 'a', title: 'A', indexed: 1, topics: 1, savings: null }])
-  await answer('api/context-graph.map?w=a', mapOf('a'))
+  const { page } = await openPage([{ key: 'a', title: 'A', indexed: 1, topics: 1, savings: null }], 'SavingsPage')
   const savings = find(page(), (e) => e.type?.name === 'Savings')
   assert.equal(savings.type(savings.props).props.children, 't:savingsUnavailable')
 })
