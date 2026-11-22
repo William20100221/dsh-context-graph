@@ -28,6 +28,7 @@ summary of the chat. Memory is a tree that a new chat reads from the top, cheape
 | Layer | What the model sees | When |
 |---|---|---|
 | Subject | nothing by itself: it steers the search (see below), and names its chats when a question about one finds no topic | a question naming a subject |
+| Self | `This chat is c7 in memory`, so the chat knows which branch it is | with the first note a chat gets once it has a number; again after a compaction |
 | Chat | `c3 Postgres tuning for the orders dashboard` | once per chat, with its first topic lines or its first question about earlier work (about 200 tokens for all chats); not again after a restart |
 | Topic | `- c3n12 orders index: (customer_id, created_at) cut the query to 40 ms` | on a message about it; unrelated messages get nothing |
 | Source | the cited messages, each naming its turn (`c3t7`) | `recall("c3n12")` |

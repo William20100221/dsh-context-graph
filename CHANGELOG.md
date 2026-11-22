@@ -4,6 +4,11 @@ All notable changes to dsh-context-graph. Versions follow semver; each minor ver
 is one development cycle (audit, issues, fixes, independent review), documented in
 [docs/cycles](docs/cycles).
 
+## 0.16.1 — 2026-11-23 — a chat knows which chat it is
+
+- A chat is told its memory number (`This chat is c7 in memory`, about 20 tokens) with the first note it
+  gets once it has one, and again only after a compaction; `/context-graph` says it too (#103).
+
 ## 0.16.0 — 2026-11-23 — labels only from the chat itself
 
 - A chat's memory and labels are changed from outside it only by a call that has read that chat
