@@ -1,0 +1,45 @@
+[
+  {
+    "key": "T-1",
+    "milestone": "v0.11.0",
+    "labels": [
+      "enhancement"
+    ],
+    "title": "The memory view hides on the plugin's page in Plugins; give it its own sidebar entry",
+    "body": "**Problem**\nThe only picture of the memory is at the bottom of the plugin's page in Plugins (`plugins.bundle.config`), under the savings cards. To reach it you open Plugins, find Context Graph and scroll. dsh has a place for whole-app pages: the panel list at the top of the left sidebar (Plugins, Automation tasks, and other plugins' entries such as Context Insights).\n\n**Where**: src/client/client.js (MemoryPage), src/host/command.js (`/context-graph map` points to Plugins).\n\n**Fix**\n- Register a `sidebar.panellist` entry with id `dsh-context-graph`, labelled Memory tree, and a `main` page under the same key: the same pair dsh's own Automation tasks page uses (`ui-schedule`), and one that already works in 0.2.1-rc.5 (other plugins use it).\n- The page follows dsh's first-level pages: a 20px title row and a centered column.\n- Remove the map from the plugin's page; the page keeps the savings and the rule behind them, and says where the tree is.\n- `/context-graph map` points to the sidebar entry instead of Plugins.",
+    "number": 85
+  },
+  {
+    "key": "T-2",
+    "milestone": "v0.11.0",
+    "labels": [
+      "enhancement",
+      "quality"
+    ],
+    "title": "The memory map draws circles; the memory is a tree, so draw it as one",
+    "body": "**Problem**\nThe memory is layered like a tree: a workspace holds chats, a chat holds topics, a topic points to the messages it came from (the layers recall walks: chat summary, topic, source, turn). The map draws chats as circles packed in rows with topics as dots on rings inside them. The layers are invisible, labels are cut to a few letters (the screenshot reads `c4 · Research NZQA...`), and nothing says which chat a dot belongs to once circles get small.\n\n**Fix**: a node-link tree, root on the left, built from techniques that big public projects publish under free licences.\n- **Layout**: D3's tidy tree rules (d3-hierarchy, ISC; Reingold-Tilford as improved by Buchheim et al.): one column per depth, parents centred on their children, siblings one row apart and different parents' children further apart. Column widths come from the widest label in the column, as in AntV G6's compactBox layout (Ant Group, MIT), so labels are never cut to fit a circle.\n- **Links**: cubic curves from parent to child, the shape of `d3.linkHorizontal`.\n- **Start small, open on demand**: as in Apache ECharts' tree (`initialTreeDepth`, Apache-2.0), the newest chats start open while the open rows stay under a limit; the rest start closed and show how many topics they hold.\n- **Topics** are grouped by kind (decision, fact, task, artifact, open question), so colours form bands, and keep the search and kind filters.\n- The host sends the tree (chats with their topics and links) instead of a laid-out map; the layout runs in the page, because it changes as branches open and close. `src/core/layout.js` and the `map` route go.\n\nCredits for the techniques go in the README.",
+    "number": 86
+  },
+  {
+    "key": "T-3",
+    "milestone": "v0.11.0",
+    "labels": [
+      "enhancement",
+      "quality"
+    ],
+    "title": "The tree's last level: a topic opens into the messages it came from",
+    "body": "**Problem**\nIn the map a topic is the deepest thing you can see; its source messages show only in the panel under the map, which on a long page is out of sight. The memory tree has one more level: the messages a topic cites, with their turn numbers (what `recall(\"c3n12\")` and `recall(\"c3t7\")` return).\n\n**Fix**\n- Opening a topic asks the host for it once (the existing owner-only `topic` route) and adds its newest stored messages as its children (`user t7 · ...`).\n- Selecting a chat or a topic shows its details in a panel beside the tree, not under it: a topic's gist, links, sources and the id to paste; a chat's summary, marks and savings.\n- A topic that cannot be read says so on its own row and can be asked again.",
+    "number": 87
+  },
+  {
+    "key": "T-4",
+    "milestone": "v0.11.0",
+    "labels": [
+      "enhancement",
+      "accessibility"
+    ],
+    "title": "Tree focus, motion and keyboard: show a node's family, grow branches from their parent, arrow keys",
+    "body": "**Problem**\nThe map can only be read with a mouse: topics are focusable dots, but there is no way to move between them, open a chat or see what belongs together without hovering each dot.\n\n**Fix**\n- **Focus on a family** (Apache ECharts `emphasis.focus: 'relative'`): pointing at or focusing a node dims everything except its ancestors, its descendants and, for a topic, the topics it links to.\n- **Motion** (the D3 collapsible tree's enter-from-parent): a branch that opens grows out of its parent, and rows that move slide to their new place. Timing and easing are Material 3's (Google, Apache-2.0): 300 ms, emphasized `cubic-bezier(0.2, 0, 0, 1)`. Nothing moves when the system asks for reduced motion.\n- **Keyboard** (the W3C WAI-ARIA tree view pattern, which Microsoft Fluent UI and GitHub Primer follow): `role=tree` / `treeitem` with `aria-level`, `aria-expanded` and `aria-selected`; one tab stop; Up/Down move between visible rows, Right opens or steps into a branch, Left closes or steps out to the parent, Home/End go to the first or last row, Enter or Space opens the details.",
+    "number": 88
+  }
+]
