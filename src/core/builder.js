@@ -186,53 +186,48 @@ function labelsNear(clean, open) {
   return { subject, type, project: project === '' ? null : project, parts }
 }
 
-/** The fixed part of the call that sorts already indexed chats into subjects (#96). */
-export const SORT_RULES = [
-  'You sort the chats of one workspace into broad subjects and say what each chat is for. Output ONE JSON object and nothing else:',
-  '{"chats":[{"cid":3,"subject":"...","type":"...","project":"..."}]}',
+/**
+ * The fixed part of the call that labels one chat indexed before 0.14/0.15 (#96, #102). The model
+ * reads that chat itself, never only its summary: another chat's labels are written only by a call
+ * that has gone through its messages.
+ */
+export const LABEL_RULES = [
+  'You read one earlier conversation and label it. Output ONE JSON object and nothing else:',
+  '{"subject":"...","type":"...","project":"..."}',
   '',
   'Rules:',
-  '- One entry per chat listed below, with its cid.',
-  '- subject: the broad subject, at most 4 words; chats on the same subject get the same subject word for word; reuse one of the existing subjects when it fits.',
-  '- type: one of coding, debugging, research, study, writing, planning, setup, data, creative, language, question, chat.',
-  '- project: the project, product, course or subject worked on, at most 4 words, or "" when there is none.'
+  '- subject: the broad subject the conversation belongs to, at most 4 words; reuse one of the workspace subjects below, word for word, when it fits.',
+  '- type: what the conversation is for, one of coding, debugging, research, study, writing, planning, setup, data, creative, language, question, chat.',
+  '- project: the project, product, course or subject worked on, at most 4 words, or "" when there is none.',
+  '- Judge from the conversation itself; the summary and topics only help you find your way in it.'
 ].join('\n')
 
-/** The prompt that sorts `chats` ([{ cid, summary, labels: [topic labels] }]) given the workspace's subjects. */
-export function sortPrompt({ chats, subjects = [] }) {
+/** The prompt that labels one chat from its own messages (`[{ role, text }]`, as indexing reads them). */
+export function labelPrompt({ summary, topics = [], subjects = [], messages, assistantCap = USER_CAP, partial = false }) {
   return [
-    SORT_RULES,
+    LABEL_RULES,
     '',
-    `Existing subjects: ${subjects.length ? subjects.join('; ') : '(none yet)'}`,
+    `Workspace subjects: ${subjects.length ? subjects.join('; ') : '(none yet)'}`,
+    `Summary: ${summary || '(none)'}`,
+    `Topics: ${topics.slice(0, 12).join('; ') || '(none)'}`,
     '',
-    'Chats:',
-    ...chats.map((c) => `c${c.cid} | ${c.summary || '(no summary)'} | topics: ${c.labels.slice(0, 8).join('; ')}`),
+    `Conversation${partial ? ' (its oldest part; the rest is like it)' : ''}:`,
+    transcriptForBuilder(messages, { assistantCap }),
     '',
     'Output the JSON object now.'
   ].join('\n')
 }
 
-/** The sorting answer: `{ [cid]: { subject?, type?, project? } }` for the cids asked about; anything invalid left out. */
-export function parseSortOutput(text, cids) {
+/** The labelling answer: `{ subject?, type?, project? }`, the last valid value of each; placeholders and invalid types left out. */
+export function parseLabelOutput(text) {
   const clean = String(text ?? '').replace(/<think>[\s\S]*?(?:<\/think>|$)/g, '')
-  const out = {}
-  for (const match of clean.matchAll(/"chats"\s*:\s*\[/g)) {
-    for (const raw of objectsInArray(clean, match.index + match[0].length - 1)) {
-      let entry
-      try { entry = JSON.parse(raw.replace(/,\s*([}\]])/g, '$1')) } catch { continue }
-      const cid = Number(String(entry?.cid ?? '').replace(/^c/i, ''))
-      if (!cids.includes(cid)) continue
-      const text = (v) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, 60) : '')
-      const subject = text(entry.subject)
-      const project = text(entry.project)
-      out[cid] = {
-        ...(subject && !/^\.+$/.test(subject) ? { subject } : {}),
-        ...(chatType(entry.type) ? { type: entry.type } : {}),
-        ...(project && !/^\.+$/.test(project) ? { project } : {})
-      }
-    }
-  }
-  return out
+  const last = (key) => [...clean.matchAll(new RegExp(`"${key}"\\s*:\\s*("(?:[^"\\\\]|\\\\.)*")`, 'g'))].map((m) => {
+    try { return String(JSON.parse(m[1])).replace(/\s+/g, ' ').trim().slice(0, 60) } catch { return '' }
+  }).filter((v) => v && !/^\.+$/.test(v)).at(-1)
+  const type = [...clean.matchAll(/"type"\s*:\s*"([a-z-]+)"/g)].map((m) => chatType(m[1])).filter(Boolean).at(-1)
+  const subject = last('subject')
+  const project = last('project')
+  return { ...(subject ? { subject } : {}), ...(type ? { type } : {}), ...(project ? { project } : {}) }
 }
 
 /**

@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { updateMeta } from '../../src/store/chats.js'
-import { agentOf, ask, chatEvents, scriptedLlm, setup, skip, system, wait } from '../helpers/harness.js'
+import { agentOf, ask, assistant, chatEvents, scriptedLlm, setup, skip, system, until, user, wait } from '../helpers/harness.js'
 
 async function inWorkspace(fn) {
   const cwd = await mkdtemp(join(tmpdir(), 'cg-subjects-'))
@@ -40,32 +40,47 @@ test('indexing stores the chat\'s subject, offered the subjects of chats others 
   assert.match(prompt, /Current subject: \(none yet\)/)
 }))
 
-test('chats indexed before get a subject and type in one call per app run; what their index named stays (#96)', { skip }, () => inWorkspace(async (cwd) => {
+test('an older chat is labelled only by a call that read that chat; nothing its own index named is replaced (#96, #102)', { skip }, () => inWorkspace(async (cwd) => {
   const dir = join(cwd, '.context-graph')
-  const sorting = JSON.stringify({ chats: [{ cid: 1, subject: 'Earth and Space Science', type: 'study', project: 'NZQA ESS' }, { cid: 2, subject: 'Laptop care', type: 'setup' }, { cid: 3, subject: 'Must not land', type: 'chat' }] })
-  const llm = scriptedLlm({ reply: (options) => (options.messages[0].content[0].text.startsWith('You sort the chats') ? sorting : built('commit signing')) })
+  const labelFor = { 'about tides': { subject: 'Earth and Space Science', type: 'study', project: 'NZQA ESS' }, 'about fans': { subject: 'Laptop care', type: 'setup' }, 'about secrets': { subject: 'Must not land', type: 'chat' } }
+  const llm = scriptedLlm({
+    reply: (options) => {
+      const text = options.messages[0].content[0].text
+      if (!text.startsWith('You read one earlier conversation')) return built('commit signing')
+      const topic = Object.keys(labelFor).find((k) => text.includes(k))
+      return JSON.stringify(labelFor[topic] ?? {})
+    }
+  })
   const h = await setup({ _sort: true }, llm)
-  for (const sid of ['s1', 's2', 's3']) await h.run(agentOf(sid, cwd, chatEvents(4)), 'build')
-  // As older versions left them: no subject; chat 2 had its type; chat 3 is private.
+  const chat = (topic) => [system(), user(`We talked ${topic}, with enough detail to be worth indexing. `.repeat(4)), assistant('Noted.'), ...chatEvents(3).slice(1)]
+  await h.run(agentOf('s1', cwd, chat('about tides')), 'build')
+  await h.run(agentOf('s2', cwd, chat('about fans')), 'build')
+  await h.run(agentOf('s3', cwd, chat('about secrets')), 'build')
+  await h.run(agentOf('s5', cwd, chat('about nothing kept')), 'build')
+  // As older versions left them: no subject; chat 2 had its type; chat 3 is private; chat 5 kept no messages.
   await updateMeta(dir, 's2', (m) => ({ ...m, type: 'coding' }))
   await updateMeta(dir, 's3', (m) => ({ ...m, private: true }))
-  for (const sid of ['s1', 's2', 's3']) await updateMeta(dir, sid, (m) => { const { subject, ...rest } = m; return rest })
+  for (const sid of ['s1', 's2', 's3', 's5']) await updateMeta(dir, sid, (m) => { const { subject, type, ...rest } = m; return sid === 's2' ? { ...rest, type: 'coding' } : rest })
+  await rm(join(dir, 'chats', 's5', 'msgs.json'), { force: true })
   const fresh = await setup({ _sort: true }, llm) // a new app run
   const before = llm.calls
   await fresh.run(agentOf('s4', cwd, chatEvents(4)), 'build')
+  await until(() => llm.calls === before + 3)
   await wait(100)
-  assert.equal(llm.calls, before + 2, 'the index, then one sorting call')
-  const asked = llm.prompts.at(-1)
-  assert.match(asked, /^You sort the chats/)
-  assert.match(asked, /\nc1 \| [^\n]*commit signing/)
-  assert.doesNotMatch(asked, /\nc3 /, 'a private chat is not sent')
-  assert.doesNotMatch(asked, /\nc4 /, 'the chat just indexed named its own')
+  const asked = llm.prompts.slice(before + 1)
+  assert.equal(asked.length, 2, 'one call per older chat that has messages to read: chats 1 and 2')
+  for (const prompt of asked) assert.match(prompt, /^You read one earlier conversation/)
+  assert.ok(asked.some((p) => p.includes('We talked about tides')), 'chat 1 is read itself')
+  assert.ok(asked.some((p) => p.includes('We talked about fans')), 'chat 2 is read itself')
+  assert.ok(asked.every((p) => !p.includes('about secrets') && !p.includes('about nothing kept')), 'never a private chat, never a guess without its messages')
+  assert.ok(asked.every((p) => !(p.includes('about tides') && p.includes('about fans'))), 'each call reads one chat only')
   assert.deepEqual([(await metaOf(cwd, 's1')).subject, (await metaOf(cwd, 's1')).type, (await metaOf(cwd, 's1')).project], ['Earth and Space Science', 'study', 'NZQA ESS'])
-  assert.deepEqual([(await metaOf(cwd, 's2')).subject, (await metaOf(cwd, 's2')).type], ['Laptop care', 'coding'], 'the type its index named stays')
+  assert.deepEqual([(await metaOf(cwd, 's2')).subject, (await metaOf(cwd, 's2')).type], ['Laptop care', 'coding'], 'the type its own index named stays')
   assert.equal((await metaOf(cwd, 's3')).subject, undefined)
-  await fresh.run(agentOf('s5', cwd, chatEvents(4)), 'build')
+  assert.equal((await metaOf(cwd, 's5')).subject, undefined)
+  await fresh.run(agentOf('s6', cwd, chatEvents(4)), 'build')
   await wait(100)
-  assert.equal(llm.calls, before + 3, 'not again in this run')
+  assert.equal(llm.calls, before + 4, 'not again in this run')
 }))
 
 test('a question about earlier work that names a subject but matches no topic is told which chats hold it, once (#96)', { skip }, () => inWorkspace(async (cwd) => {

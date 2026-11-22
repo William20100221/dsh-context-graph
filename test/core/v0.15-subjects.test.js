@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { emptyGraph, layeredMatch, mergeDelta, namedSubjects, parseBuilderOutput, parseSortOutput, renderSubjectHint, sortPrompt, subjectKey } from '../../src/core/index.js'
+import { emptyGraph, layeredMatch, mergeDelta, namedSubjects, labelPrompt, parseBuilderOutput, parseLabelOutput, renderSubjectHint, subjectKey } from '../../src/core/index.js'
 
 const view = (cid, subject, label, gist, extra = {}) => {
   const graph = emptyGraph()
@@ -62,14 +62,13 @@ test('indexing names the chat\'s subject; a placeholder or a schema echo does no
   assert.equal(parseBuilderOutput(echoed).subject, undefined)
 })
 
-test('the sorting call lists each chat by its summary and topics, and its answer is read for the chats asked only (#96)', () => {
-  const prompt = sortPrompt({ chats: [{ cid: 3, summary: 'NZQA research', labels: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'] }], subjects: ['Earth and Space Science'] })
-  assert.match(prompt, /Existing subjects: Earth and Space Science/)
-  assert.match(prompt, /c3 \| NZQA research \| topics: a; b; c; d; e; f; g; h\n/, 'eight topic labels at most')
-  const answer = `<think>draft</think>{"chats":[{"cid":3,"subject":"Earth and Space Science","type":"study","project":"NZQA ESS"},{"cid":"c5","subject":"Battery","type":"gossip","project":""},{"cid":9,"subject":"Not asked"},{"cid":7,"subject":"...","type":"coding"}]}`
-  assert.deepEqual(JSON.parse(JSON.stringify(parseSortOutput(answer, [3, 5, 7]))), {
-    3: { subject: 'Earth and Space Science', type: 'study', project: 'NZQA ESS' },
-    5: { subject: 'Battery' },
-    7: { type: 'coding' }
-  })
+test('an older chat is labelled from its own conversation: the prompt carries it, the answer is read for the last valid values (#102)', () => {
+  const prompt = labelPrompt({ summary: 'NZQA research', topics: ['a', 'b'], subjects: ['Earth and Space Science'], messages: [{ role: 'user', text: 'what is on the 93104 paper?' }, { role: 'assistant', text: 'three open questions' }], partial: true })
+  assert.match(prompt, /^You read one earlier conversation and label it/)
+  assert.match(prompt, /Workspace subjects: Earth and Space Science\nSummary: NZQA research\nTopics: a; b\n/)
+  assert.match(prompt, /Conversation \(its oldest part; the rest is like it\):\n\[m0 user\]\nwhat is on the 93104 paper\?\n\n\[m1 assistant\]\nthree open questions/)
+  assert.match(prompt, /Judge from the conversation itself/)
+  const answer = '<think>{"subject":"draft"}</think>{"subject":"...","type":"..."}\n{"subject":"Earth and Space Science","type":"study","project":"NZQA ESS"}'
+  assert.deepEqual(JSON.parse(JSON.stringify(parseLabelOutput(answer))), { subject: 'Earth and Space Science', type: 'study', project: 'NZQA ESS' })
+  assert.deepEqual(JSON.parse(JSON.stringify(parseLabelOutput('{"subject":"Battery","type":"gossip","project":""}'))), { subject: 'Battery' })
 })
