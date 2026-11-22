@@ -145,6 +145,10 @@ export function registerPage(ctx, rt) {
           shared: sharedOn(c.meta),
           memory: memoryOn(c.meta),
           hidden: hiddenOn(c.meta),
+          // What the chat is for (#94): its type, project and parts (turn ranges).
+          type: c.meta.type,
+          project: c.meta.project,
+          parts: Array.isArray(c.meta.parts) ? c.meta.parts.map((p) => ({ turns: p.turns, type: p.type, about: p.about })) : [],
           // The chat's dsh session: archived, deleted (gone), or neither (#91).
           archived: states.archived.has(c.sid),
           gone: states.listed !== null && !states.listed.has(c.sid),

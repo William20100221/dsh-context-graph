@@ -4,6 +4,7 @@
  */
 
 import { RELATIONS } from './graph.js'
+import { chatType } from './labels.js'
 import { sliceChars } from './text.js'
 
 /** A human prompt is read up to this many characters; assistant text is shortened further when a span is long (#46). */
@@ -25,10 +26,13 @@ export function transcriptForBuilder(messages, { userCap = USER_CAP, assistantCa
  */
 export const BUILDER_RULES = [
   'You index a conversation into a memory of topics that later chats search. Output ONE JSON object and nothing else:',
-  '{"summary":"...","nodes":[{"id":"n12"|null,"label":"...","gist":"...","aliases":["..."],"kind":"decision|fact|task|artifact|open-question","msgs":[0,2]}],"edges":[["n12","n3","uses"]]}',
+  '{"summary":"...","type":"...","project":"...","parts":[],"nodes":[{"id":"n12"|null,"label":"...","gist":"...","aliases":["..."],"kind":"decision|fact|task|artifact|open-question","msgs":[0,2]}],"edges":[["n12","n3","uses"]]}',
   '',
   'Rules:',
   '- summary: one line of at most 12 words saying what the whole chat is about so far; update the current summary.',
+  '- type: what the whole chat is for, one of: coding, debugging (fixing a bug), research (finding things out), study (learning, homework, exams), writing, planning, setup (installing, configuring), data (analysis), creative, language (translation, grammar, idioms), question (one quick question), chat (everyday talk). Update the current type when the chat changed.',
+  '- project: the project, product, course or subject the chat works on, in at most 4 words (e.g. "dsh-context-graph", "NZQA Earth and Space"), or "" when there is none.',
+  '- parts: only when this conversation holds more than one separate conversation, one entry per conversation: {"msgs":[first,last],"type":"...","about":"at most 8 words"}; otherwise [].',
   '- One node per decision, fact, task, artifact (file, tool, repo) or open question worth remembering later. Skip chit-chat and anything an existing topic already says, unless it changed.',
   '- label: at most 6 words, the name someone would search for. gist: one line under 120 characters, what is true now and why.',
   '- aliases: other words a later message might use for it, including the other language when the chat mixes languages. Matching is by word overlap.',
@@ -46,7 +50,7 @@ const idNumber = (id) => Number(/\d+/.exec(id)?.[0] ?? 0)
  * chat's existing topics in id order (new topics only ever append, so the previous build's list is a
  * prefix of this one), then the current summary and the span, which change every time.
  */
-export function builderPrompt({ graph, summary, messages, assistantCap = USER_CAP }) {
+export function builderPrompt({ graph, summary, labels = {}, messages, assistantCap = USER_CAP }) {
   const existing = Object.entries(graph.nodes)
     .sort(([a], [b]) => idNumber(a) - idNumber(b))
     .map(([id, n]) => `${id}: ${n.label}`)
@@ -57,6 +61,7 @@ export function builderPrompt({ graph, summary, messages, assistantCap = USER_CA
     existing ? `Existing topics:\n${existing}` : 'Existing topics: (none)',
     '',
     `Current summary: ${summary || '(none yet)'}`,
+    `Current type: ${labels.type || '(none yet)'} · project: ${labels.project || '(none)'}`,
     '',
     'Conversation to index:',
     transcriptForBuilder(messages, { assistantCap }),
@@ -139,7 +144,40 @@ export function parseBuilderOutput(text) {
   const edgesAt = scope.search(/"edges"\s*:/)
   const edges = edgesAt < 0 ? [] : [...scope.slice(edgesAt).matchAll(/\[\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\]/g)].map((m) => [m[1], m[2], m[3]])
   const skip = best.nodes.length === 0 && (/"skip"\s*:\s*true/.test(after) || objects === 0)
-  return { nodes: best.nodes, edges, skip, raw: best.raw, summary: summaryNear(clean, best.open) }
+  return { nodes: best.nodes, edges, skip, raw: best.raw, summary: summaryNear(clean, best.open), ...labelsNear(clean, best.open) }
+}
+
+/**
+ * The chat's labels in the chosen answer (#94): its type, project and parts. They are read from that
+ * answer's own head (from its last "summary" key to its nodes, parts aside), else from what follows
+ * its nodes, so a schema echoed before it never counts. Parts are `{ msgs: [first, last], type,
+ * about }`, cited as nodes are. Anything invalid (a type not in the list, a placeholder) is left out.
+ */
+function labelsNear(clean, open) {
+  const head = clean.slice(0, open)
+  const own = head.slice([...head.matchAll(/"summary"\s*:/g)].at(-1)?.index ?? 0)
+  const tail = clean.slice(open)
+  const partsIn = (text) => [...text.matchAll(/"parts"\s*:\s*\[/g)][0]
+  const ownParts = partsIn(own)
+  const region = ownParts ? own.slice(0, ownParts.index) : own
+  const typeIn = (text) => [...text.matchAll(/"type"\s*:\s*"([a-z-]+)"/g)].map((m) => chatType(m[1])).filter(Boolean)
+  const type = typeIn(region).at(-1) ?? typeIn(tail)[0]
+  const projectIn = (text) => [...text.matchAll(/"project"\s*:\s*("(?:[^"\\]|\\.)*")/g)].map((m) => {
+    try { return String(JSON.parse(m[1])).replace(/\s+/g, ' ').trim().slice(0, 60) } catch { return undefined }
+  }).filter((v) => v !== undefined && !/^\.+$/.test(v))
+  const project = projectIn(region).at(-1) ?? projectIn(tail)[0]
+  const parts = []
+  const partsAt = ownParts ? { text: own, match: ownParts } : partsIn(tail) ? { text: tail, match: partsIn(tail) } : undefined
+  if (partsAt) {
+    for (const raw of objectsInArray(partsAt.text, partsAt.match.index + partsAt.match[0].length - 1)) {
+      let part
+      try { part = JSON.parse(raw.replace(/,\s*([}\]])/g, '$1')) } catch { continue }
+      const msgs = citations(part?.msgs)
+      const about = typeof part?.about === 'string' ? part.about.replace(/\s+/g, ' ').trim().slice(0, 80) : ''
+      if (msgs.length > 0 && chatType(part.type)) parts.push({ msgs: [Math.min(...msgs), Math.max(...msgs)], type: part.type, about })
+    }
+  }
+  return { type, project: project === '' ? null : project, parts }
 }
 
 /**

@@ -836,3 +836,15 @@ test('the topic panel asks for a turn of the topic\'s own chat, and says when on
   assert.ok(find(panel, (e) => e.props?.children === 't:notWhole'))
   assert.equal(find(client.TopicPanel({ detail: { ...detail, complete: true }, t, onOpen() {}, onClose() {} }), (e) => e.props?.children === 't:notWhole'), undefined)
 })
+
+// ---- v0.14.0: labels (#94) ----------------------------------------------------------------------
+
+test('a chat\'s panel shows its type, project and parts (#94)', () => {
+  const client = loadClient()
+  const text = JSON.stringify(client.ChatPanel({ chat: { cid: 4, total: 9, shared: true, memory: true, savings: null, type: 'debugging', project: 'dsh-context-graph', parts: [{ turns: [1, 3], type: 'coding', about: 'the tree page' }, { turns: [4, 6], type: 'debugging', about: '' }] }, t, onClose() {} }))
+  assert.match(text, /t:type\.debugging/)
+  assert.match(text, /dsh-context-graph/)
+  assert.match(text, /t1–t3 · t:type\.coding: the tree page/)
+  assert.match(text, /t4–t6 · t:type\.debugging"/)
+  assert.match(JSON.stringify(client.ChatPanel({ chat: { cid: 5, total: 1, shared: true, memory: true }, t, onClose() {} })), /t:type\.none/, 'a chat indexed before labels says so')
+})

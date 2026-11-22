@@ -19,6 +19,7 @@
  */
 
 import { resolveSuperseded } from './graph.js'
+import { labelCue } from './labels.js'
 import { searchUnits, tokenize } from './text.js'
 import { chatInRange, inRange } from './time.js'
 
@@ -229,12 +230,15 @@ export function matchAcross(views, query, { max = 5, range, skip, floor, cover =
     }
   }
   const rarity = (t) => Math.log((total + 1) / (df.get(t) ?? 1))
+  const words = new Set(q)
   for (const f of found) {
+    // A topic in a chat (or part) whose project or type the message names comes first (#94).
+    f.cue = labelCue(f.view.meta, words, f.node.refs ?? [])
     f.rare = f.matched.reduce((n, t) => n + rarity(t), 0)
     f.bonus = range && (inRange(f.node.updated, range) || chatInRange(f.view.meta, range)) ? 1 : 0
   }
   // Which topics get a slot is decided on evidence; the time bonus only breaks ties here.
-  found.sort((a, b) => b.raw - a.raw || b.bonus - a.bonus || b.fit - a.fit || b.rare - a.rare || String(b.node.updated ?? '').localeCompare(String(a.node.updated ?? '')))
+  found.sort((a, b) => b.cue - a.cue || b.raw - a.raw || b.bonus - a.bonus || b.fit - a.fit || b.rare - a.rare || String(b.node.updated ?? '').localeCompare(String(a.node.updated ?? '')))
 
   // One slot per subject: a replaced decision resolves to its replacement, copies collapse.
   const bySubject = new Map()
@@ -252,7 +256,7 @@ export function matchAcross(views, query, { max = 5, range, skip, floor, cover =
       bySubject.set(gid, same)
       continue
     }
-    const hit = { id: gid, node, view: f.view, via, raw: f.raw, label: f.label, matched: f.matched, rare: f.rare, bonus: f.bonus, copies: [{ id: gid, node }], vias: via ? [via] : [] }
+    const hit = { id: gid, node, view: f.view, via, cue: f.cue, raw: f.raw, label: f.label, matched: f.matched, rare: f.rare, bonus: f.bonus, copies: [{ id: gid, node }], vias: via ? [via] : [] }
     bySubject.set(gid, hit)
     if (collapse) bySubject.set(key, hit)
     ranked.push(hit)
@@ -290,7 +294,7 @@ export function matchAcross(views, query, { max = 5, range, skip, floor, cover =
     hit.ids = [...hit.copies.map((c) => c.id), ...hit.vias]
   }
   // Then the named time orders what was chosen (stable, so equal scores keep the evidence order).
-  kept.sort((a, b) => b.score - a.score)
+  kept.sort((a, b) => b.cue - a.cue || b.score - a.score)
 
   // Already in the chat: the hit itself, or a copy that says the same thing. A shown decision's
   // replacement, or a newer copy with a different gist, is new information and is sent.

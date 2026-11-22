@@ -93,7 +93,21 @@ window.__ModuleLoader__.load({
       showLess: 'Show less',
       wholeTurn: 'Whole turn t{n}',
       turnFailed: 'Could not read this turn.',
-      notWhole: 'This chat was indexed before whole messages were kept, and its session is gone: only what its topics cite is here.'
+      notWhole: 'This chat was indexed before whole messages were kept, and its session is gone: only what its topics cite is here.',
+      'type.coding': 'Coding',
+      'type.debugging': 'Bug fixing',
+      'type.research': 'Research',
+      'type.study': 'Study',
+      'type.writing': 'Writing',
+      'type.planning': 'Planning',
+      'type.setup': 'Setup',
+      'type.data': 'Data',
+      'type.creative': 'Creative',
+      'type.language': 'Language',
+      'type.question': 'Quick question',
+      'type.chat': 'Everyday chat',
+      'type.none': 'Not labelled yet',
+      parts: 'Parts of this chat'
     }
     const zh = {
       stats: '上下文图谱',
@@ -167,7 +181,21 @@ window.__ModuleLoader__.load({
       showLess: '收起',
       wholeTurn: '整轮 t{n}',
       turnFailed: '无法读取这一轮。',
-      notWhole: '这个对话是在保存完整消息之前索引的，而且它的会话已不在：这里只有它的主题引用的内容。'
+      notWhole: '这个对话是在保存完整消息之前索引的，而且它的会话已不在：这里只有它的主题引用的内容。',
+      'type.coding': '编程',
+      'type.debugging': '修复问题',
+      'type.research': '调研',
+      'type.study': '学习',
+      'type.writing': '写作',
+      'type.planning': '规划',
+      'type.setup': '安装配置',
+      'type.data': '数据分析',
+      'type.creative': '创作',
+      'type.language': '语言翻译',
+      'type.question': '快速提问',
+      'type.chat': '日常聊天',
+      'type.none': '尚未标注',
+      parts: '对话的几个部分'
     }
     const KINDS = ['decision', 'fact', 'task', 'artifact', 'open-question']
     const COLORS = { decision: '#4A65E8', fact: '#2BA471', task: '#E5973C', artifact: '#8E5BE8', 'open-question': '#E5484D' }
@@ -217,6 +245,7 @@ window.__ModuleLoader__.load({
       '.dshcg-chip[data-hidden="true"]{border-style:dashed}',
       '.dshcg-dialog-mask{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);pointer-events:auto;z-index:1000}',
       '.dshcg-dialog{max-width:440px;margin:16px;padding:20px;border-radius:var(--dsw-radius-lg,10px);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);display:flex;flex-direction:column;gap:12px;font-size:14px}',
+      '.dshcg-tag{display:inline-block;padding:0 8px;border-radius:10px;font-size:12px;line-height:20px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l3)}',
       '.dshcg-source{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}',
       '.dshcg-turn{display:flex;flex-direction:column;gap:6px;padding-left:10px;border-left:2px solid var(--dsw-alias-border-l3)}',
       '.dshcg-confirm{border:1px solid var(--dsw-alias-state-error-primary,#E5484D);border-radius:var(--dsw-radius-md,8px);padding:10px;display:flex;flex-direction:column;gap:8px}',
@@ -895,6 +924,11 @@ window.__ModuleLoader__.load({
           }),
           chat.title ? jsx('div', { children: chat.title }) : null,
           chat.summary ? jsx('div', { className: 'dshcg-muted', children: chat.summary }) : null,
+          // What the chat is for (#94): its type and project, and its parts when it held several conversations.
+          jsx('div', { className: 'dshcg-row', children: [jsx('span', { className: 'dshcg-tag', children: t(`type.${chat.type ?? 'none'}`) }), chat.project ? jsx('span', { className: 'dshcg-tag', children: chat.project }) : null] }),
+          Array.isArray(chat.parts) && chat.parts.length > 0
+            ? jsxs('div', { children: [jsx('div', { className: 'dshcg-muted', children: t('parts') }), ...chat.parts.map((p, i) => jsx('div', { children: `t${p.turns?.[0] ?? '?'}–t${p.turns?.[1] ?? '?'} · ${t(`type.${p.type}`)}${p.about ? `: ${p.about}` : ''}` }, i))] })
+            : null,
           jsx('div', { className: 'dshcg-muted', children: `${chat.total} ${t('topics')} · ${day(chat.startedAt)} – ${day(chat.lastActiveAt)}` }),
           s === null || s === undefined
             ? jsx('div', { className: 'dshcg-muted', children: t('savingsUnavailable') })

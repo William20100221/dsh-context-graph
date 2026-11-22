@@ -11,6 +11,7 @@ import { BlockAssembler } from '@deepseek-ai/dsh-llm'
 
 import { betterParse, builderPrompt, parseBuilderOutput, planSpan } from '../core/builder.js'
 import { hiddenOn, memoryOn, offPoint, walkGaps } from '../core/chat.js'
+import { mergeParts } from '../core/labels.js'
 import { mergeDelta } from '../core/graph.js'
 import { emptyCounters, usedIn } from '../core/ledger.js'
 import { collectSpan, firstPromptSeq, lastAnswer, mergeGaps, titleOf } from '../core/session.js'
@@ -144,7 +145,7 @@ export function registerBuilder(ctx, rt, meter) {
       const graph = await loadGraph(chat, { writable: true })
       // The indexing call's usage is this chat's cost in the savings estimate (meter.js).
       st.chat = true
-      const prompt = builderPrompt({ graph, summary: meta.summary, messages: read, assistantCap: plan.assistantCap })
+      const prompt = builderPrompt({ graph, summary: meta.summary, labels: { type: meta.type, project: meta.project }, messages: read, assistantCap: plan.assistantCap })
       const effort = await lowestEffort(llm, target, signal)
       const assembler = new BlockAssembler()
       for await (const chunk of llm.stream({
@@ -206,6 +207,8 @@ export function registerBuilder(ctx, rt, meter) {
       await saveMessages(chat, read, { complete: !Number.isInteger(meta.builtSeq) })
       await relabelTurns(chat, span.turnAt).catch((error) => console.error('context-graph: stored turn ids not relabelled (non-fatal)', error))
       await saveGraph(chat, graph)
+      // The chat's labels (#94): parts are kept as seq ranges (to meet a topic's sources) and turns (to show).
+      const parts = (delta.parts ?? []).filter((p) => read[p.msgs[0]] && read[p.msgs[1]]).map((p) => ({ from: read[p.msgs[0]].seq, to: read[p.msgs[1]].seq, turns: [read[p.msgs[0]].turn, read[p.msgs[1]].turn], type: p.type, about: p.about }))
       await rt.updateFor(agent, (latest) => {
         return {
           ...latest,
@@ -214,6 +217,9 @@ export function registerBuilder(ctx, rt, meter) {
           // (Its first-prompt fingerprint is set by runtime.js upToDate before this change runs.)
           title: latest.turnsClosed === true ? latest.title : span.title ?? latest.title ?? titleOf(eventAt, 60, forkSeq, mergeGaps(latest.gaps, span.hidden)),
           ...(delta.summary ? { summary: delta.summary } : {}),
+          ...(delta.type ? { type: delta.type } : {}),
+          ...(typeof delta.project === 'string' && delta.project ? { project: delta.project } : {}),
+          ...(parts.length > 0 ? { parts: mergeParts(latest.parts, parts) } : {}),
           lastActiveAt: now,
           builtSeq: endSeq
         }
