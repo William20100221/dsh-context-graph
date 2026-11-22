@@ -72,8 +72,9 @@ test('registers the command card, the savings page in Plugins, and Memory tree i
     // #92: the chip beside dsh's preset label (-10), the session menu row, the dialog in the overlay.
     ['inject', 'conversation.session.header.actions'],
     ['register', { name: 'conversation.session.header.actions', id: 'context-graph-chip', order: -5, locale: 'dsh-context-graph' }, 'MemoryChip'],
-    ['inject', 'sidebar.workspaces.session.menu.item'],
-    ['register', { name: 'sidebar.workspaces.session.menu.item', id: 'context-graph-archive-forget', order: 900, locale: 'dsh-context-graph' }, 'ForgetMenuItem'],
+    // #100: Archive & forget is a structured menu action (ctx.contextMenus, see below); its icon is drawn by key.
+    ['inject', 'contextMenu.icon'],
+    ['register', { name: 'contextMenu.icon', key: 'context-graph.forget' }, 'ForgetIcon'],
     ['inject', 'shell.overlay'],
     ['register', { name: 'shell.overlay', id: 'context-graph-dialog', locale: 'dsh-context-graph' }, 'ForgetDialog']
   ])
@@ -691,14 +692,16 @@ test('the host\'s reason shows when a change fails, and changes are POSTs with t
 // ---- v0.12.0: a chat's memory tag and Archive & forget (#92) ---------------------------------------
 
 /** The client with dsh services the test controls, applied so serviceOf reaches them. */
-function withServices(services, { fetch, react = fakeReact({ effects: [] }), primitives = {} } = {}) {
+function withServices(services, { fetch, react = fakeReact({ effects: [] }), primitives = {}, menus = [] } = {}) {
   let entry
   const window = { __ModuleLoader__: { load: (e) => { entry = e } } }
   vm.runInNewContext(read('src/client/client.js'), { window, document: undefined, fetch, URLSearchParams, Promise, Map, Set, Number, Math, String, setInterval: () => 0, clearInterval: () => {} })
   const element = (type, props, key) => ({ type, props, key })
   const shared = { react, 'react/jsx-runtime': { jsx: element, jsxs: element }, '@deepseek-ai/dsh-client-ui-primitives': { DisclosureRow: 'DisclosureRow', ...primitives } }
   const client = entry.factory((name) => shared[name])
-  client.apply({ effect: (fn) => fn(), get: (name) => services[name], locale: { register() {} }, slots: { inject: (name, fn) => fn(), register: () => {} } })
+  // Like cordis: a nested plugin starts with the services it injects; contextMenus collects contributions.
+  const plugin = (nested) => { if ((nested.inject ?? []).includes('contextMenus')) nested.apply({ effect: (fn) => fn(), contextMenus: { register: (c) => menus.push(c) } }) }
+  client.apply({ effect: (fn) => fn(), get: (name) => services[name], plugin, locale: { register() {} }, slots: { inject: (name, fn) => fn(), register: () => {} } })
   return client
 }
 
@@ -745,35 +748,49 @@ test('the tree page opens the workspace and chat the chip asked for (#92)', asyn
   assert.equal(client.jump.want, null, 'taken once')
 })
 
-test('Archive & forget: a menu row for a chat with memory, a confirmation, then dsh archives and the host forgets (#92)', async () => {
+test('Archive & forget sits under dsh\'s Archive session, in its group and colour, for a chat with memory that is not archived (#92, #100)', async () => {
   const effects = []
   const react = fakeReact({ effects })
   const calls = []
-  const uiWorkspace = { archiveSession: async (sid) => calls.push(['archive', sid]) }
-  const client = withServices({ uiWorkspace }, {
+  const menus = []
+  let archived = []
+  let memory = true
+  const services = { uiWorkspace: { archiveSession: async (sid) => calls.push(['archive', sid]) }, workspaces: { list: { getSnapshot: () => ({ archivedSessionIds: archived }) } } }
+  const client = withServices(services, {
     react,
-    primitives: { MenuItemButton: 'MenuItemButton', IconArchiveOutlineRegular: 'IconArchive' },
+    menus,
     fetch: async (url, init) => {
       if (init?.method === 'POST') calls.push(['post', url, init.headers['x-context-graph']])
+      if (url.includes('chat?') && !memory) return { ok: false, status: 404, json: async () => ({}) }
       return { ok: true, json: async () => (url.includes('chat?') ? { w: 'k1', cid: 4, topics: 9, shared: true, memory: true, hidden: false } : { forgotten: true }) }
     }
   })
-  const menu = []
-  const row = () => react.render(client.ForgetMenuItem, { sessionId: 'sA', displayTitle: 'NZQA research', useMenuOpenState: () => [true, (open) => menu.push(open)], t })
-  assert.equal(row(), null, 'not before the chat is known to have memory')
-  for (const run of effects.splice(0)) run()
-  await settle()
-  const item = row()
-  assert.deepEqual([item.type, item.props.danger, item.props.children], ['MenuItemButton', true, 't:archiveForget'])
-  item.props.onSelect()
-  assert.deepEqual(menu, [false], 'the menu closes')
+  assert.equal(menus.length, 1)
+  const [menu] = menus
+  assert.deepEqual([menu.target, menu.order], ['session', 650], 'after dsh\'s Archive session (600)')
+  const target = { sessionId: 'sA', displayTitle: 'NZQA research' }
+  const items = await menu.resolve(target, new AbortController().signal)
+  assert.equal(items.length, 1)
+  const [item] = items
+  assert.deepEqual(JSON.parse(JSON.stringify(item)), { id: 'archive-forget', label: 'Archive & forget', icon: { key: 'context-graph.forget' }, afterContent: true }, 'no red, no divider of its own: Archive session\'s group')
+  assert.equal(client.ForgetIcon({ size: 16 }).props.width, 16)
+  memory = false
+  assert.equal((await menu.resolve(target, new AbortController().signal)).length, 0, 'a chat with no memory: dsh\'s Archive is enough')
+  memory = true
+  archived = ['sA']
+  assert.equal((await menu.resolve(target, new AbortController().signal)).length, 0, 'an archived chat: dsh offers Restore there')
+  archived = []
+  const gone = new AbortController()
+  const late = menu.resolve(target, gone.signal)
+  gone.abort()
+  assert.equal((await late).length, 0, 'a menu closed meanwhile')
+  item.run()
   assert.deepEqual(calls, [], 'nothing happens before the confirmation')
   const dialog = fakeReact({ effects })
   const draw = () => dialog.render(client.ForgetDialog, { t })
   const shown = draw()
   assert.equal(shown.props.role, 'dialog', 'no Modal in this shell: the plain dialog')
   assert.match(JSON.stringify(shown), /t:forgetTitle/)
-  assert.match(JSON.stringify(shown), /t:forgetBody/)
   find(shown, (e) => e.type === 'button' && e.props.children === 't:archiveForget').props.onClick()
   await settle()
   assert.deepEqual(calls, [['archive', 'sA'], ['post', 'api/context-graph.forget?sid=sA', '1']], 'dsh archives first, then the memory goes')

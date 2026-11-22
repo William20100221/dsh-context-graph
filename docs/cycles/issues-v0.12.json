@@ -95,5 +95,25 @@
     "title": "Memory tree crashes when a chat's header chip opens a chat the tree does not draw",
     "body": "**Problem** (medium)\nThe header chip appears as soon as a chat has a memory number, but the tree draws only chats with topics. Clicking the chip of a chat that has a number and no topics yet (its first index found nothing worth keeping) chooses a chat that is not in the tree: the details panel is given no chat and the whole Memory tree page fails to render.\n\n**Where**: src/client/client.js, TreePage (the jump the chip asks for, and the panel).\n\n**Fix**: the page chooses only a chat the tree has, and the panel is shown only for one; a chip of a chat without topics opens the workspace's tree with nothing chosen.\n\n_Found by the review of v0.12-v0.15._",
     "number": 99
+  },
+  {
+    "key": "U-1",
+    "milestone": "v0.15.1",
+    "labels": [
+      "bug"
+    ],
+    "title": "Archive & forget looks foreign in the session menu: red, in a group of its own, above Archive",
+    "body": "**Problem**\nIn a chat's session menu, Archive & forget is drawn red, between two dividers, above dsh's own Archive session: a group of one, styled like a destructive delete, apart from the action it extends. dsh draws a row red only for a real deletion (Delete workspace, Delete task), and keeps Archive in a group at the foot of the menu.\n\nIt is a legacy component row (`sidebar.workspaces.session.menu.item`), which dsh renders before its own Archive and cannot place after it.\n\n**Fix**\nContribute the row the way dsh's own actions are, through `ctx.contextMenus` (order 650, `afterContent`): it then sits right under Archive session, in the same group, with no divider of its own, in the same colour, with an icon of its own (an archive box with a cross) registered through `contextMenu.icon`. It still appears only for a chat with memory (asked when the menu opens), not for an archived chat, and still asks for confirmation.",
+    "number": 100
+  },
+  {
+    "key": "U-2",
+    "milestone": "v0.15.2",
+    "labels": [
+      "bug"
+    ],
+    "title": "Memory tree: Sort by label moves with the window width instead of staying at the top right",
+    "body": "**Problem**\nThe toolbar is one wrapping row with a spacer before Sort by label. When the window is narrow enough for the row to wrap, the spacer collapses and the button drops to the start of a second line, under the search field, instead of staying at the top right above the details panel.\n\n**Fix**\nThe toolbar becomes two parts: the search, kind and zoom controls wrap within the left part, and Sort by label sits outside it, pinned to the top right, whatever the width.",
+    "number": 101
   }
 ]

@@ -18,7 +18,7 @@ window.__ModuleLoader__.load({
     const { useState } = React
     const { jsx, jsxs } = require('react/jsx-runtime')
     const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
-    const { DisclosureRow, MenuItemButton, Modal, Button, IconArchiveOutlineRegular } = primitives
+    const { DisclosureRow, Modal, Button } = primitives
 
     const NAMESPACE = 'dsh-context-graph'
     const en = {
@@ -1211,25 +1211,52 @@ window.__ModuleLoader__.load({
       })
     }
 
-    /** One row of a menu: dsh's own when the shell has it, else a plain menu item. */
-    const MenuRow = MenuItemButton ?? (({ onSelect, children }) => jsx('button', { type: 'button', role: 'menuitem', onClick: onSelect, children }))
-
-    /** Archive & forget in a chat's session menu; only for a chat with memory (dsh's Archive covers the rest). */
-    function ForgetMenuItem({ sessionId, displayTitle, useMenuOpenState, t: given }) {
-      const t = translator(given)
-      const [, setMenuOpen] = useMenuOpenState?.() ?? [true, () => {}]
-      const info = useChatInfo(sessionId)
-      if (!info) return null
-      return jsx(MenuRow, {
-        icon: IconArchiveOutlineRegular ? jsx(IconArchiveOutlineRegular, { size: 16 }) : undefined,
-        danger: true,
-        separatorBefore: true,
-        onSelect: () => {
-          setMenuOpen(false)
-          askForget({ sessionId, title: displayTitle, cid: info.cid, topics: info.topics })
-        },
-        children: t('archiveForget')
+    /** The icon of Archive & forget: an archive box, like dsh's Archive, crossed (#100). */
+    function ForgetIcon({ size }) {
+      const edge = typeof size === 'number' ? size : 16
+      return jsxs('svg', {
+        width: edge,
+        height: edge,
+        viewBox: '0 0 20 20',
+        fill: 'none',
+        stroke: 'currentColor',
+        strokeWidth: 1.5,
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+        'aria-hidden': true,
+        children: [
+          jsx('rect', { x: 2.5, y: 3.5, width: 15, height: 4, rx: 1 }),
+          jsx('path', { d: 'M4 7.5v7a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-7' }),
+          jsx('path', { d: 'M8.25 10.5l3.5 3.5M11.75 10.5l-3.5 3.5' })
+        ]
       })
+    }
+
+    /**
+     * Archive & forget in a chat's session menu, contributed the way dsh's own session actions are
+     * (#100): order 650 and after the component rows, so it sits right under Archive session, in its
+     * group and colour. Only for a chat with memory (asked when the menu opens) and not for an archived
+     * chat, where dsh offers Restore; the confirmation is the overlay's dialog.
+     */
+    function forgetMenu(label) {
+      return {
+        id: 'context-graph.archive-forget',
+        target: 'session',
+        order: 650,
+        async resolve(target, signal) {
+          const archived = serviceOf('workspaces')?.list?.getSnapshot?.()?.archivedSessionIds
+          if (Array.isArray(archived) && archived.includes(target.sessionId)) return []
+          const info = await getJson('chat', { sid: target.sessionId }).catch(() => null)
+          if (!info || signal?.aborted) return []
+          return [{
+            id: 'archive-forget',
+            label: label('archiveForget'),
+            icon: { key: 'context-graph.forget' },
+            afterContent: true,
+            run: () => askForget({ sessionId: target.sessionId, title: target.displayTitle, cid: info.cid, topics: info.topics })
+          }]
+        }
+      }
     }
 
     /**
@@ -1340,9 +1367,18 @@ window.__ModuleLoader__.load({
       ctx.slots.inject('conversation.session.header.actions', () =>
         ctx.slots.register({ name: 'conversation.session.header.actions', id: 'context-graph-chip', order: -5, locale: NAMESPACE, inject: (sessionId) => ({ sessionId }) }, MemoryChip)
       )
-      ctx.slots.inject('sidebar.workspaces.session.menu.item', () =>
-        ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'context-graph-archive-forget', order: 900, locale: NAMESPACE }, ForgetMenuItem)
+      // #100: a structured contribution, which dsh places under its own Archive session; its icon is
+      // drawn by key, as dsh's are.
+      ctx.slots.inject('contextMenu.icon', () =>
+        ctx.slots.register({ name: 'contextMenu.icon', key: 'context-graph.forget' }, ForgetIcon)
       )
+      ctx.plugin?.({
+        name: 'dsh-context-graph-menu',
+        inject: ['contextMenus'],
+        apply: (menus) => {
+          menus.effect(() => menus.contextMenus.register(forgetMenu(label)), 'dsh-context-graph: Archive & forget')
+        }
+      })
       ctx.slots.inject('shell.overlay', () =>
         ctx.slots.register({ name: 'shell.overlay', id: 'context-graph-dialog', locale: NAMESPACE }, ForgetDialog)
       )
@@ -1355,7 +1391,8 @@ window.__ModuleLoader__.load({
     exports.TreePage = TreePage
     exports.TreeIcon = TreeIcon
     exports.MemoryChip = MemoryChip
-    exports.ForgetMenuItem = ForgetMenuItem
+    exports.forgetMenu = forgetMenu
+    exports.ForgetIcon = ForgetIcon
     exports.ForgetDialog = ForgetDialog
     exports.askForget = askForget
     exports.jump = jump
