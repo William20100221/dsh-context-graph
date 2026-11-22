@@ -19,7 +19,7 @@ import { collectSpan, turnTranscript } from '../core/session.js'
 import { estimateTokens } from '../core/text.js'
 import { parseTimeRange } from '../core/time.js'
 import { chatDir } from '../store/chats.js'
-import { oldTurns, relabelTurns, sourceOf } from '../store/messages.js'
+import { oldTurns, relabelTurns, sourceOf, storeComplete } from '../store/messages.js'
 
 const ID = /^(?:c(\d+))?(?:(n\d+)|t(\d+))?$/
 
@@ -106,7 +106,9 @@ export function registerRecall(ctx, rt, meter) {
       .map(([seq, m]) => ({ seq: Number(seq), role: m.r, text: m.x }))
     if (messages.length === 0) return null
     const budgets = shares(messages.map((m) => estimateTokens(m.text)), cfg.turnMaxTokens - 20)
-    return { text: `${formatSource(messages, { budgets })}\n(only the messages its topics cite are stored)` }
+    // A store completed by 0.13.0 holds the whole turn (#93); an older one only what topics cite.
+    const whole = await storeComplete(chatDir(rt.dirFor(agent), view.sid))
+    return { text: `${formatSource(messages, { budgets })}${whole ? '' : '\n(only the messages its topics cite are stored)'}` }
   }
 
   async function topic(agent, view, nodeId, id, signal) {

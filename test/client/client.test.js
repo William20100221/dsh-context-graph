@@ -794,3 +794,45 @@ test('Archive & forget keeps the memory when dsh does not archive, and says why 
   find(draw(), (e) => e.type === 'button' && e.props.children === 't:cancel').props.onClick()
   assert.equal(draw(), null)
 })
+
+// ---- v0.13.0: whole source messages and whole turns (#93) -----------------------------------------
+
+test('a long source is folded until Show all, and Whole turn reads its turn (#93)', async () => {
+  const react = fakeReact()
+  const client = loadClient({ react })
+  const asked = []
+  let answer = Promise.resolve({ cid: 3, turn: 7, messages: [{ role: 'user', text: 'the question' }, { role: 'assistant', text: 'the whole answer' }] })
+  const source = { role: 'assistant', turn: 7, text: 'a'.repeat(4000) }
+  const draw = () => react.render(client.SourceBlock, { source, t, onTurn: (n) => { asked.push(n); return answer } })
+  const pre = () => find(draw(), (e) => e.type === 'pre').props.children
+  assert.equal(pre().length, 'assistant (t7):\n'.length + 1500 + 1, 'folded at 1,500 characters')
+  find(draw(), (e) => e.type === 'button' && e.props.children === 't:showAll').props.onClick()
+  assert.ok(pre().endsWith('a'.repeat(4000)), 'all of it')
+  find(draw(), (e) => e.type === 'button' && e.props.children === 't:showLess').props.onClick()
+  find(draw(), (e) => e.type === 'button' && e.props.children === 't:wholeTurn').props.onClick()
+  await settle()
+  assert.deepEqual(asked, [7])
+  const turn = find(draw(), (e) => e.props?.className === 'dshcg-turn')
+  assert.deepEqual(turn.props.children.map((p) => p.props.children), ['user:\nthe question', 'assistant:\nthe whole answer'])
+  assert.equal(find(draw(), (e) => e.type === 'button' && e.props.children === 't:wholeTurn'), undefined, 'read once')
+  // A turn that cannot be read says so.
+  answer = Promise.reject(new Error('404'))
+  const other = fakeReact()
+  const second = loadClient({ react: other })
+  const failing = () => other.render(second.SourceBlock, { source: { role: 'user', turn: 2, text: 'short' }, t, onTurn: () => answer })
+  assert.equal(find(failing(), (e) => e.type === 'button' && e.props.children === 't:showAll'), undefined, 'a short one is not folded')
+  find(failing(), (e) => e.type === 'button' && e.props.children === 't:wholeTurn').props.onClick()
+  await settle()
+  assert.ok(find(failing(), (e) => e.props?.children === 't:turnFailed'))
+})
+
+test('the topic panel asks for a turn of the topic\'s own chat, and says when only cited messages were kept (#93)', () => {
+  const client = loadClient()
+  const asked = []
+  const detail = { id: 'c3n2', label: 'x', gist: '', kind: 'fact', chat: { cid: 3, summary: '' }, links: [], sources: [{ role: 'user', turn: 4, text: 'q' }], complete: false }
+  const panel = client.TopicPanel({ detail, t, onOpen() {}, onClose() {}, onTurn: (cid, n) => { asked.push([cid, n]); return new Promise(() => {}) } })
+  find(panel, (e) => e.type === client.SourceBlock).props.onTurn(4)
+  assert.deepEqual(asked, [[3, 4]])
+  assert.ok(find(panel, (e) => e.props?.children === 't:notWhole'))
+  assert.equal(find(client.TopicPanel({ detail: { ...detail, complete: true }, t, onOpen() {}, onClose() {} }), (e) => e.props?.children === 't:notWhole'), undefined)
+})

@@ -88,7 +88,12 @@ window.__ModuleLoader__.load({
       forgetFailed: 'Archived, but its memory was not deleted:',
       archiveUnavailable: 'DeepSeek Harness cannot archive chats here.',
       chipHint: 'Memory {chat}',
-      shared: 'shared'
+      shared: 'shared',
+      showAll: 'Show all ({n} characters)',
+      showLess: 'Show less',
+      wholeTurn: 'Whole turn t{n}',
+      turnFailed: 'Could not read this turn.',
+      notWhole: 'This chat was indexed before whole messages were kept, and its session is gone: only what its topics cite is here.'
     }
     const zh = {
       stats: '上下文图谱',
@@ -157,7 +162,12 @@ window.__ModuleLoader__.load({
       forgetFailed: '已归档，但记忆未能删除：',
       archiveUnavailable: '这里无法归档对话。',
       chipHint: '记忆 {chat}',
-      shared: '共享'
+      shared: '共享',
+      showAll: '显示全部（{n} 个字符）',
+      showLess: '收起',
+      wholeTurn: '整轮 t{n}',
+      turnFailed: '无法读取这一轮。',
+      notWhole: '这个对话是在保存完整消息之前索引的，而且它的会话已不在：这里只有它的主题引用的内容。'
     }
     const KINDS = ['decision', 'fact', 'task', 'artifact', 'open-question']
     const COLORS = { decision: '#4A65E8', fact: '#2BA471', task: '#E5973C', artifact: '#8E5BE8', 'open-question': '#E5484D' }
@@ -207,6 +217,8 @@ window.__ModuleLoader__.load({
       '.dshcg-chip[data-hidden="true"]{border-style:dashed}',
       '.dshcg-dialog-mask{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);pointer-events:auto;z-index:1000}',
       '.dshcg-dialog{max-width:440px;margin:16px;padding:20px;border-radius:var(--dsw-radius-lg,10px);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);display:flex;flex-direction:column;gap:12px;font-size:14px}',
+      '.dshcg-source{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}',
+      '.dshcg-turn{display:flex;flex-direction:column;gap:6px;padding-left:10px;border-left:2px solid var(--dsw-alias-border-l3)}',
       '.dshcg-confirm{border:1px solid var(--dsw-alias-state-error-primary,#E5484D);border-radius:var(--dsw-radius-md,8px);padding:10px;display:flex;flex-direction:column;gap:8px}',
       // #88: a moving node or link eases to its new place (Material 3: 300 ms, emphasized); pointing
       // at or focusing a node fades everything outside its family.
@@ -379,7 +391,45 @@ window.__ModuleLoader__.load({
     }
 
     /** One topic, opened from the map: its gist, chat, links, sources and the id to paste. */
-    function TopicPanel({ detail, t, onOpen, onClose }) {
+    /** Characters a source shows before Show all (#93). */
+    const FOLD = 1500
+
+    /**
+     * One source message, whole (#93): a long one is folded until Show all, and Whole turn reads the
+     * turn it belongs to from the chat's stored messages.
+     */
+    function SourceBlock({ source, t, onTurn }) {
+      const [all, setAll] = useState(false)
+      const [turn, setTurn] = useState(null) // null, { loading }, { error }, or the host's answer
+      const text = String(source.text ?? '')
+      const long = text.length > FOLD
+      const shown = long && !all ? `${text.slice(0, FOLD)}…` : text
+      const read = () => {
+        setTurn({ loading: true })
+        onTurn(source.turn).then(setTurn, () => setTurn({ error: true }))
+      }
+      return jsxs('div', {
+        className: 'dshcg-source',
+        children: [
+          jsx('pre', { className: 'dshcg-pre', children: `${source.role}${source.turn ? ` (t${source.turn})` : ''}:\n${shown}` }),
+          long || (source.turn && onTurn)
+            ? jsxs('div', {
+              className: 'dshcg-row',
+              children: [
+                long ? jsx('button', { type: 'button', className: 'dshcg-btn', onClick: () => setAll(!all), children: all ? t('showLess') : t('showAll').replace('{n}', number(text.length)) }) : null,
+                source.turn && onTurn && !turn?.messages ? jsx('button', { type: 'button', className: 'dshcg-btn', disabled: turn?.loading === true, onClick: read, children: t('wholeTurn').replace('{n}', String(source.turn)) }) : null
+              ]
+            })
+            : null,
+          turn?.error ? jsx('div', { className: 'dshcg-bad', children: t('turnFailed') }) : null,
+          turn?.messages
+            ? jsx('div', { className: 'dshcg-turn', children: turn.messages.map((m, i) => jsx('pre', { className: 'dshcg-pre', children: `${m.role}:\n${m.text}` }, i)) })
+            : null
+        ]
+      })
+    }
+
+    function TopicPanel({ detail, t, onOpen, onClose, onTurn }) {
       const [copied, setCopied] = useState(false)
       const copy = () => {
         // No clipboard on plain-http remote access: nothing is copied, so nothing says Copied.
@@ -407,8 +457,9 @@ window.__ModuleLoader__.load({
             ? jsxs('div', { children: [jsx('div', { className: 'dshcg-muted', children: t('links') }), jsx('div', { className: 'dshcg-row', children: detail.links.map((l) => jsx('button', { type: 'button', className: 'dshcg-btn', onClick: () => onOpen(l.id), children: `${l.label} (${l.relation})` }, `${l.id} ${l.relation} ${l.direction}`)) })] })
             : null,
           detail.sources.length > 0
-            ? jsxs('div', { children: [jsx('div', { className: 'dshcg-muted', children: t('sources') }), ...detail.sources.map((s, i) => jsx('pre', { className: 'dshcg-pre', children: `${s.role}${s.turn ? ` (t${s.turn})` : ''}:\n${s.text}` }, i))] })
-            : null
+            ? jsxs('div', { children: [jsx('div', { className: 'dshcg-muted', children: t('sources') }), ...detail.sources.map((s, i) => jsx(SourceBlock, { source: s, t, onTurn: onTurn ? (n) => onTurn(detail.chat.cid, n) : undefined }, `${detail.id} ${i}`))] })
+            : null,
+          detail.complete === false && detail.sources.length > 0 ? jsx('div', { className: 'dshcg-muted', children: t('notWhole') }) : null
         ]
       })
     }
@@ -946,7 +997,7 @@ window.__ModuleLoader__.load({
           : detail?.error ? jsxs('div', { className: 'dshcg-panel', children: [jsx('div', { className: 'dshcg-bad', children: t('topicFailed') }), jsxs('div', { className: 'dshcg-row', children: [jsx('button', { type: 'button', className: 'dshcg-btn', onClick: () => read(selected.topic), children: t('retry') }), jsx('button', { type: 'button', className: 'dshcg-btn', onClick: close, children: t('close') })] })] })
             : !detail || detail.loading ? jsx('div', { className: 'dshcg-panel dshcg-muted', children: t('loading') })
               // Keyed by topic: another topic gets a new panel, not this one's buttons and Copied.
-              : jsx(TopicPanel, { detail, t, onOpen: open, onClose: close }, detail.id)
+              : jsx(TopicPanel, { detail, t, onOpen: open, onClose: close, onTurn: (cid, n) => getJson('turn', { w: ws.key, cid, t: n }) }, detail.id)
       const notice = overviewNotice(ws, t)
       const body = notice ? [notice] : [
         workspaceButtons(ws, t),
@@ -1193,6 +1244,7 @@ window.__ModuleLoader__.load({
     exports.chatLabel = chatLabel
     exports.TopicPanel = TopicPanel
     exports.ChatPanel = ChatPanel
+    exports.SourceBlock = SourceBlock
     exports.subcommandOf = subcommandOf
     exports.splitText = splitText
     return module.exports

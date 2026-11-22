@@ -35,13 +35,13 @@ async function withPage(cwd, { listed = () => [], archived = () => [] } = {}) {
   return { h, routes, call, key }
 }
 
-test('six owner-only routes: four reads, and hide and forget as POSTs that need the page\'s header (#91, #92)', { skip }, async () => {
+test('owner-only routes: the reads, and hide and forget as POSTs and hide and forget as POSTs that need the page\'s header (#91, #92)', { skip }, async () => {
   const cwd = await mkdtemp(join(tmpdir(), 'cg-hide-'))
   try {
     const { routes, call } = await withPage(cwd)
-    assert.deepEqual([...routes.keys()].sort(), ['chat', 'forget', 'hide', 'overview', 'topic', 'tree'].map((n) => `/api/context-graph.${n}`))
+    assert.deepEqual([...routes.keys()].sort(), ['chat', 'forget', 'hide', 'overview', 'topic', 'tree', 'turn'].map((n) => `/api/context-graph.${n}`))
     assert.deepEqual(['hide', 'forget'].map((n) => routes.get(`/api/context-graph.${n}`).methods), [['POST'], ['POST']])
-    assert.deepEqual(['overview', 'tree', 'topic', 'chat'].map((n) => routes.get(`/api/context-graph.${n}`).methods), [['GET'], ['GET'], ['GET'], ['GET']])
+    assert.deepEqual(['overview', 'tree', 'topic', 'chat', 'turn'].map((n) => routes.get(`/api/context-graph.${n}`).methods), [['GET'], ['GET'], ['GET'], ['GET'], ['GET']])
     assert.equal((await call('hide', '?w=x&cid=1', { post: true, header: false })).status, 403, 'a cross-site form cannot send the header')
     assert.equal((await call('forget', '?sid=sA', { post: true, header: false })).status, 403)
   } finally { await rm(cwd, { recursive: true, force: true, maxRetries: 10 }) }

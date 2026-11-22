@@ -200,8 +200,10 @@ export function registerBuilder(ctx, rt, meter) {
       // Commit order: the cited text first (idempotent by seq), then the graph that points at it,
       // then the index position. A crash in between can repeat work but never attaches the wrong
       // text to a topic (#12).
-      const cited = [...new Set(usable.flatMap((n) => n.msgs))].map((i) => read[i]).filter(Boolean)
-      await saveMessages(chat, cited)
+      // Every message this build read is kept whole, not only the cited ones (#93): a topic and its
+      // turn can always be read in full, also after dsh's session is deleted. A chat's first index
+      // starts at its own beginning, so its store holds the whole indexed span from then on.
+      await saveMessages(chat, read, { complete: !Number.isInteger(meta.builtSeq) })
       await relabelTurns(chat, span.turnAt).catch((error) => console.error('context-graph: stored turn ids not relabelled (non-fatal)', error))
       await saveGraph(chat, graph)
       await rt.updateFor(agent, (latest) => {

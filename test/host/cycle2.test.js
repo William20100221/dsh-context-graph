@@ -132,9 +132,11 @@ test('#34 another chat\'s turn comes from dsh\'s log, only inside what that chat
   const fid = (await metaOf(cwd, 'sF')).cid
   assert.equal((await h.recall(b, `c${fid}t1`)).status, 'unknown', 'inherited turn')
   assert.match((await h.recall(b, `c${fid}t5`)).text, /the fork's own question/)
-  // A chat whose dsh log is gone falls back to the messages its topics cite.
+  // A chat whose dsh log is gone falls back to its stored messages: since #93 the whole turn.
   logs.delete('sA')
-  assert.match((await h.recall(b, 'c1t1')).text, /We decided to sign commits[\s\S]*only the messages its topics cite are stored/)
+  const stored = (await h.recall(b, 'c1t1')).text
+  assert.match(stored, /We decided to sign commits/)
+  assert.doesNotMatch(stored, /only the messages its topics cite/, 'a store kept whole since its first index says nothing is missing')
 }))
 
 test('#29 a topic recall gives its newest cited messages, capped, each naming its turn', { skip }, () => inWorkspace(async (cwd) => {

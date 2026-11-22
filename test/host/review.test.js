@@ -93,8 +93,10 @@ test('#1 a fresh chat builds without running any command first', { skip }, async
     h.listeners['agent/turn-stopping']({ agent, turn: 4 })
     await wait()
     assert.equal(h.llm.calls, 1, 'the same span is not sent to the model twice')
-    const msgs = JSON.parse(await readFile(join(cwd, '.context-graph/chats/sA/msgs.json'), 'utf8')).m
-    assert.deepEqual(Object.keys(msgs), ['1'], 'one copy of the cited message')
+    const store = JSON.parse(await readFile(join(cwd, '.context-graph/chats/sA/msgs.json'), 'utf8'))
+    // Since #93 every message the build read is kept, once each, and the store is whole from the start.
+    assert.deepEqual(Object.keys(store.m), ['1', '2', '3', '4', '5', '6', '7', '8'], 'one copy of each message read')
+    assert.equal(store.complete, true)
   } finally { await rm(cwd, { recursive: true, force: true, maxRetries: 10 }) }
 })
 
@@ -109,7 +111,7 @@ test('#2 the index position survives an app restart', { skip }, async () => {
     restarted.listeners['agent/turn-stopping']({ agent, turn: 5 })
     await wait()
     assert.equal(restarted.llm.calls, 0)
-    assert.equal(Object.keys(JSON.parse(await readFile(join(cwd, '.context-graph/chats/sB/msgs.json'), 'utf8')).m).length, 1)
+    assert.equal(Object.keys(JSON.parse(await readFile(join(cwd, '.context-graph/chats/sB/msgs.json'), 'utf8')).m).length, 8, 'nothing read or stored twice')
   } finally { await rm(cwd, { recursive: true, force: true, maxRetries: 10 }) }
 })
 

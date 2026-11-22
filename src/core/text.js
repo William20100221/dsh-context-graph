@@ -79,14 +79,14 @@ const HEAD = 4500
 const TAIL = 1000
 
 /**
- * A long message as it is stored: its head and tail; the full text stays in dsh's own session log.
- * Here in the core because the savings estimate counts every source as if it was stored this way.
+ * A long message cut to its head and tail. The savings estimate counts every source this way (the
+ * defaults), whatever is stored; the store keeps far more (store/messages.js keepText, #93).
  */
-export function capText(text) {
+export function capText(text, headChars = HEAD, tailChars = TAIL) {
   const s = String(text ?? '')
-  if (s.length <= HEAD + TAIL + 200) return s
-  const head = cutBefore(s, HEAD)
-  const tail = cutAfter(s, s.length - TAIL)
+  if (s.length <= headChars + tailChars + 200) return s
+  const head = cutBefore(s, headChars)
+  const tail = cutAfter(s, s.length - tailChars)
   return `${s.slice(0, head)}\n…[${tail - head} chars omitted; the full turn is in the chat's dsh log]…\n${s.slice(tail)}`
 }
 

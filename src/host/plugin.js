@@ -21,6 +21,7 @@ import { registerBuilder } from './builder.js'
 import { registerCommand } from './command.js'
 import { DEFAULTS, upgradeConfig, version } from './config.js'
 import { registerMemory } from './memory.js'
+import { registerKeeper } from './keeper.js'
 import { registerPage } from './page.js'
 import { createMeter, registerMeter } from './meter.js'
 import { registerRecall } from './recall.js'
@@ -42,5 +43,8 @@ export function apply(ctx, config = {}) {
   registerMeter(ctx, meter, rt)
   registerRecall(ctx, rt, meter)
   registerCommand(ctx, rt, { build, turnOn, onAtIdle, meter, updates })
-  registerPage(ctx, rt)
+  const page = registerPage(ctx, rt)
+  // Chats indexed before 0.13.0 get their whole indexed span from dsh's log, once per run (#93).
+  const keeper = registerKeeper(rt, { dirs: async () => (await page.known()).map((k) => k.dir) })
+  return { rt, page, keeper }
 }

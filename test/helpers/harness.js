@@ -123,7 +123,7 @@ export async function setup(config = {}, llm = scriptedLlm({ reply: DEFAULT_REPL
       if ((nested.inject ?? []).every((name) => name in available)) nested.apply({ effect: (gen) => { for (const _ of gen()); }, ...available })
     }
   }
-  apply(ctx, { _updates: NO_UPDATES, ...config })
+  const plugin = apply(ctx, { _updates: NO_UPDATES, ...config })
   const run = (agent, rawInput, extra = {}) => commands[0].handler({ rawInput, agent, ...extra })
   const step = async (agent, decision) => {
     const out = await listeners['agent/pre-step']({ agent, messages: decision.messages }, async () => decision)
@@ -131,7 +131,7 @@ export async function setup(config = {}, llm = scriptedLlm({ reply: DEFAULT_REPL
     return out
   }
   const recall = (agent, id) => tools[0].execute({ id }, { agent })
-  return { ctx, listeners, tools, commands, llm, run, step, recall }
+  return { ctx, listeners, tools, commands, llm, run, step, recall, plugin }
 }
 
 export const DEFAULT_REPLY = JSON.stringify({ nodes: [{ id: null, label: 'commit signing', gist: 'signed with id_ed25519_signing', aliases: ['gpg'], kind: 'decision', msgs: [0] }], edges: [] })

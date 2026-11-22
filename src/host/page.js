@@ -5,6 +5,7 @@
  *   GET api/context-graph.tree?w=<key>             one workspace as a tree: chats, their topics, links (#86)
  *   GET api/context-graph.topic?w=<key>&id=c3n12   one topic: gist, aliases, links, its sources
  *   GET api/context-graph.chat?sid=<session>       one chat's memory number and flags, for its header (#92)
+ *   GET api/context-graph.turn?w=<key>&cid=3&t=7   one whole turn, from the chat's stored messages (#93)
  *   POST api/context-graph.hide?w=<key>&cid=3&on=1  hide a chat from memory, or (on=0) use it again (#91)
  *   POST api/context-graph.forget?w=<key>&cid=3     delete the memory of a chat dsh archived or deleted
  *   POST api/context-graph.forget?sid=<session>     the same, for the session menu's Archive & forget (#92)
@@ -31,7 +32,7 @@ import { addCounters, balance, counters, emptyCounters } from '../core/ledger.js
 import { chatSummary } from '../core/render.js'
 import { chatDir, listChats, loadGraph, removeChat, updateMeta } from '../store/chats.js'
 import { loadLedger } from '../store/ledger.js'
-import { loadMessages, oldTurns, sourceOf } from '../store/messages.js'
+import { loadMessages, oldTurns, sourceOf, storeComplete } from '../store/messages.js'
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } })
 const keyOf = (dir) => createHash('sha1').update(dir).digest('hex').slice(0, 12)
@@ -169,7 +170,8 @@ export function registerPage(ctx, rt) {
     // Turn numbers stored by 0.9.0 counted typed prompts, not dsh's turns: not shown until a
     // recall or a build of that chat converts them; the page never writes (second review of #71).
     const named = !(await oldTurns(chatDir(w.dir, chat.sid)))
-    const sources = sourceOf(stored, node).slice(-3).map((s) => ({ role: s.role, turn: named ? s.turn : undefined, text: String(s.text ?? '').slice(0, 600) }))
+    // Whole (#93): the page shows a long one folded; what the model is sent keeps its own budget.
+    const sources = sourceOf(stored, node).slice(-3).map((s) => ({ role: s.role, turn: named ? s.turn : undefined, text: String(s.text ?? '') }))
     return {
       id,
       label: node.label,
@@ -179,8 +181,30 @@ export function registerPage(ctx, rt) {
       updated: node.updated,
       chat: { cid: chat.meta.cid, title: chat.meta.title ?? '', summary: chatSummary({ meta: chat.meta, graph }) },
       links: neighbors(graph, m[2]).map((l) => ({ id: `c${chat.meta.cid}${l.id}`, label: graph.nodes[l.id].label, relation: l.relation, direction: l.direction })),
-      sources
+      sources,
+      // Whether the chat keeps its whole indexed span, so a source's turn can be read in full (#93).
+      complete: await storeComplete(chatDir(w.dir, chat.sid))
     }
+  }
+
+  /**
+   * One whole turn of a chat (#93), from its stored messages: what indexing read, kept whole, never
+   * what was typed while memory was off. Also for a chat whose dsh session was deleted.
+   */
+  async function turn(w, query) {
+    const chat = await chatByCid(w, query.get('cid'))
+    const n = Number(query.get('t'))
+    if (!chat || !Number.isInteger(n) || n < 1) return undefined
+    const folder = chatDir(w.dir, chat.sid)
+    // Turn ids stored by 0.9.0 are not dsh's until relabelled (second review of #71).
+    if (await oldTurns(folder)) return undefined
+    const stored = await loadMessages(folder).catch(() => ({}))
+    const messages = Object.entries(stored)
+      .filter(([, m]) => m?.t === n)
+      .sort(([a], [b]) => Number(a) - Number(b))
+      .map(([, m]) => ({ role: m.r, text: String(m.x ?? '') }))
+    if (messages.length === 0) return undefined
+    return { cid: chat.cid, turn: n, messages, complete: await storeComplete(folder) }
   }
 
   /** The workspace a request names by its key; undefined for any other value. */
@@ -281,6 +305,7 @@ export function registerPage(ctx, rt) {
         route('tree', inWorkspace((w) => tree(w))),
         route('topic', inWorkspace((w, q) => topic(w, q.get('id')))),
         route('chat', chatInfo),
+        route('turn', inWorkspace((w, q) => turn(w, q))),
         route('hide', hide, { write: true }),
         route('forget', forget, { write: true })
       ]
@@ -292,5 +317,5 @@ export function registerPage(ctx, rt) {
     }
   })
 
-  return { overview, tree, topic, known, hide, forget, chatInfo }
+  return { overview, tree, topic, turn, known, hide, forget, chatInfo }
 }

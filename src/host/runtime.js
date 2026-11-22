@@ -11,7 +11,7 @@ import { emptyCounters, standIn } from '../core/ledger.js'
 import { collectSpan, eventText, inGap, isPrompt, mergeGaps, promptText, shownContext, titleOf } from '../core/session.js'
 import { chatDir, listChats, loadGraph, loadMeta, updateMeta } from '../store/chats.js'
 import { chatEntry } from '../store/ledger.js'
-import { capText, loadMessages } from '../store/messages.js'
+import { capText, keepText, loadMessages } from '../store/messages.js'
 
 const ownParts = new WeakMap()
 
@@ -242,7 +242,8 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
       for (const m of collectSpan((s) => session.eventAt(s)).messages) if (m.seq < forkSeq) read.set(m.seq, m.text)
       readCache.set(session, read)
     }
-    return [read.get(seq), eventText(session.eventAt(seq))].some((own) => own && (stored === own || stored === capText(own)))
+    // Stored whole since 0.13.0 (#93), cut to head and tail before.
+    return [read.get(seq), eventText(session.eventAt(seq))].some((own) => own && (stored === own || stored === keepText(own) || stored === capText(own)))
   }
 
   /**
