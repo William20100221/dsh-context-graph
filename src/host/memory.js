@@ -8,7 +8,7 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 import { SOURCE_KIND, memoryOn } from '../core/chat.js'
-import { matchAcross } from '../core/match.js'
+import { layeredMatch, renderSubjectHint } from '../core/subjects.js'
 import { formatSource, renderChats, renderHits, renderRange } from '../core/render.js'
 import { PROMPT_KINDS, promptText, shownContext } from '../core/session.js'
 import { estimateTokens } from '../core/text.js'
@@ -115,7 +115,8 @@ export function registerMemory(ctx, rt, meter) {
       let heldViews
       const held = async () => (heldViews ??= await heldChats(agent, forkSeq, views))
       const range = parseTimeRange(prompt)
-      const { hits: found, lead, total } = matchAcross(views, prompt, { max: cfg.maxHits, range, skip: shown.ids })
+      // Through the subject layer (#96): the chats of the subjects the message names first, then all.
+      const { hits: found, lead, total, layer: searched, named } = layeredMatch(views, prompt, { max: cfg.maxHits, range, skip: shown.ids })
       const holds = await inherited(agent, forkSeq, found)
       const hits = found.filter((hit) => !holds.has(hit))
       if (total === 0 && range && asksAboutPast(prompt)) {
@@ -126,6 +127,20 @@ export function registerMemory(ctx, rt, meter) {
         const ids = [...block.matchAll(TOPIC_LINE)].map((m) => m[1])
         const seen = shown.texts.has(block) || (ids.length > 0 && ids.every((id) => shown.ids.has(id)))
         if (!seen) parts.push(block)
+      }
+      // A subject was named but no topic anywhere matched: the deepest layer was not found. When the
+      // message asks about earlier work, the model learns which chats hold that subject, once per
+      // subject per chat, so it can recall one (#96).
+      if (found.length === 0 && searched === 'none' && named.length > 0 && asksAboutPast(prompt)) {
+        const skipped = await held()
+        const fresh = named
+          .map((s) => ({ ...s, views: s.views.filter((v) => !skipped.has(v)) }))
+          .filter((s) => s.views.length > 0 && !st.hinted?.has(s.key))
+        if (fresh.length > 0) {
+          const hint = renderSubjectHint(fresh)
+          if (!shown.texts.has(hint)) parts.push(hint)
+          st.hinted = new Set([...(st.hinted ?? []), ...fresh.map((s) => s.key)])
+        }
       }
       let inline
       if (hits.length > 0) {

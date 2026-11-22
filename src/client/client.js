@@ -108,7 +108,8 @@ window.__ModuleLoader__.load({
       'type.chat': 'Everyday chat',
       'type.none': 'Not labelled yet',
       parts: 'Parts of this chat',
-      byLabel: 'Sort by label'
+      byLabel: 'Sort by label',
+      unsorted: 'Not sorted yet'
     }
     const zh = {
       stats: '上下文图谱',
@@ -197,7 +198,8 @@ window.__ModuleLoader__.load({
       'type.chat': '日常聊天',
       'type.none': '尚未标注',
       parts: '对话的几个部分',
-      byLabel: '按标签排序'
+      byLabel: '按标签排序',
+      unsorted: '尚未分类'
     }
     const KINDS = ['decision', 'fact', 'task', 'artifact', 'open-question']
     const COLORS = { decision: '#4A65E8', fact: '#2BA471', task: '#E5973C', artifact: '#8E5BE8', 'open-question': '#E5484D' }
@@ -522,17 +524,33 @@ window.__ModuleLoader__.load({
     /** Chat types in the order a tree grouped by label lists them (core/labels.js CHAT_TYPES). */
     const TYPES = ['coding', 'debugging', 'research', 'study', 'writing', 'planning', 'setup', 'data', 'creative', 'language', 'question', 'chat']
 
+    /** A subject's key: its words, lower-cased, so spellings that differ only in case or spacing meet. */
+    const subjectKeyOf = (subject) => (typeof subject === 'string' ? subject.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim() : '')
+
     /**
-     * How a tree groups the chats under its workspace (#95): `by` 'label' groups them by type, chats
-     * not labelled yet last; anything else leaves them ungrouped, newest first.
+     * How a tree groups the chats under its workspace: by subject (#96), the layer search goes
+     * through first, in the order of each subject's newest chat, chats not sorted yet last; or, with
+     * `by` 'label' (#95), by type, chats not labelled yet last. Ungrouped (null) while no chat has
+     * a subject yet.
      * @returns [{ key, label, chats }] or null
      */
     function groupsOf(chats, by, t) {
-      if (by !== 'label') return null
-      const order = [...TYPES, 'none']
-      const buckets = new Map(order.map((k) => [k, []]))
-      for (const c of chats) buckets.get(TYPES.includes(c.type) ? c.type : 'none').push(c)
-      return order.filter((k) => buckets.get(k).length > 0).map((k) => ({ key: `g:type:${k}`, label: t(`type.${k}`), chats: buckets.get(k) }))
+      if (by === 'label') {
+        const order = [...TYPES, 'none']
+        const buckets = new Map(order.map((k) => [k, []]))
+        for (const c of chats) buckets.get(TYPES.includes(c.type) ? c.type : 'none').push(c)
+        return order.filter((k) => buckets.get(k).length > 0).map((k) => ({ key: `g:type:${k}`, label: t(`type.${k}`), chats: buckets.get(k) }))
+      }
+      if (!chats.some((c) => subjectKeyOf(c.subject))) return null
+      const groups = new Map()
+      for (const c of chats) {
+        const key = subjectKeyOf(c.subject)
+        if (!groups.has(key)) groups.set(key, { key: `g:subject:${key}`, label: key ? String(c.subject).trim() : t('unsorted'), chats: [] })
+        groups.get(key).chats.push(c)
+      }
+      const unsorted = groups.get('')
+      groups.delete('')
+      return [...groups.values(), ...(unsorted ? [unsorted] : [])]
     }
 
     /** Each node's parent, by id: what a search or a choice opens to show a node. */
@@ -591,7 +609,7 @@ window.__ModuleLoader__.load({
 
     /** Ids open at first: the workspace and the newest chats, while their topics fit OPEN_ROWS (one at least). */
     function initialOpen(data, by = null) {
-      // Every group starts open (they are few); the newest chats open as before (#95).
+      // Every group starts open (they are few); the newest chats open as before (#95, #96).
       const open = new Set(['w', ...(groupsOf(data.chats.filter((x) => !x.hidden), by, (k) => k) ?? []).map((g) => g.key)])
       const groups = open.size - 1
       let rows = 0
@@ -976,7 +994,7 @@ window.__ModuleLoader__.load({
           chat.title ? jsx('div', { children: chat.title }) : null,
           chat.summary ? jsx('div', { className: 'dshcg-muted', children: chat.summary }) : null,
           // What the chat is for (#94): its type and project, and its parts when it held several conversations.
-          jsx('div', { className: 'dshcg-row', children: [jsx('span', { className: 'dshcg-tag', children: t(`type.${chat.type ?? 'none'}`) }), chat.project ? jsx('span', { className: 'dshcg-tag', children: chat.project }) : null] }),
+          jsx('div', { className: 'dshcg-row', children: [chat.subject ? jsx('span', { className: 'dshcg-tag', children: chat.subject }) : null, jsx('span', { className: 'dshcg-tag', children: t(`type.${chat.type ?? 'none'}`) }), chat.project ? jsx('span', { className: 'dshcg-tag', children: chat.project }) : null] }),
           Array.isArray(chat.parts) && chat.parts.length > 0
             ? jsxs('div', { children: [jsx('div', { className: 'dshcg-muted', children: t('parts') }), ...chat.parts.map((p, i) => jsx('div', { children: `t${p.turns?.[0] ?? '?'}–t${p.turns?.[1] ?? '?'} · ${t(`type.${p.type}`)}${p.about ? `: ${p.about}` : ''}` }, i))] })
             : null,

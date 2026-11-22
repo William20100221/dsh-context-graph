@@ -9,14 +9,15 @@ import { join } from 'node:path'
 
 import { BlockAssembler } from '@deepseek-ai/dsh-llm'
 
-import { betterParse, builderPrompt, parseBuilderOutput, planSpan } from '../core/builder.js'
-import { hiddenOn, memoryOn, offPoint, walkGaps } from '../core/chat.js'
+import { betterParse, builderPrompt, parseBuilderOutput, parseSortOutput, planSpan, sortPrompt } from '../core/builder.js'
+import { hiddenOn, memoryOn, offPoint, reachable, walkGaps } from '../core/chat.js'
 import { mergeParts } from '../core/labels.js'
 import { mergeDelta } from '../core/graph.js'
+import { subjectKey } from '../core/subjects.js'
 import { emptyCounters, usedIn } from '../core/ledger.js'
 import { collectSpan, firstPromptSeq, lastAnswer, mergeGaps, titleOf } from '../core/session.js'
 import { textOf } from '../core/text.js'
-import { chatDir, loadGraph, saveGraph } from '../store/chats.js'
+import { chatDir, listChats, loadGraph, saveGraph, updateMeta } from '../store/chats.js'
 import { addToLedger } from '../store/ledger.js'
 import { loadMessages, relabelTurns, saveMessages } from '../store/messages.js'
 import { PURPOSE } from './config.js'
@@ -46,7 +47,24 @@ function firstHalfEnd(messages) {
   return prompts.length >= 2 ? prompts[Math.floor(prompts.length / 2)].seq - 1 : undefined
 }
 
-export function registerBuilder(ctx, rt, meter) {
+/** At most this many chats are sorted into subjects in one call (#96), the newest first. */
+const SORT_MAX_CHATS = 40
+
+/**
+ * The subjects of a workspace an index may reuse (#96): those of the chats other chats may draw on
+ * (shared, not hidden) and of this chat, newest first, one spelling each, at most 30.
+ */
+async function workspaceSubjects(dir, sid) {
+  const seen = new Map()
+  for (const c of await listChats(dir).catch(() => [])) {
+    if (c.sid !== sid && !reachable(c.meta)) continue
+    const key = subjectKey(c.meta.subject)
+    if (key && !seen.has(key)) seen.set(key, String(c.meta.subject).trim())
+  }
+  return [...seen.values()].slice(0, 30)
+}
+
+export function registerBuilder(ctx, rt, meter, { sort = true } = {}) {
   const { cfg } = rt
   const efforts = new Map()
 
@@ -145,7 +163,7 @@ export function registerBuilder(ctx, rt, meter) {
       const graph = await loadGraph(chat, { writable: true })
       // The indexing call's usage is this chat's cost in the savings estimate (meter.js).
       st.chat = true
-      const prompt = builderPrompt({ graph, summary: meta.summary, labels: { type: meta.type, project: meta.project }, messages: read, assistantCap: plan.assistantCap })
+      const prompt = builderPrompt({ graph, summary: meta.summary, labels: { subject: meta.subject, type: meta.type, project: meta.project }, subjects: await workspaceSubjects(rt.dirFor(agent), sid), messages: read, assistantCap: plan.assistantCap })
       const effort = await lowestEffort(llm, target, signal)
       const assembler = new BlockAssembler()
       for await (const chunk of llm.stream({
@@ -217,6 +235,7 @@ export function registerBuilder(ctx, rt, meter) {
           // (Its first-prompt fingerprint is set by runtime.js upToDate before this change runs.)
           title: latest.turnsClosed === true ? latest.title : span.title ?? latest.title ?? titleOf(eventAt, 60, forkSeq, mergeGaps(latest.gaps, span.hidden)),
           ...(delta.summary ? { summary: delta.summary } : {}),
+          ...(delta.subject ? { subject: delta.subject } : {}),
           ...(delta.type ? { type: delta.type } : {}),
           ...(typeof delta.project === 'string' && delta.project ? { project: delta.project } : {}),
           ...(parts.length > 0 ? { parts: mergeParts(latest.parts, parts) } : {}),
@@ -226,6 +245,8 @@ export function registerBuilder(ctx, rt, meter) {
       })
       st.retryAt = 0
       meter.builds++
+      // The workspace's other chats without a subject or type are sorted once per app run (#96).
+      if (sort) sortWorkspace(agent, signal).catch((error) => console.error('context-graph: chats not sorted into subjects (non-fatal)', error?.message ?? error))
       return finish({ status: 'built', nodes: touched.length, newNodes: touched.filter((t) => t.isNew).length, totalNodes: Object.keys(graph.nodes).length, edges: graph.edges.length, dir: chat, more: Boolean(plan.rest) })
     } catch (error) {
       if (signal?.aborted) return finish({ status: 'cancelled', reason: 'the command was cancelled' })
@@ -422,5 +443,63 @@ export function registerBuilder(ctx, rt, meter) {
       .catch((error) => console.error('context-graph: savings not written this turn, kept for the next (non-fatal)', error))
   })
 
-  return { build, turnOn, onAtIdle }
+  /** Memory folders whose chats were sorted in this app run (#96). */
+  const sorted = new Set()
+
+  /**
+   * Chats indexed before 0.14.0 (no type) or 0.15.0 (no subject) get them in one small call (#96),
+   * once per memory folder per app run, after a build there: only chats other chats may draw on
+   * (shared, not hidden, memory on), each as its summary and topic labels, at most 40, newest first.
+   * What a chat's own index named is never replaced.
+   */
+  async function sortWorkspace(agent, signal) {
+    const dir = rt.dirFor(agent)
+    const sid = rt.sidOf(agent)
+    if (sorted.has(dir)) return { status: 'done' }
+    sorted.add(dir)
+    const llm = ctx.get('llm')
+    const target = rt.resolveTarget(agent)
+    if (!llm || !target) return { status: 'unavailable' }
+    const waiting = (await listChats(dir))
+      .filter((c) => c.sid !== sid && Number.isInteger(c.meta.cid) && memoryOn(c.meta) && reachable(c.meta) && (!c.meta.subject || !c.meta.type))
+      .slice(0, SORT_MAX_CHATS)
+    const chats = []
+    for (const c of waiting) {
+      const graph = await loadGraph(chatDir(dir, c.sid)).catch(() => undefined)
+      const labels = graph ? Object.values(graph.nodes).map((n) => n.label) : []
+      if (labels.length > 0) chats.push({ sid: c.sid, cid: c.meta.cid, summary: c.meta.summary, labels })
+    }
+    if (chats.length === 0) return { status: 'nothing' }
+    const effort = await lowestEffort(llm, target, signal)
+    const assembler = new BlockAssembler()
+    for await (const chunk of llm.stream({
+      provider: target.provider,
+      model: target.model,
+      ...(effort ? { reasoningEffort: effort } : {}),
+      messages: [{ role: 'user', content: [{ type: 'text', text: sortPrompt({ chats, subjects: await workspaceSubjects(dir, sid) }) }] }],
+      maxTokens: cfg.builderMaxTokens,
+      sessionId: agent.session.id,
+      purpose: PURPOSE,
+      ...(signal ? { signal } : {})
+    })) assembler.push(chunk)
+    const blocks = assembler.blocks()
+    const answer = [textOf(blocks), blocks.filter((b) => b?.type === 'reasoning').map((b) => b.text).join('\n')]
+    const cids = chats.map((c) => c.cid)
+    const found = { ...parseSortOutput(answer[1], cids), ...parseSortOutput(answer[0], cids) }
+    let updated = 0
+    for (const c of chats) {
+      const pick = found[c.cid]
+      if (!pick) continue
+      await updateMeta(dir, c.sid, (m) => ({
+        ...m,
+        ...(!m.subject && pick.subject ? { subject: pick.subject } : {}),
+        ...(!m.type && pick.type ? { type: pick.type } : {}),
+        ...(!m.project && pick.project ? { project: pick.project } : {})
+      }))
+      updated++
+    }
+    return { status: 'sorted', chats: updated }
+  }
+
+  return { build, turnOn, onAtIdle, sortWorkspace }
 }

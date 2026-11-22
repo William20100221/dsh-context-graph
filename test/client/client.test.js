@@ -914,3 +914,22 @@ test('the toolbar toggle sorts by label and back, and the page remembers it acro
   const own = loadClient({ react, globals: { localStorage: refusing }, fetch: async () => new Promise(() => {}) })
   assert.doesNotThrow(() => react.render(own.TreePage, { t }))
 })
+
+// ---- v0.15.0: the subject layer (#96) -----------------------------------------------------------
+
+test('chats hang from their subjects by default, in the order of each subject\'s newest chat, unsorted last; Sort by label switches (#96)', () => {
+  const chats = [
+    branch(5, ['fact'], { subject: 'Earth and Space Science', type: 'study' }),
+    branch(4, ['fact'], { subject: 'Laptop care', type: 'setup' }),
+    branch(3, ['fact']),
+    branch(2, ['fact'], { subject: 'earth and  space science', type: 'research' })
+  ]
+  const tree = mountTree({ key: 'a', title: 'W', chats })
+  assert.deepEqual(tree.ids(), ['w', 'g:subject:earth and space science', 'c5', 'c5n1', 'c2', 'c2n1', 'g:subject:laptop care', 'c4', 'c4n1', 'g:subject:', 'c3', 'c3n1'])
+  assert.equal(find(tree.node('g:subject:'), (e) => e.props?.className === 'dshcg-label').props.children, 't:unsorted (1)')
+  assert.equal(find(tree.node('g:subject:earth and space science'), (e) => e.props?.className === 'dshcg-label').props.children, 'Earth and Space Science (2)', 'the newest chat\'s spelling')
+  assert.deepEqual(mountTree({ key: 'a', title: 'W', chats }, () => {}, { by: 'label' }).ids().filter((id) => id.startsWith('g:')), ['g:type:research', 'g:type:study', 'g:type:setup', 'g:type:none'])
+  assert.deepEqual(mountTree({ key: 'a', title: 'W', chats: [branch(1, ['fact'])] }).ids(), ['w', 'c1', 'c1n1'], 'no group while no chat has a subject')
+  const client = loadClient()
+  assert.match(JSON.stringify(client.ChatPanel({ chat: { cid: 5, total: 1, shared: true, memory: true, subject: 'Earth and Space Science', type: 'study' }, t, onClose() {} })), /Earth and Space Science/)
+})

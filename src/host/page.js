@@ -146,6 +146,7 @@ export function registerPage(ctx, rt) {
           memory: memoryOn(c.meta),
           hidden: hiddenOn(c.meta),
           // What the chat is for (#94): its type, project and parts (turn ranges).
+          subject: c.meta.subject,
           type: c.meta.type,
           project: c.meta.project,
           parts: Array.isArray(c.meta.parts) ? c.meta.parts.map((p) => ({ turns: p.turns, type: p.type, about: p.about })) : [],

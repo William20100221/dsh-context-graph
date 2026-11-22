@@ -32,13 +32,14 @@ export const name = 'context-graph'
 export const inject = ['tools']
 
 export function apply(ctx, config = {}) {
-  const { _updates, ...rest } = config
+  const { _updates, _sort, ...rest } = config
   // dsh's agents service finds the chat behind a nested subagent (runtime.ownerMeta).
   const rt = createRuntime({ ...DEFAULTS, ...upgradeConfig(rest) }, { agentById: (id) => ctx.get('agents')?.get?.(id), sessionQuery: () => ctx.get('sessionQuery') })
   // `_updates` lets tests stand in for the network check.
   const updates = _updates ?? startUpdateCheck(version)
   const meter = createMeter()
-  const { build, turnOn, onAtIdle } = registerBuilder(ctx, rt, meter)
+  // `_sort: false` lets tests that count model calls leave out the subject sorting call (#96).
+  const { build, turnOn, onAtIdle, sortWorkspace } = registerBuilder(ctx, rt, meter, { sort: _sort !== false })
   registerMemory(ctx, rt, meter)
   registerMeter(ctx, meter, rt)
   registerRecall(ctx, rt, meter)
@@ -46,5 +47,5 @@ export function apply(ctx, config = {}) {
   const page = registerPage(ctx, rt)
   // Chats indexed before 0.13.0 get their whole indexed span from dsh's log, once per run (#93).
   const keeper = registerKeeper(rt, { dirs: async () => (await page.known()).map((k) => k.dir) })
-  return { rt, page, keeper }
+  return { rt, page, keeper, sortWorkspace }
 }

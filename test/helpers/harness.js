@@ -123,7 +123,9 @@ export async function setup(config = {}, llm = scriptedLlm({ reply: DEFAULT_REPL
       if ((nested.inject ?? []).every((name) => name in available)) nested.apply({ effect: (gen) => { for (const _ of gen()); }, ...available })
     }
   }
-  const plugin = apply(ctx, { _updates: NO_UPDATES, ...config })
+  // The subject sorting call (#96) would add a model call to every test that counts them: off here,
+  // on in the tests of #96 (`_sort: true`).
+  const plugin = apply(ctx, { _updates: NO_UPDATES, _sort: false, ...config })
   const run = (agent, rawInput, extra = {}) => commands[0].handler({ rawInput, agent, ...extra })
   const step = async (agent, decision) => {
     const out = await listeners['agent/pre-step']({ agent, messages: decision.messages }, async () => decision)
