@@ -4,6 +4,19 @@ All notable changes to dsh-context-graph. Versions follow semver; each minor ver
 is one development cycle (audit, issues, fixes, independent review), documented in
 [docs/cycles](docs/cycles).
 
+## 0.17.0 — 2026-11-23 — savings against the history memory replaces
+
+- Saved = old total - memory making - searching (#104). The old total is, for each earlier chat
+  whose memory a chat used, that chat's whole kept conversation, once per chat that used it, at the
+  first use: the history that would otherwise have been input. Making is indexing; searching is
+  the notes and recalls sent, their cached re-sends and the recall tool. Before, a used topic
+  counted only its three newest messages as stored.
+- The card and the plugin's page show each term (old total, memory making, searching, saved).
+- Ledgers from before are converted once (at start, or in a chat's first write), from the topics
+  they recorded as used, so no earlier chat is counted twice.
+- A chat's own history stays as dsh sends it (folding it in would break the provider's prompt
+  cache); only earlier chats are replaced by their memory tree.
+
 ## 0.16.1 — 2026-11-23 — a chat knows which chat it is
 
 - A chat is told its memory number (`This chat is c7 in memory`, about 20 tokens) with the first note it

@@ -212,25 +212,29 @@ need a header only this page sends, and neither page adds anything to a chat.
 
 ## What memory saved
 
-Memory is not free: every note it adds is input, the notes stay in the chat and are sent again (as
-cheaper cached input) with every later request, the `recall` tool rides with every request, and
-indexing is a model call. What it saves is having to bring old context back by hand. The estimate
-counts both sides per chat and adds them up per workspace:
+A chat never takes earlier chats in as input: it gets their memory tree, a few lines at a time, and
+reads a deeper layer (a topic's sources, a whole turn) only when it needs it. So the estimate
+compares memory with taking those conversations in:
+
+**saved = old total - memory making - searching**
 
 | | Counted as |
 |---|---|
-| Saved | for each topic the model actually used (it recalled it, or its answer says two of the topic's words that your message did not), the stored text of its newest cited messages (three at most), each message counted once per chat however many topics cite it |
-| Cost | notes and recall results sent, their cached re-sends (x0.1) while they are still in the chat (also by a subagent forked from it), the recall tool on every request (x0.1), the indexing calls as dsh reported them (cached input x0.1, output x4) |
-| Balance | saved minus cost, in input-token equivalents; shown as a loss when it is one |
+| Old total | for each earlier chat whose memory a chat actually used (it recalled one of its topics, or its answer says two of a topic's words that your message did not), that chat's whole kept conversation: the history that would otherwise have been input. Once per chat that used it, measured at the first use |
+| Memory making | the indexing calls as dsh reported them (cached input x0.1, output x4) |
+| Searching | the notes and recall results sent, their cached re-sends (x0.1) while they are still in the chat (also by a subagent forked from it), and the recall tool on every request (x0.1) |
+| Saved | old total minus making and searching, in input-token equivalents; shown as a loss when it is one |
 
-It is an estimate: it cannot know what you would have pasted without memory. It errs low: a topic
-only counts when the answer shows it was used (an answer that only repeats your question does not
-count), what you would have pasted is counted once, at most a topic's three newest messages as
-stored (long ones keep only their head and tail), and never re-sent, and the time a model spends
-re-deriving old decisions is not counted at all. The counters live in `.context-graph/ledger/`, one
-small file per chat holding only the counters that are not zero, written at most once per turn and
-only for that chat; while a sync tool holds one of them, the card says the savings are unavailable
-for now instead of failing.
+It is an estimate, and it leans low where it can: an earlier chat counts only when the answer shows
+its memory was used (an answer that only repeats your question does not count), and only once per
+chat, never with the cached re-sends it would have cost in that chat after the first request. A
+chat's own history is not part of it: dsh sends a chat's own conversation as it always does, and
+compacts it when it grows long; folding it into the tree would break the provider's prompt cache,
+which bills repeated input at about a tenth of the price. The counters live in
+`.context-graph/ledger/`, one small file per chat holding only the counters that are not zero, written
+at most once per turn and only for that chat; counters from before 0.17.0 are converted once, from
+the topics they recorded as used. While a sync tool holds one of the files, the card says the
+savings are unavailable for now instead of failing.
 
 ## How matching and recall work
 
