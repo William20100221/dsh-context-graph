@@ -4,6 +4,14 @@ All notable changes to dsh-context-graph. Versions follow semver; each minor ver
 is one development cycle (audit, issues, fixes, independent review), documented in
 [docs/cycles](docs/cycles).
 
+## 0.16.0 — 2026-11-23 — labels only from the chat itself
+
+- A chat's memory and labels are changed from outside it only by a call that has read that chat
+  (#102). The labelling of chats indexed before 0.15.0, which went by their summaries and topic
+  labels in one call per workspace, now reads each chat's own kept messages in a call of its own
+  (at most 10 per workspace per app run). Only missing labels are filled; what a chat's own index
+  named is never replaced from outside; a chat with nothing kept to read is left unlabelled.
+
 ## 0.15.2 — 2026-11-23 — Sort by label stays put
 
 - Memory tree's Sort by label stays at the top right above the details at any window width; the

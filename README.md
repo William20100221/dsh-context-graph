@@ -255,8 +255,11 @@ ones (a plural for a singular, an identifier in camelCase), and sends nothing fo
 messages (test/core/cycle4-matching.test.js).
 
 **Subjects first.** Indexing names each chat's broad subject (Earth and space science, laptop
-battery care), reusing a subject the workspace already has, so chats on one subject share it; chats
-indexed before get one in a single small call after the next index in their workspace. A message
+battery care), reusing a subject the workspace already has, so chats on one subject share it. A
+chat's memory and labels are written only by its own index, from its own messages; one chat never
+changes another's. Chats indexed before 0.15.0 are labelled once each, after the next index in
+their workspace, by a call that reads that chat's kept messages (at most 10 per workspace per app
+run); only labels a chat lacks are filled, and a chat with no messages to read is left unlabelled. A message
 that names a subject (half of its words or more) is matched against the topics of that subject's
 chats first; if none of them matches, against every chat's topics; if still none, the search stops.
 When a subject was named, nothing matched and the message asks about earlier work, the model gets one
@@ -310,7 +313,7 @@ see [What memory saved](#what-memory-saved).
 | A message about something earlier | 1-5 topic lines, about 30 tokens each, plus a short source when one topic clearly answers it |
 | A question about earlier work that names a subject but matches no topic | one line naming that subject's chats, once per subject per chat |
 | Any other message | nothing |
-| Indexing | one auxiliary call every 4 turns, and at most one more when the chat goes quiet in between; off the critical path, at the route's lowest reasoning effort; its fixed rules and the topic list come first so the provider can cache them. Once per workspace per app run, chats indexed before 0.15.0 are sorted into subjects in one more small call (their summaries and topic labels) |
+| Indexing | one auxiliary call every 4 turns, and at most one more when the chat goes quiet in between; off the critical path, at the route's lowest reasoning effort; its fixed rules and the topic list come first so the provider can cache them. Once per workspace per app run, up to 10 chats indexed before 0.15.0 are labelled, one call each over that chat's own kept messages |
 | `recall` | one tool round trip: a topic's source up to about 1,000 tokens, a turn up to about 2,000 |
 
 Injected blocks are appended to the end of your newest message, never inserted earlier, so the
