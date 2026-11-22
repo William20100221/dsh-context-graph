@@ -68,7 +68,14 @@ test('registers the command card, the savings page in Plugins, and Memory tree i
     ['inject', 'main'],
     ['register', { name: 'main', key: 'dsh-context-graph', locale: 'dsh-context-graph' }, 'TreePage'],
     ['inject', 'sidebar.panellist'],
-    ['register', { name: 'sidebar.panellist', id: 'dsh-context-graph', order: 30, locale: 'dsh-context-graph' }, 'TreeIcon']
+    ['register', { name: 'sidebar.panellist', id: 'dsh-context-graph', order: 30, locale: 'dsh-context-graph' }, 'TreeIcon'],
+    // #92: the chip beside dsh's preset label (-10), the session menu row, the dialog in the overlay.
+    ['inject', 'conversation.session.header.actions'],
+    ['register', { name: 'conversation.session.header.actions', id: 'context-graph-chip', order: -5, locale: 'dsh-context-graph' }, 'MemoryChip'],
+    ['inject', 'sidebar.workspaces.session.menu.item'],
+    ['register', { name: 'sidebar.workspaces.session.menu.item', id: 'context-graph-archive-forget', order: 900, locale: 'dsh-context-graph' }, 'ForgetMenuItem'],
+    ['inject', 'shell.overlay'],
+    ['register', { name: 'shell.overlay', id: 'context-graph-dialog', locale: 'dsh-context-graph' }, 'ForgetDialog']
   ])
   assert.deepEqual(labels, ['dsh-context-graph:panel'], 'the label is read through the app\'s locale, so it follows the language')
 })
@@ -679,4 +686,111 @@ test('the host\'s reason shows when a change fails, and changes are POSTs with t
   find(find(failing(), (e) => e.props?.role === 'alertdialog'), (e) => e.type === 'button' && e.props.children === 't:deleteMemory').props.onClick()
   await settle()
   assert.equal(find(failing(), (e) => e.props?.role === 'alert')?.props.children, 'this chat still exists')
+})
+
+// ---- v0.12.0: a chat's memory tag and Archive & forget (#92) ---------------------------------------
+
+/** The client with dsh services the test controls, applied so serviceOf reaches them. */
+function withServices(services, { fetch, react = fakeReact({ effects: [] }), primitives = {} } = {}) {
+  let entry
+  const window = { __ModuleLoader__: { load: (e) => { entry = e } } }
+  vm.runInNewContext(read('src/client/client.js'), { window, document: undefined, fetch, URLSearchParams, Promise, Map, Set, Number, Math, String, setInterval: () => 0, clearInterval: () => {} })
+  const element = (type, props, key) => ({ type, props, key })
+  const shared = { react, 'react/jsx-runtime': { jsx: element, jsxs: element }, '@deepseek-ai/dsh-client-ui-primitives': { DisclosureRow: 'DisclosureRow', ...primitives } }
+  const client = entry.factory((name) => shared[name])
+  client.apply({ effect: (fn) => fn(), get: (name) => services[name], locale: { register() {} }, slots: { inject: (name, fn) => fn(), register: () => {} } })
+  return client
+}
+
+test('the header chip shows the chat\'s number and opens Memory tree on that chat; nothing before the chat has memory (#92)', async () => {
+  const effects = []
+  const react = fakeReact({ effects })
+  const selected = []
+  let answer = { ok: true, json: async () => ({ w: 'k1', cid: 4, topics: 9, shared: true, memory: true, hidden: false }) }
+  const client = withServices({ layout: { selectPanel: (id) => selected.push(id) } }, { react, fetch: async () => answer })
+  const chip = () => react.render(client.MemoryChip, { sessionId: 'sA', t })
+  assert.equal(chip(), null, 'nothing until the host answers')
+  for (const run of effects.splice(0)) run()
+  await settle()
+  const shown = chip()
+  assert.deepEqual(shown.props.children[1], 'c4')
+  assert.equal(shown.props.title, 't:chipHint · 9 t:topics · t:shared')
+  shown.props.onClick()
+  assert.deepEqual(selected, ['dsh-context-graph'])
+  assert.deepEqual({ ...client.jump.want }, { w: 'k1', cid: 4 }, 'the page takes it from here')
+  answer = { ok: false, status: 404, json: async () => ({}) }
+  const other = fakeReact({ effects })
+  const none = withServices({}, { react: other, fetch: async () => answer })
+  other.render(none.MemoryChip, { sessionId: 'sNew', t })
+  for (const run of effects.splice(0)) run()
+  await settle()
+  assert.equal(other.render(none.MemoryChip, { sessionId: 'sNew', t }), null, 'a chat with no memory yet has no chip')
+})
+
+test('the tree page opens the workspace and chat the chip asked for (#92)', async () => {
+  const effects = []
+  const react = fakeReact({ effects })
+  const client = withServices({}, { react, fetch: async (url) => ({ ok: true, json: async () => (url.includes('overview') ? { workspaces: [{ key: 'k0', title: 'A', indexed: 1, topics: 1 }, { key: 'k1', title: 'B', indexed: 1, topics: 1 }] } : { key: url.includes('k1') ? 'k1' : 'k0', title: 'B', chats: [branch(4, ['fact'])] }) }) })
+  client.jump.want = { w: 'k1', cid: 4 }
+  const page = () => react.render(client.TreePage, { t })
+  page()
+  for (const run of effects.splice(0)) run()
+  await settle()
+  await settle()
+  page()
+  // Only the effect that takes the jump: the fake runs every effect on every render, and the
+  // overview's load (a mount-only effect in React) would start over.
+  effects.splice(0).at(-1)()
+  assert.equal(find(page(), (e) => e.type === client.ChatPanel)?.props.chat.cid, 4, 'chat c4 of workspace B is chosen')
+  assert.equal(client.jump.want, null, 'taken once')
+})
+
+test('Archive & forget: a menu row for a chat with memory, a confirmation, then dsh archives and the host forgets (#92)', async () => {
+  const effects = []
+  const react = fakeReact({ effects })
+  const calls = []
+  const uiWorkspace = { archiveSession: async (sid) => calls.push(['archive', sid]) }
+  const client = withServices({ uiWorkspace }, {
+    react,
+    primitives: { MenuItemButton: 'MenuItemButton', IconArchiveOutlineRegular: 'IconArchive' },
+    fetch: async (url, init) => {
+      if (init?.method === 'POST') calls.push(['post', url, init.headers['x-context-graph']])
+      return { ok: true, json: async () => (url.includes('chat?') ? { w: 'k1', cid: 4, topics: 9, shared: true, memory: true, hidden: false } : { forgotten: true }) }
+    }
+  })
+  const menu = []
+  const row = () => react.render(client.ForgetMenuItem, { sessionId: 'sA', displayTitle: 'NZQA research', useMenuOpenState: () => [true, (open) => menu.push(open)], t })
+  assert.equal(row(), null, 'not before the chat is known to have memory')
+  for (const run of effects.splice(0)) run()
+  await settle()
+  const item = row()
+  assert.deepEqual([item.type, item.props.danger, item.props.children], ['MenuItemButton', true, 't:archiveForget'])
+  item.props.onSelect()
+  assert.deepEqual(menu, [false], 'the menu closes')
+  assert.deepEqual(calls, [], 'nothing happens before the confirmation')
+  const dialog = fakeReact({ effects })
+  const draw = () => dialog.render(client.ForgetDialog, { t })
+  const shown = draw()
+  assert.equal(shown.props.role, 'dialog', 'no Modal in this shell: the plain dialog')
+  assert.match(JSON.stringify(shown), /t:forgetTitle/)
+  assert.match(JSON.stringify(shown), /t:forgetBody/)
+  find(shown, (e) => e.type === 'button' && e.props.children === 't:archiveForget').props.onClick()
+  await settle()
+  assert.deepEqual(calls, [['archive', 'sA'], ['post', 'api/context-graph.forget?sid=sA', '1']], 'dsh archives first, then the memory goes')
+  assert.equal(draw(), null, 'closed')
+})
+
+test('Archive & forget keeps the memory when dsh does not archive, and says why (#92)', async () => {
+  const effects = []
+  const react = fakeReact({ effects })
+  const posts = []
+  const client = withServices({ uiWorkspace: { archiveSession: async () => { throw new Error('the chat is running') } } }, { react, fetch: async (url, init) => { if (init?.method === 'POST') posts.push(url); return { ok: true, json: async () => ({}) } } })
+  client.askForget({ sessionId: 'sA', title: 'x', cid: 4, topics: 1 })
+  const draw = () => react.render(client.ForgetDialog, { t })
+  find(draw(), (e) => e.type === 'button' && e.props.children === 't:archiveForget').props.onClick()
+  await settle()
+  assert.deepEqual(posts, [], 'no memory deleted')
+  assert.equal(find(draw(), (e) => e.props?.role === 'alert').props.children, 't:archiveFailed the chat is running')
+  find(draw(), (e) => e.type === 'button' && e.props.children === 't:cancel').props.onClick()
+  assert.equal(draw(), null)
 })

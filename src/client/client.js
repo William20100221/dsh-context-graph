@@ -6,7 +6,9 @@
 //   - the plugin's page in Plugins (`plugins.bundle.config`, #35): what memory saved and cost in
 //     each workspace;
 //   - Memory tree, an entry of its own in the sidebar's panel list with a page in the main column
-//     (#85): what the memory holds. Data comes from the host's owner-only routes (src/host/page.js).
+//     (#85): what the memory holds. Data comes from the host's owner-only routes (src/host/page.js);
+//   - a chat's memory number in its header, and Archive & forget in its session menu (#92), with
+//     the confirmation in dsh's frame-wide overlay so it outlives the menu.
 window.__ModuleLoader__.load({
   id: 'dsh-context-graph',
   factory: (require) => {
@@ -15,7 +17,8 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const { useState } = React
     const { jsx, jsxs } = require('react/jsx-runtime')
-    const { DisclosureRow } = require('@deepseek-ai/dsh-client-ui-primitives')
+    const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
+    const { DisclosureRow, MenuItemButton, Modal, Button, IconArchiveOutlineRegular } = primitives
 
     const NAMESPACE = 'dsh-context-graph'
     const en = {
@@ -77,7 +80,15 @@ window.__ModuleLoader__.load({
       deleted: 'deleted',
       archived: 'archived',
       goneHint: 'This chat was deleted in DeepSeek Harness; its memory is still here.',
-      archivedHint: 'This chat is archived in DeepSeek Harness.'
+      archivedHint: 'This chat is archived in DeepSeek Harness.',
+      archiveForget: 'Archive & forget',
+      forgetTitle: 'Archive {chat} and forget its memory?',
+      forgetBody: '“{title}” moves to the archive, where it can be restored. Its memory ({n} topics and their stored messages) is deleted for good and cannot be restored.',
+      archiveFailed: 'Not archived:',
+      forgetFailed: 'Archived, but its memory was not deleted:',
+      archiveUnavailable: 'DeepSeek Harness cannot archive chats here.',
+      chipHint: 'Memory {chat}',
+      shared: 'shared'
     }
     const zh = {
       stats: '上下文图谱',
@@ -138,7 +149,15 @@ window.__ModuleLoader__.load({
       deleted: '已删除',
       archived: '已归档',
       goneHint: '这个对话已在 DeepSeek Harness 中删除，它的记忆还在这里。',
-      archivedHint: '这个对话已在 DeepSeek Harness 中归档。'
+      archivedHint: '这个对话已在 DeepSeek Harness 中归档。',
+      archiveForget: '归档并清除记忆',
+      forgetTitle: '归档 {chat} 并清除它的记忆？',
+      forgetBody: '“{title}”会移到归档中，之后可以恢复；它的记忆（{n} 个主题及保存的消息）会被永久删除，无法恢复。',
+      archiveFailed: '未能归档：',
+      forgetFailed: '已归档，但记忆未能删除：',
+      archiveUnavailable: '这里无法归档对话。',
+      chipHint: '记忆 {chat}',
+      shared: '共享'
     }
     const KINDS = ['decision', 'fact', 'task', 'artifact', 'open-question']
     const COLORS = { decision: '#4A65E8', fact: '#2BA471', task: '#E5973C', artifact: '#8E5BE8', 'open-question': '#E5484D' }
@@ -181,6 +200,13 @@ window.__ModuleLoader__.load({
       '.dshcg-node[data-kind="group"] .dshcg-label{font-style:italic;fill:var(--dsw-alias-label-secondary)}',
       '.dshcg-node[data-hidden="true"]{opacity:.55}',
       '.dshcg-btn-danger{color:var(--dsw-alias-state-error-primary,#E5484D)}',
+      // #92: the header chip sits beside dsh's own preset label; the fallback dialog opts into pointer
+      // events, as the overlay layer is click-through.
+      '.dshcg-chip{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;border-radius:11px;border:1px solid var(--dsw-alias-border-l3);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}',
+      '.dshcg-chip:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
+      '.dshcg-chip[data-hidden="true"]{border-style:dashed}',
+      '.dshcg-dialog-mask{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);pointer-events:auto;z-index:1000}',
+      '.dshcg-dialog{max-width:440px;margin:16px;padding:20px;border-radius:var(--dsw-radius-lg,10px);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);display:flex;flex-direction:column;gap:12px;font-size:14px}',
       '.dshcg-confirm{border:1px solid var(--dsw-alias-state-error-primary,#E5484D);border-radius:var(--dsw-radius-md,8px);padding:10px;display:flex;flex-direction:column;gap:8px}',
       // #88: a moving node or link eases to its new place (Material 3: 300 ms, emphasized); pointing
       // at or focusing a node fades everything outside its family.
@@ -608,10 +634,13 @@ window.__ModuleLoader__.load({
       const els = React.useRef(new Map())
       // A topic chosen while its chat is closed (a linked topic opened from the panel) opens that chat
       // once, so the selection is drawn; the chat can be closed again as any other (#89).
-      const reveal = /^(c\d+)n/.exec(selected?.topic ?? '')?.[1]
+      // A chat chosen from its header chip (#92) may be in the closed Hidden branch: that opens too.
+      const pickedChat = selected?.topic ? /^c(\d+)n/.exec(selected.topic)?.[1] : selected?.chat
+      const picked = data.chats.find((c) => String(c.cid) === String(pickedChat ?? ''))
+      const reveal = [selected?.topic && picked ? `c${picked.cid}` : undefined, picked?.hidden ? 'hidden' : undefined].filter(Boolean)
       React.useEffect(() => {
-        if (reveal) setOpen((was) => (was.has(reveal) ? was : new Set([...was, reveal])))
-      }, [selected?.topic])
+        if (reveal.length) setOpen((was) => (reveal.every((id) => was.has(id)) ? was : new Set([...was, ...reveal])))
+      }, [selected?.topic, selected?.chat])
       const q = query.trim().toLowerCase()
       const root = treeItems(data, t, details)
       const hit = (item) => item.kind === 'topic' && q !== '' && item.full.toLowerCase().includes(q)
@@ -742,7 +771,7 @@ window.__ModuleLoader__.load({
         setState({ status: 'loading' })
         getJson('overview').then((value) => {
           setState({ status: 'ready', workspaces: value.workspaces })
-          const first = value.workspaces.find((w) => w.indexed > 0) ?? value.workspaces[0]
+          const first = value.workspaces.find((w) => w.key === jump.want?.w) ?? value.workspaces.find((w) => w.indexed > 0) ?? value.workspaces[0]
           if (first) choose(first.key)
         }, () => setState({ status: 'error' }))
       }
@@ -872,6 +901,26 @@ window.__ModuleLoader__.load({
         getJson('tree', { w: next }).then((value) => { if (generation.current === n) setMap(value) }, () => { if (generation.current === n) setMap({ error: true }) })
       }
       const ws = useWorkspaces(show)
+      // A chat's header chip asks for it (#92): its workspace is shown, then the chat is chosen.
+      const [, bump] = useState(0)
+      React.useEffect(() => {
+        const listener = () => bump((n) => n + 1)
+        jump.listeners.add(listener)
+        return () => { jump.listeners.delete(listener) }
+      }, [])
+      React.useEffect(() => {
+        const want = jump.want
+        if (!want || ws.state.status !== 'ready') return
+        if (ws.key !== want.w) {
+          if (ws.state.workspaces.some((x) => x.key === want.w)) ws.choose(want.w)
+          else jump.want = null
+          return
+        }
+        if (map?.key === want.w && Array.isArray(map.chats)) {
+          jump.want = null
+          setSelected({ chat: want.cid })
+        }
+      })
       const read = (id) => {
         const n = generation.current
         const take = (value) => { if (generation.current === n) setDetails((was) => ({ ...was, [id]: value })) }
@@ -931,6 +980,166 @@ window.__ModuleLoader__.load({
     // The sidebar entry and the page it opens share this id, as dsh's own Automation tasks do.
     const PANEL = 'dsh-context-graph'
 
+    // ---- a chat's memory tag and Archive & forget (#92) ---------------------------------------
+
+    /** Where Memory tree opens next: set by a chat's header chip, taken by the page. */
+    const jump = { want: null, listeners: new Set() }
+    const jumpTo = (w, cid) => {
+      jump.want = { w, cid }
+      for (const listener of [...jump.listeners]) listener()
+    }
+
+    /** The chat Archive & forget asks about, shown by the overlay's dialog. */
+    const forgetAsk = { want: null, listeners: new Set() }
+    const askForget = (request) => {
+      forgetAsk.want = request
+      for (const listener of [...forgetAsk.listeners]) listener()
+    }
+
+    /** dsh services reached when needed (layout to open the page, uiWorkspace to archive); set by apply. */
+    let serviceOf = () => undefined
+
+    /** A chat's memory facts by its dsh session, read again every 30 s; null while it has none. */
+    function useChatInfo(sessionId) {
+      const [info, setInfo] = useState(undefined)
+      React.useEffect(() => {
+        if (!sessionId) return undefined
+        let live = true
+        const read = () => getJson('chat', { sid: sessionId }).then((value) => { if (live) setInfo(value) }, () => { if (live) setInfo(null) })
+        read()
+        // A chat gets its number at its first index, mid-conversation: the chip appears then.
+        const timer = setInterval(read, 30000)
+        return () => { live = false; clearInterval(timer) }
+      }, [sessionId])
+      return info
+    }
+
+    /** `c4` beside the chat's title: which memory branch this chat is; a click opens it in Memory tree. */
+    function MemoryChip({ sessionId, t: given }) {
+      const t = translator(given)
+      const info = useChatInfo(sessionId)
+      if (!info) return null
+      const state = info.hidden ? t('hiddenGroup') : !info.memory ? t('memoryOff') : info.shared ? t('shared') : t('private')
+      const hint = `${t('chipHint').replace('{chat}', `c${info.cid}`)} · ${info.topics ?? '?'} ${t('topics')} · ${state}`
+      return jsxs('button', {
+        type: 'button',
+        className: 'dshcg-chip',
+        'data-hidden': info.hidden ? 'true' : undefined,
+        title: hint,
+        'aria-label': hint,
+        onClick: () => {
+          jumpTo(info.w, info.cid)
+          try { serviceOf('layout')?.selectPanel?.(PANEL) } catch (error) { console.error('context-graph: Memory tree could not be opened', error) }
+        },
+        children: [jsx(TreeIcon, { size: 12 }), `c${info.cid}`]
+      })
+    }
+
+    /** One row of a menu: dsh's own when the shell has it, else a plain menu item. */
+    const MenuRow = MenuItemButton ?? (({ onSelect, children }) => jsx('button', { type: 'button', role: 'menuitem', onClick: onSelect, children }))
+
+    /** Archive & forget in a chat's session menu; only for a chat with memory (dsh's Archive covers the rest). */
+    function ForgetMenuItem({ sessionId, displayTitle, useMenuOpenState, t: given }) {
+      const t = translator(given)
+      const [, setMenuOpen] = useMenuOpenState?.() ?? [true, () => {}]
+      const info = useChatInfo(sessionId)
+      if (!info) return null
+      return jsx(MenuRow, {
+        icon: IconArchiveOutlineRegular ? jsx(IconArchiveOutlineRegular, { size: 16 }) : undefined,
+        danger: true,
+        separatorBefore: true,
+        onSelect: () => {
+          setMenuOpen(false)
+          askForget({ sessionId, title: displayTitle, cid: info.cid, topics: info.topics })
+        },
+        children: t('archiveForget')
+      })
+    }
+
+    /**
+     * The confirmation Archive & forget opens, in dsh's frame-wide overlay so it outlives the menu:
+     * dsh archives the chat, then the host deletes its memory (it checks the chat is archived).
+     */
+    function ForgetDialog({ t: given }) {
+      const t = translator(given)
+      const [, bump] = useState(0)
+      const [busy, setBusy] = useState(false)
+      const [error, setError] = useState('')
+      React.useEffect(() => {
+        const listener = () => { setError(''); bump((n) => n + 1) }
+        forgetAsk.listeners.add(listener)
+        return () => { forgetAsk.listeners.delete(listener) }
+      }, [])
+      const request = forgetAsk.want
+      if (!request) return null
+      const done = () => {
+        forgetAsk.want = null
+        setError('')
+        bump((n) => n + 1)
+      }
+      const close = () => { if (!busy) done() }
+      const confirm = async () => {
+        setBusy(true)
+        setError('')
+        try {
+          const workspace = serviceOf('uiWorkspace')
+          if (typeof workspace?.archiveSession !== 'function') throw new Error(t('archiveUnavailable'))
+          await workspace.archiveSession(request.sessionId)
+        } catch (reason) {
+          setBusy(false)
+          setError(`${t('archiveFailed')} ${reason?.message ?? reason}`)
+          return
+        }
+        try {
+          await postJson('forget', { sid: request.sessionId })
+        } catch (reason) {
+          setBusy(false)
+          setError(`${t('forgetFailed')} ${reason?.message ?? reason}`)
+          return
+        }
+        setBusy(false)
+        done()
+      }
+      const title = t('forgetTitle').replace('{chat}', `c${request.cid}`)
+      const body = t('forgetBody').replace('{title}', request.title || `c${request.cid}`).replace('{n}', String(request.topics ?? '?'))
+      const alert = error ? jsx('div', { className: 'dshcg-bad', role: 'alert', children: error }) : null
+      if (Modal && Button) {
+        return jsx(Modal, {
+          open: true,
+          onClose: close,
+          closeLabel: t('close'),
+          title,
+          description: body,
+          footer: [
+            jsx(Button, { variant: 'outline', disabled: busy, onClick: close, children: t('cancel') }, 'cancel'),
+            jsx(Button, { variant: 'outline', className: 'dshcg-btn-danger', disabled: busy, onClick: confirm, children: t('archiveForget') }, 'confirm')
+          ],
+          children: alert
+        })
+      }
+      return jsx('div', {
+        className: 'dshcg-dialog-mask',
+        role: 'dialog',
+        'aria-modal': 'true',
+        'aria-label': title,
+        children: jsxs('div', {
+          className: 'dshcg-dialog',
+          children: [
+            jsx('strong', { children: title }),
+            jsx('div', { children: body }),
+            alert,
+            jsxs('div', {
+              className: 'dshcg-row',
+              children: [
+                jsx('button', { type: 'button', className: 'dshcg-btn', disabled: busy, onClick: close, children: t('cancel') }),
+                jsx('button', { type: 'button', className: 'dshcg-btn dshcg-btn-danger', disabled: busy, onClick: confirm, children: t('archiveForget') })
+              ]
+            })
+          ]
+        })
+      })
+    }
+
     const inject = ['slots', 'locale']
     function apply(ctx) {
       ctx.effect(() => ctx.locale.register(NAMESPACE, { en, zh }), 'dsh-context-graph: dictionaries')
@@ -947,6 +1156,20 @@ window.__ModuleLoader__.load({
       ctx.slots.inject('sidebar.panellist', () =>
         ctx.slots.register({ name: 'sidebar.panellist', id: PANEL, order: 30, locale: NAMESPACE, label: () => label('panel') }, TreeIcon)
       )
+      // #92: services are looked up when used, so a shell without one still gets everything else.
+      serviceOf = (name) => {
+        try { return ctx.get?.(name) } catch { return undefined }
+      }
+      // Right after dsh's preset label (order -10), before its background-work list (20).
+      ctx.slots.inject('conversation.session.header.actions', () =>
+        ctx.slots.register({ name: 'conversation.session.header.actions', id: 'context-graph-chip', order: -5, locale: NAMESPACE, inject: (sessionId) => ({ sessionId }) }, MemoryChip)
+      )
+      ctx.slots.inject('sidebar.workspaces.session.menu.item', () =>
+        ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'context-graph-archive-forget', order: 900, locale: NAMESPACE }, ForgetMenuItem)
+      )
+      ctx.slots.inject('shell.overlay', () =>
+        ctx.slots.register({ name: 'shell.overlay', id: 'context-graph-dialog', locale: NAMESPACE }, ForgetDialog)
+      )
     }
 
     exports.inject = inject
@@ -955,6 +1178,11 @@ window.__ModuleLoader__.load({
     exports.SavingsPage = SavingsPage
     exports.TreePage = TreePage
     exports.TreeIcon = TreeIcon
+    exports.MemoryChip = MemoryChip
+    exports.ForgetMenuItem = ForgetMenuItem
+    exports.ForgetDialog = ForgetDialog
+    exports.askForget = askForget
+    exports.jump = jump
     exports.MemoryTree = MemoryTree
     exports.TreeTools = TreeTools
     exports.treeKey = treeKey
