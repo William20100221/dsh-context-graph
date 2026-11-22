@@ -27,6 +27,7 @@ summary of the chat. Memory is a tree that a new chat reads from the top, cheape
 
 | Layer | What the model sees | When |
 |---|---|---|
+| Subject | nothing by itself: it steers the search (see below), and names its chats when a question about one finds no topic | a question naming a subject |
 | Chat | `c3 Postgres tuning for the orders dashboard` | once per chat, with its first topic lines or its first question about earlier work (about 200 tokens for all chats); not again after a restart |
 | Topic | `- c3n12 orders index: (customer_id, created_at) cut the query to 40 ms` | on a message about it; unrelated messages get nothing |
 | Source | the cited messages, each naming its turn (`c3t7`) | `recall("c3n12")` |
@@ -169,9 +170,10 @@ Card: `2 matching topics`, then `c3n12 builder timeout: ...` per line.
 ## Memory tree
 
 **Memory tree** in the sidebar (under New Session, next to Automation tasks) opens the memory of a
-workspace as a tree, root on the left: the workspace, its chats (newest first), each chat's topics
-grouped by kind (decision, fact, task, artifact, open question), and the messages each topic came
-from, with their turn ids. These are the same layers recall walks.
+workspace as a tree, root on the left: the workspace, its subjects (in the order of each one's newest
+chat; chats not sorted yet last), their chats, each chat's topics grouped by kind (decision, fact,
+task, artifact, open question), and the messages each topic came from, with their turn ids. These
+are the layers search and recall walk.
 
 - **Open and close.** The newest chats start open while their topics fit 40 rows; a closed chat
   shows how many topics it holds. Click a chat to open or close it. Click a topic to see its gist,
@@ -186,14 +188,16 @@ from, with their turn ids. These are the same layers recall walks.
 - **Motion.** What opens grows out of its parent and what moves eases to its place; nothing moves
   when the system asks for reduced motion.
 - **Labels.** A chat's details show its type and project and, for a chat that held several
-  conversations, its parts (`t1–t4 · Bug fixing: the login redirect`). **Sort by label**, at the
-  right end of the toolbar, groups chats by type; a second click goes back. The choice is
-  remembered after DeepSeek Harness is closed and opened again.
+  conversations, its parts (`t1–t4 · Bug fixing: the login redirect`), and its subject. **Sort by
+  label**, at the right end of the toolbar, groups chats by type instead of subject; a second click
+  goes back. The choice is remembered after DeepSeek Harness is closed and opened again.
 - **Hide a chat.** A chat's details have **Hide from memory**: no other chat matches, lists,
   digests or recalls it any more, so it costs no input tokens, and it is not indexed while hidden.
   It moves to the Hidden branch; **Use again** brings it back, and indexing catches up.
 - **Delete a chat's memory.** Only for a chat you archived or deleted in DeepSeek Harness (the tree
   marks them): **Delete memory** asks first, then removes its topics and stored messages for good.
+  Nothing brings them back: an index still running drops its result, and a chat restored from the
+  archive and used again starts over, as a new chat number, from what is said after.
 
 **In a chat.** Its header shows which memory branch it is (`c4`, beside the mode); click it to open
 Memory tree on that chat. Its menu in the sidebar has **Archive & forget**: after you confirm, dsh
@@ -250,6 +254,14 @@ this finds the right topic for 20 of 20 questions, 10 of 10 held-out ones and 37
 ones (a plural for a singular, an identifier in camelCase), and sends nothing for 41 of 41 everyday
 messages (test/core/cycle4-matching.test.js).
 
+**Subjects first.** Indexing names each chat's broad subject (Earth and space science, laptop
+battery care), reusing a subject the workspace already has, so chats on one subject share it; chats
+indexed before get one in a single small call after the next index in their workspace. A message
+that names a subject (half of its words or more) is matched against the topics of that subject's
+chats first; if none of them matches, against every chat's topics; if still none, the search stops.
+When a subject was named, nothing matched and the message asks about earlier work, the model gets one
+line naming that subject's chats (once per subject per chat), so it can `recall` one.
+
 **Labels rank, they do not match.** Indexing labels each chat by what it is for (coding, bug fixing,
 research, study, writing, planning, setup, data, creative, language, a quick question, everyday
 chat), names its project when it has one, and labels the parts of a chat that held several
@@ -296,8 +308,9 @@ see [What memory saved](#what-memory-saved).
 | Every request | the `recall` tool definition, about 80 tokens |
 | A chat's first topic lines or first question about earlier work | one line per earlier chat with topics, about 200 tokens in all, once per chat |
 | A message about something earlier | 1-5 topic lines, about 30 tokens each, plus a short source when one topic clearly answers it |
+| A question about earlier work that names a subject but matches no topic | one line naming that subject's chats, once per subject per chat |
 | Any other message | nothing |
-| Indexing | one auxiliary call every 4 turns, and at most one more when the chat goes quiet in between; off the critical path, at the route's lowest reasoning effort; its fixed rules and the topic list come first so the provider can cache them |
+| Indexing | one auxiliary call every 4 turns, and at most one more when the chat goes quiet in between; off the critical path, at the route's lowest reasoning effort; its fixed rules and the topic list come first so the provider can cache them. Once per workspace per app run, chats indexed before 0.15.0 are sorted into subjects in one more small call (their summaries and topic labels) |
 | `recall` | one tool round trip: a topic's source up to about 1,000 tokens, a turn up to about 2,000 |
 
 Injected blocks are appended to the end of your newest message, never inserted earlier, so the
@@ -367,9 +380,9 @@ one of its topics is recalled, and until then its sources name no turn.
 
 ```
 index.js          package entry: re-exports the plugin from src/host/plugin.js
-src/core/         pure logic: tokenize, graph, matching, time, rendering, builder prompt and parser
+src/core/         pure logic: tokenize, graph, matching, labels, subjects, time, rendering, builder prompt and parser
 src/store/        files on disk: atomic JSON, chat folders, messages, upgrades from older versions
-src/host/         dsh wiring: builder, memory injection, recall tool, command, meter, update check
+src/host/         dsh wiring: builder, memory injection, recall tool, command, page routes, message keeper, meter, update check
 src/client/       the browser module: the /context-graph card, the savings page in Plugins, the Memory tree page
 icon.svg          Plugins page icon in dsh's built-in icon style
 locale/           Plugins page title and description (en, zh); zh links README.zh.md

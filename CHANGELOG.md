@@ -4,6 +4,26 @@ All notable changes to dsh-context-graph. Versions follow semver; each minor ver
 is one development cycle (audit, issues, fixes, independent review), documented in
 [docs/cycles](docs/cycles).
 
+## 0.15.0 — 2026-11-23 — subjects, and a review of 0.12-0.15
+
+**A subject layer** (#96)
+- Indexing names each chat's broad subject, reusing one the workspace already has; chats indexed
+  before get a subject (and a type and project when they lack them) in one small call per workspace
+  per app run, sending only chats others may draw on.
+- The search goes through the layers: the topics of the subjects a message names first, then every
+  chat's, then it stops. A question about earlier work that names a subject but finds no topic is
+  told, once per subject, which chats hold it, so the model can recall one.
+- Memory tree: workspace, subjects, chats, topics, sources; Sort by label switches to types.
+
+**Review of 0.12-0.15** (#97, #98, #99)
+- Deleted memory stays deleted (#97): an index running when the memory was deleted, or the backfill
+  of #93, could write it back (store writes create missing folders), and a chat restored from the
+  archive and used again rebuilt it from its first turn. Deleting now leaves a tombstone that every
+  listing skips and every write refuses, under the locks deletion takes; a restored chat starts over
+  as a new chat number from where it was forgotten. `/context-graph off` in such a chat still holds.
+- Memory tree groups subjects by the key search uses (#98), so one subject is one branch.
+- A chat's header chip no longer breaks Memory tree when that chat has no topics yet (#99).
+
 ## 0.14.0 — 2026-11-23 — labels
 
 **What a chat is for** (#94)

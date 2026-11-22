@@ -17,6 +17,8 @@ src/core/           pure logic: no I/O, no dsh imports, fully testable with node
   match.js            the relevance gate (matchAcross, over a word index per graph), chat ranking for the list
   ledger.js           the savings estimate: counters, balance, what counts as used, the card's lines
   tree.js             the memory as the tree the Memory tree page draws: chats newest first, topics by kind
+  labels.js           chat types, projects and parts (#94): how a message names them, how they order hits
+  subjects.js         the subject layer (#96): which subjects a message names, the layered search, the hint
   render.js           every text the plugin writes into a chat or a card; fence, formatSource
   builder.js          the indexing prompt (fixed rules first), planSpan, the tolerant answer parser
   session.js          reading dsh session events: spans (typed prompts, goal rounds, reminders, answers, approved plans), dsh's turn numbers, titles, lean turns, what was already shown
