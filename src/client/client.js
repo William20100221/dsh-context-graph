@@ -241,7 +241,10 @@ window.__ModuleLoader__.load({
       // #91: the Hidden branch and what is in it are greyed; deleting asks first, in the panel.
       '.dshcg-node[data-group="hidden"] .dshcg-label{font-style:italic;fill:var(--dsw-alias-label-secondary)}',
       '.dshcg-node[data-group="set"] .dshcg-label{font-weight:500}',
-      '.dshcg-spacer{flex:1}',
+      // #101: the toolbar's controls wrap within its left part; Sort by label stays at the top right.
+      '.dshcg-tools{display:flex;align-items:flex-start;gap:8px}',
+      '.dshcg-tools-main{flex:1 1 0;min-width:0}',
+      '.dshcg-tools>.dshcg-btn{flex:none}',
       '.dshcg-node[data-hidden="true"]{opacity:.55}',
       '.dshcg-btn-danger{color:var(--dsw-alias-state-error-primary,#E5484D)}',
       // #92: the header chip sits beside dsh's own preset label; the fallback dialog opts into pointer
@@ -745,17 +748,22 @@ window.__ModuleLoader__.load({
 
     /** Search, kind filter and zoom, above the tree and its panel. */
     function TreeTools({ t, query, kind, by = null, onQuery, onKind, onScale, onGroup = () => {} }) {
+      // Two parts (#101): the controls wrap within the left one, however narrow the window; Sort by
+      // label is outside it, at the top right above the details. A second click goes back (#95).
       return jsxs('div', {
-        className: 'dshcg-row',
+        className: 'dshcg-tools',
         children: [
-          jsx('input', { className: 'dshcg-input', type: 'search', placeholder: t('search'), 'aria-label': t('search'), value: query, onChange: (e) => onQuery(e.target.value) }),
-          jsx('button', { type: 'button', className: 'dshcg-btn', 'aria-pressed': kind === '' ? 'true' : 'false', onClick: () => onKind(''), children: t('allKinds') }),
-          ...KINDS.map((k) => jsxs('button', { type: 'button', className: 'dshcg-btn', 'aria-pressed': kind === k ? 'true' : 'false', onClick: () => onKind(kind === k ? '' : k), children: [jsx('span', { className: 'dshcg-dot', style: { background: COLORS[k] } }), t(k)] }, k)),
-          jsx('button', { type: 'button', className: 'dshcg-btn', 'aria-label': t('zoomOut'), onClick: () => onScale((s) => Math.max(0.5, s / 1.25)), children: '−' }),
-          jsx('button', { type: 'button', className: 'dshcg-btn', 'aria-label': t('zoomIn'), onClick: () => onScale((s) => Math.min(2, s * 1.25)), children: '+' }),
-          jsx('button', { type: 'button', className: 'dshcg-btn', onClick: () => onScale(1), children: t('resetView') }),
-          // #95: at the right end, above the details; a second click goes back.
-          jsx('span', { className: 'dshcg-spacer' }),
+          jsxs('div', {
+            className: 'dshcg-row dshcg-tools-main',
+            children: [
+              jsx('input', { className: 'dshcg-input', type: 'search', placeholder: t('search'), 'aria-label': t('search'), value: query, onChange: (e) => onQuery(e.target.value) }),
+              jsx('button', { type: 'button', className: 'dshcg-btn', 'aria-pressed': kind === '' ? 'true' : 'false', onClick: () => onKind(''), children: t('allKinds') }),
+              ...KINDS.map((k) => jsxs('button', { type: 'button', className: 'dshcg-btn', 'aria-pressed': kind === k ? 'true' : 'false', onClick: () => onKind(kind === k ? '' : k), children: [jsx('span', { className: 'dshcg-dot', style: { background: COLORS[k] } }), t(k)] }, k)),
+              jsx('button', { type: 'button', className: 'dshcg-btn', 'aria-label': t('zoomOut'), onClick: () => onScale((s) => Math.max(0.5, s / 1.25)), children: '−' }),
+              jsx('button', { type: 'button', className: 'dshcg-btn', 'aria-label': t('zoomIn'), onClick: () => onScale((s) => Math.min(2, s * 1.25)), children: '+' }),
+              jsx('button', { type: 'button', className: 'dshcg-btn', onClick: () => onScale(1), children: t('resetView') })
+            ]
+          }),
           jsx('button', { type: 'button', className: 'dshcg-btn', 'aria-pressed': by === 'label' ? 'true' : 'false', onClick: () => onGroup(by === 'label' ? null : 'label'), children: t('byLabel') })
         ]
       })

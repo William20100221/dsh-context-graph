@@ -901,7 +901,12 @@ test('the toolbar toggle sorts by label and back, and the page remembers it acro
   toggle(bar(null)).props.onClick()
   toggle(bar('label')).props.onClick()
   assert.deepEqual(calls, ['label', null], 'a second click goes back')
-  assert.equal(bar(null).props.children.at(-2).props.className, 'dshcg-spacer', 'at the right end of the toolbar')
+  // #101: outside the wrapping part of the toolbar, so it stays at the top right whatever the width.
+  const tools = bar(null)
+  assert.equal(tools.props.className, 'dshcg-tools')
+  assert.equal(tools.props.children[0].props.className, 'dshcg-row dshcg-tools-main', 'the controls wrap in the left part')
+  assert.equal(tools.props.children.at(-1).props.children, 't:byLabel', 'the toggle is the last part, not inside the one that wraps')
+  assert.equal(find(tools.props.children[0], (e) => e.props?.children === 't:byLabel'), undefined)
   // The page keeps the choice in local storage: a new page (after a restart) starts with it.
   const storage = new Map()
   const localStorage = { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, String(v)), removeItem: (k) => storage.delete(k) }
