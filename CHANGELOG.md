@@ -4,6 +4,11 @@ All notable changes to dsh-context-graph. Versions follow semver; each minor ver
 is one development cycle (audit, issues, fixes, independent review), documented in
 [docs/cycles](docs/cycles).
 
+## 0.15.2 — 2026-11-23 — Sort by label stays put
+
+- Memory tree's Sort by label stays at the top right above the details at any window width; the
+  other toolbar controls wrap on their own (#101).
+
 ## 0.15.1 — 2026-11-23 — Archive & forget, in its place
 
 - Archive & forget now sits right under dsh's own Archive session in a chat's menu, in the same
