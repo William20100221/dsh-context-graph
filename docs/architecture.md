@@ -52,7 +52,7 @@ Dependencies point downward only: host -> store -> core, host -> core, client st
   chats/<sessionId>/topics.json  { version: 2, nextId, nodes: { nN: { label, gist, aliases, kind, refs, at, updated } }, edges }
   chats/<sessionId>/msgs.json    { v: 2, m: { "<seq>": { r, t, a, x } } }: each cited message once, t = dsh's turn number (v 1, up to 0.9.0, counted typed prompts: converted from the log at the next build or topic recall, its turn ids shown nowhere until then)
   chats/.cid/<n>                 claim files: chat number n is taken
-  ledger/<sessionId>.json        { c: counters, used: [ids], msgs: ["<cid>:<seq>"] }: one chat's savings estimate, zeros and empty lists left out (msgs: source messages already credited, each once)
+  ledger/<sessionId>.json        { v: 2, c: counters, used: [ids], chats: ["c3"] }: one chat's savings estimate, zeros and empty lists left out (chats: earlier chats whose history it already counted, each once, #104); kept when the chat's memory is deleted (#107)
   ledger.json                    only from v0.9.0: read, never written; a chat's file starts from its entry there
   chats/<sessionId>/graph.json, src/   only from v0.1-v0.6: unchanged backup, removed 7 quiet days after the last write
 ```

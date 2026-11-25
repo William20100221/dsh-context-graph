@@ -76,7 +76,7 @@ test('a hidden chat reaches no other chat: no topic, no list, no map entry, no r
   assert.match(blockOf(await h.step(c, ask('how is commit signing set up with gpg?'))), /c1n1 commit signing/)
 }))
 
-test('memory is deleted only for a chat dsh archived or deleted, and goes with its savings file (#91)', { skip }, () => inWorkspace(async (cwd) => {
+test('memory is deleted only for a chat dsh archived or deleted, and keeps only its savings counters (#91, #107)', { skip }, () => inWorkspace(async (cwd) => {
   let listed = ['sA', 'sB']
   let archived = []
   const { h, call, key } = await withPage(cwd, { listed: () => listed, archived: () => archived })
@@ -96,7 +96,7 @@ test('memory is deleted only for a chat dsh archived or deleted, and goes with i
   // Only a tombstone is left (#97): no topics, no messages, every listing skips it.
   assert.deepEqual(await readdir(folder), ['meta.json'])
   assert.ok(JSON.parse(await readFile(join(folder, 'meta.json'), 'utf8')).forgotten)
-  assert.equal(await exists(join(cwd, '.context-graph', 'ledger', 'sA.json')), false)
+  assert.equal(await readFile(join(cwd, '.context-graph', 'ledger', 'sA.json'), 'utf8'), '{"c":{"used":1}}', 'its counters stay: no text, and the totals keep what it cost (#107)')
   assert.equal((await call('forget', `?w=${w}&cid=1`, { post: true })).status, 404, 'gone already')
   // Archived (the session menu's Archive & forget names the chat by its session).
   archived = ['sB']

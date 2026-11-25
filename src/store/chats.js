@@ -172,19 +172,18 @@ export function updateMeta(dir, sid, change = (meta) => meta, init = () => ({}))
 }
 
 /**
- * A chat's memory removed for good (#91): its folder and its savings file, leaving a tombstone meta
- * (#97): `forgotten`, and `builtSeq`, the end of the chat's log when it was deleted. Every listing
- * skips it; writes of its messages, topics or index position refuse it (they take the locks this
- * takes), so an index in flight or the backfill cannot bring it back; a chat restored and used again
- * is indexed from there only, as a new chat number. Callers pass a sid read from the chats folder,
- * never one taken from a request.
- * ponytail: a turn ending in that chat afterwards can still add its savings counters (no text).
+ * A chat's memory removed for good (#91): its folder, leaving a tombstone meta (#97): `forgotten`,
+ * and `builtSeq`, the end of the chat's log when it was deleted. Every listing skips it; writes of
+ * its messages, topics or index position refuse it (they take the locks this takes), so an index in
+ * flight or the backfill cannot bring it back; a chat restored and used again is indexed from there
+ * only, as a new chat number. Its savings file stays (#107): only counters and other chats' topic
+ * ids, no text of it, and the workspace totals keep what it really cost and saved. Callers pass a
+ * sid read from the chats folder, never one taken from a request.
  */
 export function removeChat(dir, sid, { builtSeq } = {}) {
   const chat = chatDir(dir, sid)
   return locked(chat, () => locked(`${chat}#msgs`, async () => {
     await rm(chat, { recursive: true, force: true, maxRetries: 10 })
-    await rm(join(dir, 'ledger', `${sid}.json`), { force: true, maxRetries: 10 })
     await writeJson(join(chat, 'meta.json'), { forgotten: new Date().toISOString(), ...(Number.isInteger(builtSeq) ? { builtSeq } : {}) })
   }))
 }
