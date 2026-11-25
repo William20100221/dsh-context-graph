@@ -8,7 +8,8 @@
  * It also feeds the per-chat savings estimate (#35, src/core/ledger.js) of every chat that had a
  * human turn in this run: each conversation request re-sends the plugin's blocks still in context
  * and carries the recall tool, and each indexing call reports its real usage. All of it is counted
- * in memory and written to the ledger at turn end (src/host/builder.js).
+ * in memory and written to the ledger at turn end, and when an index outside a turn end ends
+ * (src/host/builder.js, #105).
  */
 
 import { isAgentLoopRequest } from '@deepseek-ai/dsh-llm'

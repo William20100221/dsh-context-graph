@@ -1,8 +1,9 @@
 /**
  * The savings ledger of a workspace (#35): one small file per chat, `<dir>/ledger/<sessionId>.json`,
  * so the estimate survives restarts and a turn end writes only its own chat's entry, not the whole
- * workspace's (#83). Written at most once per turn per chat, off the critical path; a chat needs no
- * folder of its own to have an entry.
+ * workspace's (#83). Written once per turn per chat and when an index outside a turn end ends
+ * (#105), off the critical path; a chat needs no folder of its own to have an entry, and its entry
+ * stays when its memory is deleted (#107).
  * Format: `{ v: 2, c: counters, used: [topic ids], chats: ["c3"] }`, zero counters and empty lists
  * left out (#78): `chats` are the earlier chats whose history this chat already counted, each once
  * (#104). An entry without `v: 2` (0.16 and before counted source messages, `msgs`) is converted

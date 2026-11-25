@@ -92,8 +92,10 @@ export function registerBuilder(ctx, rt, meter, { sort = true } = {}) {
    * @param force build now even below the turn/char thresholds (the `build` and `on` commands).
    * @param signal aborts the model call (the command's own signal, so cancelling it stops the build).
    * @param completeOnly stop before a turn that is still running (builds started by a command).
+   * @param turnEnd a turn end's own build, whose cost that turn end writes; any other index writes
+   *   its cost when it ends (#105), else a command build or a quiet index left it unwritten.
    */
-  async function build(agent, { force = false, signal, completeOnly = false } = {}) {
+  async function build(agent, { force = false, signal, completeOnly = false, turnEnd = false } = {}) {
     const session = agent.session
     const eventAt = (seq) => session.eventAt(seq)
     const sid = rt.sidOf(agent)
@@ -102,6 +104,7 @@ export function registerBuilder(ctx, rt, meter, { sort = true } = {}) {
     // ponytail: subagent chatter stays out of the graph; revisit if delegated work holds decisions worth keeping.
     if (rt.isSubagent(agent)) return { status: 'skipped', reason: 'subagent session' }
     st.building = true
+    let called = false
     let span
     let read
     let endSeq
@@ -168,6 +171,7 @@ export function registerBuilder(ctx, rt, meter, { sort = true } = {}) {
       const prompt = builderPrompt({ graph, summary: meta.summary, labels: { subject: meta.subject, type: meta.type, project: meta.project }, subjects: await workspaceSubjects(rt.dirFor(agent), sid), messages: read, assistantCap: plan.assistantCap })
       const effort = await lowestEffort(llm, target, signal)
       const assembler = new BlockAssembler()
+      called = true
       for await (const chunk of llm.stream({
         provider: target.provider,
         model: target.model,
@@ -259,6 +263,7 @@ export function registerBuilder(ctx, rt, meter, { sort = true } = {}) {
       return failed(String(error?.message ?? error))
     } finally {
       st.building = false
+      if (called && !turnEnd) void settle(agent).catch(unsettled)
     }
   }
 
@@ -278,7 +283,9 @@ export function registerBuilder(ctx, rt, meter, { sort = true } = {}) {
    * Close the turn's savings estimate (#35): topics shown this turn that the answer used count as
    * saved, once per chat; then the turn's counters go to the workspace ledger in one write. A use
    * judged now but not credited yet (the ledger cannot be read) waits in `toCredit` for the next
-   * turn instead of being lost (review).
+   * turn instead of being lost (review). Also called after every index outside a turn end (#105).
+   * Two writes of one chat may overlap: each holds the topic at the head while it credits it, so
+   * whichever head the other removes is one being credited, and nothing is skipped.
    */
   async function settle(agent, turn = { pending: [], answer: '' }) {
     if (rt.isSubagent(agent)) return
@@ -310,6 +317,7 @@ export function registerBuilder(ctx, rt, meter, { sort = true } = {}) {
       throw error
     }
   }
+  const unsettled = (error) => console.error('context-graph: savings not written now, kept for the next write (non-fatal)', error?.message ?? error)
 
   /**
    * Memory back on (#59): what was typed while it was off becomes a gap that is never indexed or
@@ -436,7 +444,7 @@ export function registerBuilder(ctx, rt, meter, { sort = true } = {}) {
     st.pending = []
     // Fire and forget: the build must never delay the turn's close.
     void onAtIdle(payload.agent, { ending: true })
-      .then((resumed) => (resumed ? { status: 'resumed' } : build(payload.agent, { force })))
+      .then((resumed) => (resumed ? { status: 'resumed' } : build(payload.agent, { force, turnEnd: true })))
       .then((result) => {
         if (force && result.status === 'busy') st.indexAtEnd = true
         whenQuiet(payload.agent, result)
@@ -491,31 +499,39 @@ export function registerBuilder(ctx, rt, meter, { sort = true } = {}) {
       .slice(0, LABEL_MAX_CHATS)
     const subjects = await workspaceSubjects(dir, sid)
     let done = 0
-    for (const c of waiting) {
-      if (signal?.aborted) break
-      const folder = chatDir(dir, c.sid)
-      const stored = await loadMessages(folder).catch(() => ({}))
-      const messages = Object.entries(stored)
-        .filter(([, m]) => m && typeof m.x === 'string' && m.x)
-        .sort(([a], [b]) => Number(a) - Number(b))
-        .map(([seq, m]) => ({ seq: Number(seq), role: m.r, text: m.x, turn: m.t }))
-      if (messages.length === 0) continue
-      const plan = planSpan(messages, cfg.builderMaxInputChars)
-      const graph = await loadGraph(folder).catch(() => undefined)
-      const prompt = labelPrompt({ summary: c.meta.summary, topics: graph ? Object.values(graph.nodes).map((n) => n.label) : [], subjects, messages: plan.messages, assistantCap: plan.assistantCap, partial: Boolean(plan.rest) })
-      const [answer, reasoning] = await callModel(llm, target, prompt, agent, signal)
-      const pick = { ...parseLabelOutput(reasoning), ...parseLabelOutput(answer) }
-      if (Object.keys(pick).length === 0) continue
-      await updateMeta(dir, c.sid, (m) => (m.forgotten ? m : {
-        ...m,
-        ...(!m.subject && pick.subject ? { subject: pick.subject } : {}),
-        ...(!m.type && pick.type ? { type: pick.type } : {}),
-        ...(!m.project && pick.project ? { project: pick.project } : {})
-      }))
-      done++
+    let called = false
+    try {
+      for (const c of waiting) {
+        if (signal?.aborted) break
+        const folder = chatDir(dir, c.sid)
+        const stored = await loadMessages(folder).catch(() => ({}))
+        const messages = Object.entries(stored)
+          .filter(([, m]) => m && typeof m.x === 'string' && m.x)
+          .sort(([a], [b]) => Number(a) - Number(b))
+          .map(([seq, m]) => ({ seq: Number(seq), role: m.r, text: m.x, turn: m.t }))
+        if (messages.length === 0) continue
+        const plan = planSpan(messages, cfg.builderMaxInputChars)
+        const graph = await loadGraph(folder).catch(() => undefined)
+        const prompt = labelPrompt({ summary: c.meta.summary, topics: graph ? Object.values(graph.nodes).map((n) => n.label) : [], subjects, messages: plan.messages, assistantCap: plan.assistantCap, partial: Boolean(plan.rest) })
+        called = true
+        const [answer, reasoning] = await callModel(llm, target, prompt, agent, signal)
+        const pick = { ...parseLabelOutput(reasoning), ...parseLabelOutput(answer) }
+        if (Object.keys(pick).length === 0) continue
+        await updateMeta(dir, c.sid, (m) => (m.forgotten ? m : {
+          ...m,
+          ...(!m.subject && pick.subject ? { subject: pick.subject } : {}),
+          ...(!m.type && pick.type ? { type: pick.type } : {}),
+          ...(!m.project && pick.project ? { project: pick.project } : {})
+        }))
+        done++
+      }
+    } finally {
+      // These calls are memory making, charged to the chat whose index started them: written now,
+      // since they end after that index's own write (#105).
+      if (called) await settle(agent).catch(unsettled)
     }
     return { status: 'labelled', chats: done }
   }
 
-  return { build, turnOn, onAtIdle, labelOlderChats }
+  return { build, turnOn, onAtIdle, labelOlderChats, settle }
 }

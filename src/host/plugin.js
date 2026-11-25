@@ -39,7 +39,7 @@ export function apply(ctx, config = {}) {
   const updates = _updates ?? startUpdateCheck(version)
   const meter = createMeter()
   // `_sort: false` lets tests that count model calls leave out the labelling of older chats (#96, #102).
-  const { build, turnOn, onAtIdle, labelOlderChats } = registerBuilder(ctx, rt, meter, { sort: _sort !== false })
+  const { build, turnOn, onAtIdle, labelOlderChats, settle } = registerBuilder(ctx, rt, meter, { sort: _sort !== false })
   registerMemory(ctx, rt, meter)
   registerMeter(ctx, meter, rt)
   registerRecall(ctx, rt, meter)
@@ -47,5 +47,5 @@ export function apply(ctx, config = {}) {
   const page = registerPage(ctx, rt)
   // Chats indexed before 0.13.0 get their whole indexed span from dsh's log, once per run (#93).
   const keeper = registerKeeper(rt, { dirs: async () => (await page.known()).map((k) => k.dir) })
-  return { rt, page, keeper, labelOlderChats }
+  return { rt, page, keeper, labelOlderChats, settle }
 }
