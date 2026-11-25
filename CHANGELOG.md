@@ -4,6 +4,19 @@ All notable changes to dsh-context-graph. Versions follow semver; each minor ver
 is one development cycle (audit, issues, fixes, independent review), documented in
 [docs/cycles](docs/cycles).
 
+## 0.17.1 — 2026-11-25 — memory making counted when the index ends
+
+- Memory making showed 0 (#105): an index's cost reached the ledger only at the chat's next turn
+  end, so `/context-graph build`, `on`, the quiet index and the labelling of older chats left it
+  in memory, lost when the app closed or the chat was not used again. Each now writes its cost when
+  it ends; a turn end's own index still writes once, with its turn.
+- Deleting a chat's memory keeps its savings counters (#107): only numbers and other chats' topic
+  ids, no text, and the workspace totals no longer drop what was really spent and saved.
+- The savings page and a chat's panel say why everything is cost before any chat has used an
+  earlier chat's memory (#108), instead of a bare loss.
+- Checked, not changed (#106): two savings writes of one chat at once skip no used topic; a test
+  now holds it.
+
 ## 0.17.0 — 2026-11-23 — savings against the history memory replaces
 
 - Saved = old total - memory making - searching (#104). The old total is, for each earlier chat

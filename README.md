@@ -198,7 +198,8 @@ are the layers search and recall walk.
 - **Delete a chat's memory.** Only for a chat you archived or deleted in DeepSeek Harness (the tree
   marks them): **Delete memory** asks first, then removes its topics and stored messages for good.
   Nothing brings them back: an index still running drops its result, and a chat restored from the
-  archive and used again starts over, as a new chat number, from what is said after.
+  archive and used again starts over, as a new chat number, from what is said after. Its savings
+  counters stay (numbers only, no text), so the workspace totals keep what it really cost and saved.
 
 **In a chat.** Its header shows which memory branch it is (`c4`, beside the mode); click it to open
 Memory tree on that chat. Its menu in the sidebar has **Archive & forget**: after you confirm, dsh
@@ -232,9 +233,11 @@ chat's own history is not part of it: dsh sends a chat's own conversation as it 
 compacts it when it grows long; folding it into the tree would break the provider's prompt cache,
 which bills repeated input at about a tenth of the price. The counters live in
 `.context-graph/ledger/`, one small file per chat holding only the counters that are not zero, written
-at most once per turn and only for that chat; counters from before 0.17.0 are converted once, from
-the topics they recorded as used. While a sync tool holds one of the files, the card says the
-savings are unavailable for now instead of failing.
+at each turn end and when an index started outside one ends (`/context-graph build`, the quiet
+index, labelling older chats), only for that chat; counters from before 0.17.0 are converted once,
+from the topics they recorded as used. Until a chat uses an earlier chat's memory every term is a
+cost, and the page says so. While a sync tool holds one of the files, the card says the savings are
+unavailable for now instead of failing.
 
 ## How matching and recall work
 

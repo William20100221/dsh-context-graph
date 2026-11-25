@@ -1,0 +1,42 @@
+[
+  {
+    "key": "S-1",
+    "number": 105,
+    "milestone": "v0.17.1",
+    "labels": [
+      "bug"
+    ],
+    "title": "Savings page shows memory making 0: the cost of indexing outside a turn end is never written",
+    "body": "**Seen in the app.** The savings page showed old total 0, memory making 0, searching 63, saved -63, in a workspace where four chats had just been indexed (three with `/context-graph build`, one indexed on its own while quiet).\n\n**What happens.** The meter adds every indexing call's usage (as dsh reports it) to the chat's in-memory counters, but those counters reach the chat's ledger file only at the chat's next turn end (`builder.js` `settle`, called from `agent/turn-stopping`). Every index that does not run at a turn end leaves its cost waiting in memory:\n\n- `/context-graph build` and `/context-graph on`\n- the quiet index (a chat left below the turn threshold, or a new chat starting)\n- the labelling of older chats (#102), which starts after a turn end's write\n\nA chat that is not used again, or an app quit, loses that cost for good. dsh's own logs confirm it: the three build commands succeeded and the chats' ledger files were last written at their last turn end, before the builds, with no indexing counters at all.\n\n**Fix.** Write a chat's counters after every index and after the labelling calls, not only at turn ends. A turn end's own index still writes once, with the turn."
+  },
+  {
+    "key": "S-2",
+    "number": 106,
+    "milestone": "v0.17.1",
+    "labels": [
+      "bug"
+    ],
+    "title": "Two savings writes of one chat at once can skip a used topic",
+    "body": "`settle` credits the topics a chat used one at a time: it reads the first waiting entry, awaits the credit, then removes the first entry. Two writes of the same chat running at once (a turn end whose index outlasts the next turn, or the labelling write in #105 landing while a turn end writes) both credit the same entry and then each remove one, so the second waiting topic is dropped without being counted.\n\n**Fix.** One chat's writes run one after another."
+  },
+  {
+    "key": "S-3",
+    "number": 107,
+    "milestone": "v0.17.1",
+    "labels": [
+      "bug"
+    ],
+    "title": "Deleting a chat's memory also erases what that chat cost and saved",
+    "body": "**Delete memory** (#91) removes the chat's savings file with its topics and messages. That file holds only numbers and topic ids of other chats, no text of the chat, but it is where the chat's indexing cost and the history it used were counted. Deleting it takes those tokens out of the workspace totals as if they were never spent or saved: a workspace whose chats were deleted shows a fresh balance, and deleting a chat that cost more than it saved makes the totals look better.\n\n**Fix.** Keep the savings file when a chat's memory is deleted (no text is in it); the totals keep what was really spent and saved."
+  },
+  {
+    "key": "S-4",
+    "number": 108,
+    "milestone": "v0.17.1",
+    "labels": [
+      "enhancement"
+    ],
+    "title": "Savings page: a negative saving has no explanation before any chat uses memory",
+    "body": "Until a chat uses an earlier chat's memory, the old total is 0 and every term is a cost, so the page shows a loss (for example saved -63) with only the formula under it. That reads as broken.\n\n**Fix.** When no chat has used memory yet, the page and the chat panel say so in one line: memory only pays off once a later chat uses an earlier one, and what is shown so far is what keeping it cost."
+  }
+]
