@@ -46,6 +46,8 @@ window.__ModuleLoader__.load({
       making: 'Memory making',
       searching: 'Searching',
       net: 'Saved',
+      notUsedYet: 'No chat has used an earlier chat\'s memory yet, so nothing is saved so far: the cards show what keeping memory has cost. It pays off once a later chat draws on an earlier one.',
+      chatNotUsedYet: 'This chat has not drawn on another chat\'s memory yet: so far this is only what its memory cost.',
       savingsRule: 'Saved = old total - memory making - searching, in input tokens. Old total: for each earlier chat whose memory a chat used (it recalled a topic, or its answer says two of a topic\'s words your message did not), that chat\'s whole kept conversation, the history that would otherwise have been input; once per chat that used it. Memory making: the indexing calls (cached input x0.1, output x4). Searching: the notes and recalls sent, their cached re-sends (x0.1), and the recall tool (x0.1).',
       topicFailed: 'Could not read this topic.',
       savingsUnavailable: 'Savings: unavailable for now (the ledger could not be read).',
@@ -137,6 +139,8 @@ window.__ModuleLoader__.load({
       making: '生成记忆',
       searching: '搜索',
       net: '节省',
+      notUsedYet: '还没有对话用到之前对话的记忆，所以目前没有节省：上面的卡片是保存记忆到现在的花费。之后的对话用到之前对话的记忆时，才开始节省。',
+      chatNotUsedYet: '这个对话还没有用到其他对话的记忆：目前显示的只是它的记忆花费。',
       savingsRule: '节省 = 原本的总量 − 生成记忆 − 搜索，单位为输入 token。原本的总量：一个对话用到了哪些之前对话的记忆（取回了主题，或回答里出现了主题的两个词而你的消息里没有），就算上那些对话保存的完整对话内容，也就是本来要作为输入的历史；每个使用它的对话只算一次。生成记忆：索引调用（缓存输入 ×0.1，输出 ×4）。搜索：发送的笔记和取回内容、它们作为缓存再次发送的部分（×0.1），以及 recall 工具（×0.1）。',
       topicFailed: '无法读取这个主题。',
       savingsUnavailable: '节省：暂时无法读取（账本文件读不到）。',
@@ -970,6 +974,8 @@ window.__ModuleLoader__.load({
           jsx('div', { className: 'dshcg-muted', children: t('pageIntro') }),
           workspaceButtons(ws, t),
           current ? jsx(Savings, { s: current.savings, t }) : null,
+          // Before any chat used memory every term is a cost: said so, not left as a bare loss (#108).
+          current?.savings && !(current.savings.history > 0) ? jsx('div', { className: 'dshcg-muted', children: t('notUsedYet') }) : null,
           jsx('div', { className: 'dshcg-muted', children: t('savingsRule') }),
           jsx('div', { children: t('treeHint') })
         ]
@@ -1015,6 +1021,7 @@ window.__ModuleLoader__.load({
           s === null || s === undefined
             ? jsx('div', { className: 'dshcg-muted', children: t('savingsUnavailable') })
             : jsx('div', { children: `${t('saved')} ${number(s.history)} − ${t('making')} ${number(s.making)} − ${t('searching')} ${number(s.searching)} = ${t('net')} ${s.net >= 0 ? '+' : '−'}${number(Math.abs(s.net))}` }),
+          s && !(s.history > 0) ? jsx('div', { className: 'dshcg-muted', children: t('chatNotUsedYet') }) : null,
           chat.hidden ? jsx('div', { className: 'dshcg-muted', children: t('hiddenHint') }) : null,
           chat.gone ? jsx('div', { className: 'dshcg-muted', children: t('goneHint') }) : chat.archived ? jsx('div', { className: 'dshcg-muted', children: t('archivedHint') }) : null,
           jsxs('div', {

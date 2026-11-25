@@ -983,4 +983,18 @@ test('the plugin page shows saved = old total - memory making - searching, each 
   const element = find(page(), (e) => e.type?.name === 'Savings')
   const cards = element.type(element.props).props.children.map((card) => card.props.children.map((part) => part.props.children))
   assert.deepEqual(JSON.parse(JSON.stringify(cards)), [['t:saved', '12,000'], ['t:making', '3,000'], ['t:searching', '1,500'], ['t:net', '+7,500']])
+  assert.doesNotMatch(JSON.stringify(page()), /t:notUsedYet/)
+})
+
+test('before any chat used memory, the page and the chat panel say why it is all cost (#108)', async () => {
+  const savings = { history: 0, making: 4200, searching: 63, saved: 0, cost: 4263, net: -4263 }
+  const { page } = await openPage([{ key: 'a', title: 'A', indexed: 1, topics: 1, savings }], 'SavingsPage')
+  assert.match(JSON.stringify(page()), /t:notUsedYet/)
+  const unread = await openPage([{ key: 'a', title: 'A', indexed: 1, topics: 1, savings: null }], 'SavingsPage')
+  assert.doesNotMatch(JSON.stringify(unread.page()), /t:notUsedYet/, 'not while the savings cannot be read')
+  const client = loadClient()
+  const chat = { cid: 4, title: 'x', shared: true, memory: true, total: 1, savings }
+  assert.match(JSON.stringify(client.ChatPanel({ chat, t, onClose: () => {} })), /t:chatNotUsedYet/)
+  assert.doesNotMatch(JSON.stringify(client.ChatPanel({ chat: { ...chat, savings: { ...savings, history: 900 } }, t, onClose: () => {} })), /t:chatNotUsedYet/)
+  assert.doesNotMatch(JSON.stringify(client.ChatPanel({ chat: { ...chat, savings: null }, t, onClose: () => {} })), /t:chatNotUsedYet/)
 })
