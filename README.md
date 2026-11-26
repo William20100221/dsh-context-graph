@@ -200,6 +200,16 @@ are the layers search and recall walk.
   Nothing brings them back: an index still running drops its result, and a chat restored from the
   archive and used again starts over, as a new chat number, from what is said after. Its savings
   counters stay (numbers only, no text), so the workspace totals keep what it really cost and saved.
+- **Chat numbers.** The chats with memory are numbered 1..N in the order they were first indexed,
+  and a new chat is N+1. Deleting a chat's memory frees its number at once: the chats after it move
+  up (delete c1-c6 and the next chat is c1). This runs by itself, with no model call, after every
+  deletion and once at app start, which also closes gaps left before 0.18.0. A chat deleted in
+  DeepSeek Harness keeps its number while its memory is kept; hidden, private and off chats keep
+  theirs too. A chat that was sent the old numbers is told once which ones changed (old to new, and
+  which were removed), with its next note or when it recalls a number that changed, and ids it was
+  sent before no longer count as already shown. The tree sends its numbering with Hide and Delete
+  memory, and the host refuses a change made with old numbers (the tree reloads), so a page left
+  open never acts on the wrong chat.
 
 **In a chat.** Its header shows which memory branch it is (`c4`, beside the mode); click it to open
 Memory tree on that chat. Its menu in the sidebar has **Archive & forget**: after you confirm, dsh
@@ -368,7 +378,8 @@ Remove with `dsh plugin --profile desktop remove dsh-context-graph`.
 .context-graph/chats/<sessionId>/meta.json    cid, title (dsh's own), summary, firstKey (a fingerprint of the first prompt), startedAt, lastActiveAt, builtSeq (how far the chat is indexed); memoryOff / private / hidden only after off / unshare / Hide
 .context-graph/chats/<sessionId>/topics.json  topics and links; every topic has its time and the seqs of its sources
 .context-graph/chats/<sessionId>/msgs.json    every message indexing read, whole (up to 200,000 characters each), each stored once; never what was typed while memory was off
-.context-graph/chats/.cid/                    one empty file per chat number in use
+.context-graph/chats/.cid/                    one empty file per chat number in use (exactly 1..N)
+.context-graph/renumbered.json                the last 20 renumberings (when, old to new, removed), so chats that saw old numbers are told
 .context-graph/ledger/<sessionId>.json        the savings estimate of one chat: its counters that are not zero
 ```
 

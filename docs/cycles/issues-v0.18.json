@@ -1,0 +1,12 @@
+[
+  {
+    "key": "R-1",
+    "number": 109,
+    "milestone": "v0.18.0",
+    "labels": [
+      "enhancement"
+    ],
+    "title": "Chat numbers keep gaps after deletions: number existing chats 1..N by themselves",
+    "body": "**Asked by the maintainer.** A chat's number should count the chats that exist: with c1-c6 deleted, the next chat should be c1, not c7. The numbering should follow deletions by itself, with no model call.\n\n**Now.** A chat gets the next number after the highest ever claimed (`chats/.cid/<n>` claim files, #11) and keeps it for good, so deleting memory leaves gaps (a workspace can hold only c12, c14, c15, c16) and a new chat continues after the highest number ever used.\n\n**Plan.**\n- Existing chats (memory not deleted; hidden, private and off chats included, and chats deleted in dsh whose memory is still kept) are numbered 1..N in their current order, so the next chat is N+1.\n- Renumbering runs by itself: right after a chat's memory is deleted, and once at app start (which also fixes gaps left before this version or by folders removed by hand). No model call.\n- Everything that stores a number follows: each chat's meta, the claim files, and the savings files (topic ids used, earlier chats counted; ids of deleted chats are dropped, so a new chat that takes their number is not taken for them). The plugin's in-memory state of running chats follows too.\n- A number is claimed and written with its chat in one step, so renumbering never meets a claimed number without its chat.\n\n**What this changes for ids already in conversations** (my addition). Ids like `c14n2` sent to a chat before a renumbering mean the old numbers. So:\n- ids seen before the last renumbering no longer count as \"already shown\" in that chat (else a different topic that now has that id would never be sent);\n- a chat that began before a renumbering is told once which numbers changed (old to new, and which were removed), with its next note, or with the result when it recalls a number that changed;\n- the Memory tree sends its numbering with hide and delete, and the host refuses a request made with old numbers (the page reloads), so a page left open never acts on the wrong chat. The header chip reads its number again right after a delete."
+  }
+]

@@ -4,6 +4,19 @@ All notable changes to dsh-context-graph. Versions follow semver; each minor ver
 is one development cycle (audit, issues, fixes, independent review), documented in
 [docs/cycles](docs/cycles).
 
+## 0.18.0 — 2026-11-26 — chat numbers count the chats that exist
+
+- Chats with memory are numbered 1..N and a new chat is N+1 (#109): deleting a chat's memory frees
+  its number and the chats after it move up, so with c1-c6 deleted the next chat is c1, not c7.
+  Runs by itself, no model call: after every deletion and once at app start (closing gaps left
+  before). Each chat's meta, the claim files and every savings file follow (a deleted chat's ids
+  are dropped there, so the chat that takes its number is not taken for it), and so do running
+  chats' ids in memory. A number is now claimed and written with its chat in one step.
+- A chat that was sent the old numbers is told once which changed, with its next note or when it
+  recalls a changed number; ids sent before a renumbering no longer count as already shown.
+- The Memory tree sends its numbering with Hide and Delete memory; a change made with old numbers
+  is refused and the tree reloads. Header chips read their number again right after a deletion.
+
 ## 0.17.1 — 2026-11-25 — memory making counted when the index ends
 
 - Memory making showed 0 (#105): an index's cost reached the ledger only at the chat's next turn
