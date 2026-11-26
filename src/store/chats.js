@@ -5,7 +5,8 @@
  *   chats/<sessionId>/topics.json  the chat's topic graph (src/core/graph.js, version 2)
  *   chats/<sessionId>/msgs.json    the verbatim messages its topics cite, each once (messages.js)
  *   chats/<sessionId>/graph.json   only in folders from v0.4-v0.6: read-only backup (migrate.js)
- *   chats/.cid/<n>                 empty claim files: chat number n is taken
+ *   chats/.cid/<n>                 empty claim files: chat number n is taken (exactly 1..N after renumbering)
+ *   renumbered.json                the renumberings, so chats that saw old numbers are told (#109)
  * Nothing is merged or copied between chats; the list of chats is the list of folders.
  * Writes to one chat folder are serialized in-process (files.js `locked`).
  */
@@ -81,25 +82,68 @@ export async function loadMeta(dir, sid) {
   return lost === undefined ? undefined : Object.freeze({ ...recoverMeta(lost), private: true, memoryOff: true, recovered: true })
 }
 
+const claimsDir = (dir) => join(dir, 'chats', '.cid')
+
+/** Chat numbering of a workspace: claims and renumbering run one at a time under this lock. */
+export const withNumbers = (dir, fn) => locked(`${dir}#cid`, fn)
+
 /**
- * The next free chat number. Claimed with an exclusive create, so two chats starting at once (or two
- * dsh windows on one workspace) can never share one (#11). Existing chats keep their numbers.
+ * The next free chat number, inside withNumbers. Claimed with an exclusive create, so two chats
+ * starting at once (or two dsh windows on one workspace) can never share one (#11).
  */
-function claimCid(dir) {
-  return locked(`${dir}#cid`, async () => {
-    const chats = await readChats(dir)
-    let cid = chats.reduce((max, c) => Math.max(max, Number(c.meta.cid) || 0), 0) + 1
-    const claims = join(dir, 'chats', '.cid')
-    await mkdir(claims, { recursive: true })
-    for (; ; cid++) {
-      try {
-        await writeFile(join(claims, String(cid)), '', { flag: 'wx' })
-        return cid
-      } catch (error) {
-        if (error?.code !== 'EEXIST') throw error
-      }
+async function claimCid(dir) {
+  const chats = await readChats(dir)
+  let cid = chats.reduce((max, c) => Math.max(max, Number(c.meta.cid) || 0), 0) + 1
+  await mkdir(claimsDir(dir), { recursive: true })
+  for (; ; cid++) {
+    try {
+      await writeFile(join(claimsDir(dir), String(cid)), '', { flag: 'wx' })
+      return cid
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error
     }
-  })
+  }
+}
+
+/**
+ * Number the existing chats 1..N in their current order (#109), inside withNumbers: a chat whose
+ * memory was deleted frees its number, so the next chat is N+1. Every chat with memory counts,
+ * hidden, private and off ones too, and one whose dsh session is gone while its memory is kept.
+ * Claim files become exactly 1..N. Returns undefined when nothing changed, else `moves` (sid, from,
+ * to) and `gone`: the numbers no chat holds any more (deleted chats'), whose old ids now mean
+ * nothing or another chat.
+ */
+export async function renumberChats(dir) {
+  const chats = (await readChats(dir)).filter((c) => Number.isInteger(c.meta.cid)).sort((a, b) => a.meta.cid - b.meta.cid || a.sid.localeCompare(b.sid))
+  let claimed = []
+  try { claimed = (await readdir(claimsDir(dir))).filter((n) => /^\d+$/.test(n)).map(Number) } catch (error) { if (error?.code !== 'ENOENT') throw error }
+  const holders = new Set(chats.map((c) => c.meta.cid))
+  const top = Math.max(0, ...claimed, ...holders)
+  const gone = Array.from({ length: top }, (_, i) => i + 1).filter((n) => !holders.has(n))
+  const moves = chats.map((c, i) => ({ sid: c.sid, from: c.meta.cid, to: i + 1 })).filter((m) => m.from !== m.to)
+  const exact = claimed.length === chats.length && claimed.every((n) => n >= 1 && n <= chats.length)
+  if (moves.length === 0 && gone.length === 0 && exact) return undefined
+  // A meta changes only if it still holds the number read above (no other writer changes numbers).
+  for (const m of moves) await updateMeta(dir, m.sid, (meta) => (meta.cid === m.from ? { ...meta, cid: m.to } : meta))
+  await mkdir(claimsDir(dir), { recursive: true })
+  for (const n of claimed) if (n < 1 || n > chats.length) await rm(join(claimsDir(dir), String(n)), { force: true, maxRetries: 10 })
+  for (let n = 1; n <= chats.length; n++) await writeFile(join(claimsDir(dir), String(n)), '', { flag: 'a' })
+  return { moves, gone, count: chats.length }
+}
+
+const RENUMBERED = 'renumbered.json'
+const RENUMBERED_MAX = 20
+
+/** The workspace's renumberings, oldest first (cached read): `[{ at, moves: [[from, to]], gone }]`. */
+export async function loadRenumbered(dir) {
+  const value = await readJsonCached(join(dir, RENUMBERED))
+  return Array.isArray(value?.events) ? value.events : []
+}
+
+/** Note a renumbering (inside withNumbers), so chats that saw the old numbers can be told (#109). */
+export async function recordRenumbered(dir, { moves, gone }, at = Date.now()) {
+  const events = [...(await loadRenumbered(dir)), { at, moves: moves.map((m) => [m.from, m.to]), gone }].slice(-RENUMBERED_MAX)
+  await writeJson(join(dir, RENUMBERED), { v: 1, events })
 }
 
 /** The newest set-aside copy of `name` in `folder` (`<name>.corrupt-<time>`), as text; undefined when there is none. */
@@ -161,12 +205,20 @@ export function updateMeta(dir, sid, change = (meta) => meta, init = () => ({}))
       const back = lost === undefined ? undefined : recoverMeta(lost)
       meta = back === undefined ? fresh : { ...fresh, title: undefined, ...back, ...(Array.isArray(fresh?.gaps) && Array.isArray(back.gaps) ? { gaps: mergeGaps(fresh.gaps, back.gaps) } : {}) }
       if (lost !== undefined) Object.assign(meta, { private: true, memoryOff: true, recovered: new Date().toISOString() })
-      if (!Number.isInteger(meta.cid)) meta.cid = await claimCid(dir)
     }
     const next = change({ ...meta }) ?? meta
-    // A chat used again after its memory was deleted comes back as a new chat number (#97).
-    if (!next.forgotten && !Number.isInteger(next.cid)) next.cid = await claimCid(dir)
-    await writeJson(file, next)
+    // A new chat, or one used again after its memory was deleted (#97), gets the next number. It is
+    // claimed and written in one step, so renumbering never meets a number claimed without its
+    // chat (#109). Lock order: the chat's, then the numbering's; renumberChats takes only the locks
+    // of chats that already have a number, so it never waits on one waiting here.
+    if (!next.forgotten && !Number.isInteger(next.cid)) {
+      await withNumbers(dir, async () => {
+        next.cid = await claimCid(dir)
+        await writeJson(file, next)
+      })
+    } else {
+      await writeJson(file, next)
+    }
     return next
   })
 }

@@ -54,7 +54,7 @@ test('a hidden chat reaches no other chat: no topic, no list, no map entry, no r
   const b = agentOf('sB', cwd, [system()])
   await h.run(b, 'build')
   const w = await key()
-  assert.deepEqual((await call('hide', `?w=${w}&cid=1`, { post: true })).body, { cid: 1, hidden: true })
+  assert.deepEqual((await call('hide', `?w=${w}&cid=1&n=0`, { post: true })).body, { cid: 1, hidden: true })
   const meta = JSON.parse(await readFile(join(cwd, '.context-graph', 'chats', 'sA', 'meta.json'), 'utf8'))
   assert.equal(meta.hidden, true, 'kept with the chat\'s other flags, in its meta (fails closed like them)')
   assert.equal(blockOf(await h.step(b, ask('how is commit signing set up with gpg?'))), '', 'no topic and no chat list')
@@ -69,7 +69,7 @@ test('a hidden chat reaches no other chat: no topic, no list, no map entry, no r
   // The tree still shows it, marked.
   const tree = (await call('tree', `?w=${w}`)).body
   assert.equal(tree.chats.find((c) => c.cid === 1).hidden, true)
-  assert.deepEqual((await call('hide', `?w=${w}&cid=1&on=0`, { post: true })).body, { cid: 1, hidden: false })
+  assert.deepEqual((await call('hide', `?w=${w}&cid=1&on=0&n=0`, { post: true })).body, { cid: 1, hidden: false })
   const again = JSON.parse(await readFile(join(cwd, '.context-graph', 'chats', 'sA', 'meta.json'), 'utf8'))
   assert.equal('hidden' in again, false)
   const c = agentOf('sC', cwd, [system()])
@@ -86,18 +86,27 @@ test('memory is deleted only for a chat dsh archived or deleted, and keeps only 
   const folder = join(cwd, '.context-graph', 'chats', 'sA')
   await mkdir(join(cwd, '.context-graph', 'ledger'), { recursive: true })
   await writeFile(join(cwd, '.context-graph', 'ledger', 'sA.json'), '{"c":{"used":1}}', 'utf8')
-  assert.deepEqual((await call('forget', `?w=${w}&cid=1`, { post: true })), { status: 409, body: { error: 'this chat still exists: hide it, or archive it first' } })
+  assert.deepEqual((await call('forget', `?w=${w}&cid=1&n=0`, { post: true })), { status: 409, body: { error: 'this chat still exists: hide it, or archive it first' } })
   assert.ok(await exists(folder))
   const tree = (await call('tree', `?w=${w}`)).body
   assert.deepEqual(tree.chats.map((c) => [c.cid, c.archived, c.gone]).sort(), [[1, false, false], [2, false, false]])
   listed = ['sB'] // dsh deleted sA
   assert.equal((await call('tree', `?w=${w}`)).body.chats.find((c) => c.cid === 1).gone, true)
-  assert.deepEqual((await call('forget', `?w=${w}&cid=1`, { post: true })).body, { forgotten: true })
+  assert.deepEqual((await call('forget', `?w=${w}&cid=1&n=0`, { post: true })).body, { forgotten: true })
   // Only a tombstone is left (#97): no topics, no messages, every listing skips it.
   assert.deepEqual(await readdir(folder), ['meta.json'])
   assert.ok(JSON.parse(await readFile(join(folder, 'meta.json'), 'utf8')).forgotten)
-  assert.equal(await readFile(join(cwd, '.context-graph', 'ledger', 'sA.json'), 'utf8'), '{"c":{"used":1}}', 'its counters stay: no text, and the totals keep what it cost (#107)')
-  assert.equal((await call('forget', `?w=${w}&cid=1`, { post: true })).status, 404, 'gone already')
+  assert.equal(JSON.parse(await readFile(join(cwd, '.context-graph', 'ledger', 'sA.json'), 'utf8')).c.used, 1, 'its counters stay: no text, and the totals keep what it cost (#107)')
+  // Its number is freed (#109): chat 2 is c1 now. A page still drawn with the old numbers cannot
+  // act on it by mistake; one without its numbering neither.
+  const now = (await call('tree', `?w=${w}`)).body
+  assert.deepEqual(now.chats.map((c) => c.cid), [1])
+  assert.ok(now.numbering > 0)
+  assert.deepEqual(await call('forget', `?w=${w}&cid=1&n=0`, { post: true }), { status: 409, body: { error: 'chat numbers changed: reload the tree' } })
+  assert.equal((await call('forget', `?w=${w}&cid=1`, { post: true })).status, 409)
+  assert.equal((await call('hide', `?w=${w}&cid=1&n=0`, { post: true })).status, 409)
+  assert.equal((await call('forget', `?w=${w}&cid=2&n=${now.numbering}`, { post: true })).status, 404, 'no chat 2 any more')
+  assert.equal(JSON.parse(await readFile(join(cwd, '.context-graph', 'chats', 'sB', 'meta.json'), 'utf8')).hidden, undefined)
   // Archived (the session menu's Archive & forget names the chat by its session).
   archived = ['sB']
   assert.deepEqual((await call('forget', '?sid=sB', { post: true })).body, { forgotten: true })
@@ -109,7 +118,7 @@ test('while dsh cannot list its sessions, no chat counts as deleted (#91)', { sk
   await h.run(agentOf('sA', cwd, chatEvents(4)), 'build')
   const w = await key()
   assert.equal((await call('tree', `?w=${w}`)).body.chats[0].gone, false)
-  assert.equal((await call('forget', `?w=${w}&cid=1`, { post: true })).status, 409)
+  assert.equal((await call('forget', `?w=${w}&cid=1&n=0`, { post: true })).status, 409)
 }))
 
 test('the header chip finds a chat by its session: number, topics and flags; 404 before it has memory (#92)', { skip }, () => inWorkspace(async (cwd) => {

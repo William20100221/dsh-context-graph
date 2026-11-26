@@ -54,6 +54,9 @@ export function registerKeeper(rt, { dirs }) {
       for (const sid of Object.keys((await loadLedger(dir).catch(() => ({ chats: {} }))).chats)) {
         await convertLedger(dir, sid).catch((error) => console.error(`context-graph: savings of chat ${sid} not converted (non-fatal)`, error?.message ?? error))
       }
+      // Gaps left by deleted chats, before this version or by a folder removed by hand: the existing
+      // chats are numbered 1..N (#109).
+      await rt.compact(dir).catch((error) => console.error('context-graph: chats not renumbered (non-fatal; tried again next run)', error?.message ?? error))
     }
     return done
   }

@@ -31,7 +31,7 @@ import { subjectKey } from '../core/subjects.js'
 import { memoryTree } from '../core/tree.js'
 import { addCounters, balance, counters, emptyCounters } from '../core/ledger.js'
 import { chatSummary } from '../core/render.js'
-import { chatDir, listChats, loadGraph, removeChat, updateMeta } from '../store/chats.js'
+import { chatDir, listChats, loadGraph, loadRenumbered, removeChat, updateMeta } from '../store/chats.js'
 import { loadLedger } from '../store/ledger.js'
 import { loadMessages, oldTurns, sourceOf, storeComplete } from '../store/messages.js'
 
@@ -131,11 +131,13 @@ export function registerPage(ctx, rt) {
   const removable = (states, sid) => states.archived.has(sid) || (states.listed !== null && !states.listed.has(sid))
 
   async function tree(w) {
-    const [chats, states] = await Promise.all([drawn(w.dir), sessionStates()])
+    const [chats, states, numbering] = await Promise.all([drawn(w.dir), sessionStates(), numberingOf(w.dir)])
     const byCid = new Map(chats.map((c) => [c.cid, c]))
     return {
       key: w.key,
       title: w.title,
+      // Which numbering the tree's chat numbers are in: hide and delete send it back (#109).
+      numbering,
       // Labels only: gists and sources are fetched when a topic is opened.
       chats: memoryTree(chats.map((c) => ({ cid: c.cid, lastActiveAt: c.meta.lastActiveAt, graph: c.graph }))).map((branch) => {
         const c = byCid.get(branch.cid)
@@ -241,9 +243,17 @@ export function registerPage(ctx, rt) {
     return { w: w.key, cid: chat.meta.cid, topics: graph ? Object.keys(graph.nodes).length : null, shared: sharedOn(chat.meta), memory: memoryOn(chat.meta), hidden: hiddenOn(chat.meta) }
   }
 
+  /** The workspace's current numbering: when its chats were last renumbered (#109), 0 if never. */
+  const numberingOf = async (dir) => (await loadRenumbered(dir).catch(() => [])).at(-1)?.at ?? 0
+
+  /** A change named by a chat number without the numbering it was read in, or from before the chats were renumbered (#109). */
+  const stale = async (w, query) => !query.has('n') || String(query.get('n')) !== String(await numberingOf(w.dir))
+  const STALE = { status: 409, error: 'chat numbers changed: reload the tree' }
+
   /** Hide a chat from memory, or use it again (#91). */
   async function hide(query) {
     const w = await workspaceOf(query)
+    if (w && (await stale(w, query))) return STALE
     const chat = w && (await chatByCid(w, query.get('cid')))
     if (!chat) return undefined
     const on = query.get('on') !== '0'
@@ -268,6 +278,7 @@ export function registerPage(ctx, rt) {
       sid = found.chat.sid
     } else {
       w = await workspaceOf(query)
+      if (w && (await stale(w, query))) return STALE
       sid = w && (await chatByCid(w, query.get('cid')))?.sid
     }
     if (!w || !sid) return undefined
@@ -284,6 +295,8 @@ export function registerPage(ctx, rt) {
     }
     const meta = (await listChats(w.dir)).find((c) => c.sid === sid)?.meta
     await removeChat(w.dir, sid, { builtSeq: builtSeq ?? meta?.builtSeq })
+    // Its number is freed at once: the chats after it move up (#109). The memory is deleted either way.
+    await rt.compact(w.dir).catch((error) => console.error('context-graph: chats not renumbered now; tried again at the next start (non-fatal)', error?.message ?? error))
     return { forgotten: true }
   }
 

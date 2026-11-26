@@ -74,7 +74,7 @@ test('a message write after the deletion (the backfill) is dropped; the tombston
   assert.deepEqual(await h.plugin.keeper.sweep(), {}, 'the backfill does not see it')
 }))
 
-test('a chat restored and used again is indexed from where it was forgotten, as a new chat number (#97)', { skip }, () => inWorkspace(async (cwd) => {
+test('a chat restored and used again is indexed from where it was forgotten, as the next number of the existing chats (#97, #109)', { skip }, () => inWorkspace(async (cwd) => {
   const { h, call, logs } = await withPage(cwd, scriptedLlm({ reply: DEFAULT_REPLY }))
   const a = agentOf('sA', cwd, chatEvents(4))
   await h.run(a, 'build')
@@ -85,7 +85,8 @@ test('a chat restored and used again is indexed from where it was forgotten, as 
   await h.run(a, 'build')
   const meta = JSON.parse(await readFile(join(folderOf(cwd, 'sA'), 'meta.json'), 'utf8'))
   assert.equal(meta.forgotten, undefined)
-  assert.equal(meta.cid, 2, 'a new number: c1 stays the deleted one')
+  assert.equal(meta.cid, 1, 'no other chat exists: the deleted c1 freed its number (#109)')
+  assert.deepEqual(JSON.parse(await readFile(join(cwd, '.context-graph', 'renumbered.json'), 'utf8')).events.map((e) => e.gone), [[1]], 'chats that saw the old c1 are told it was removed')
   const store = JSON.parse(await readFile(join(folderOf(cwd, 'sA'), 'msgs.json'), 'utf8'))
   assert.deepEqual(Object.keys(store.m), ['9', '10'], 'only what came after')
 }))

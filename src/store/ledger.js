@@ -15,6 +15,7 @@ import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { addCounters, counters, emptyCounters, historyTokens } from '../core/ledger.js'
+import { idMapper } from '../core/numbers.js'
 import { chatDir, listChats } from './chats.js'
 import { loadMessages } from './messages.js'
 import { locked, readJson, readJsonCached, writeJson } from './files.js'
@@ -81,6 +82,28 @@ export function convertLedger(dir, sid) {
     await writeJson(path, written(await upgraded(dir, prev)))
     return true
   })
+}
+
+/**
+ * After chats were renumbered (#109), every chat's used topic ids and counted chats in the new
+ * numbers; a deleted chat's are dropped, so the chat that takes its number later is not taken for
+ * it. Entries from before #104 are converted first (convertLedger), by the numbers they were
+ * written with. Runs inside the numbering lock, so no chat gets a number meanwhile.
+ * ponytail: an app quit between the metas and this leaves old keys (one chat counted twice at most).
+ */
+export async function remapLedgers(dir, renumbering) {
+  const map = idMapper(renumbering)
+  let names = []
+  try { names = (await readdir(folder(dir))).filter((name) => name.endsWith('.json')) } catch (error) { if (error?.code !== 'ENOENT') throw error }
+  for (const name of names) {
+    const path = join(folder(dir), name)
+    await locked(path, async () => {
+      const prev = await readJson(path)
+      if (!prev || prev.v !== 2) return
+      const ids = (list) => (Array.isArray(list) ? list.map(map).filter(Boolean) : [])
+      await writeJson(path, written({ c: prev.c, used: ids(prev.used), chats: ids(prev.chats) }))
+    })
+  }
 }
 
 /** The workspace total. */

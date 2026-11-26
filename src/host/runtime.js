@@ -8,9 +8,10 @@ import { basename, isAbsolute, join } from 'node:path'
 
 import { closedAt, memoryOn, offPoint, reachable, sharedOn, walkGaps } from '../core/chat.js'
 import { emptyCounters, standInChat } from '../core/ledger.js'
+import { idMapper, renumberedSince } from '../core/numbers.js'
 import { collectSpan, eventText, inGap, isPrompt, mergeGaps, promptText, shownContext, titleOf } from '../core/session.js'
-import { chatDir, listChats, loadGraph, loadMeta, updateMeta } from '../store/chats.js'
-import { chatEntry, convertLedger } from '../store/ledger.js'
+import { chatDir, listChats, loadGraph, loadMeta, loadRenumbered, recordRenumbered, renumberChats, updateMeta, withNumbers } from '../store/chats.js'
+import { chatEntry, convertLedger, loadLedger, remapLedgers } from '../store/ledger.js'
 import { capText, keepText, loadMessages } from '../store/messages.js'
 
 const ownParts = new WeakMap()
@@ -202,6 +203,8 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
   async function creditUse(agent, { id, node, cid, stored }) {
     const sid = sidOf(agent)
     const st = state(sid)
+    // The workspace whose numbers this chat's used ids are in, for a renumbering (#109).
+    st.dir = dirFor(agent)
     if (!st.usedIds || !st.credited) {
       await convertLedger(dirFor(agent), sid)
       const entry = await chatEntry(dirFor(agent), sid)
@@ -216,6 +219,46 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
     st.newlyUsed.push(id)
     for (const key of keys) st.credited.add(key)
     st.newlyCredited.push(...keys)
+  }
+
+  /**
+   * Number a workspace's existing chats 1..N (#109): after a chat's memory is deleted, and at app
+   * start. Savings entries from before #104 are converted first, by the numbers they were written
+   * with; then, under the numbering lock, the metas, the claim files, every savings file, and a
+   * record of the change for chats that saw the old numbers. Running chats' ids in memory follow:
+   * shown and waiting topics by their chat, used ids and counted chats by the mapping. No model call.
+   * Returns the renumbering, or undefined when the numbers were already 1..N.
+   */
+  async function compact(dir) {
+    for (const sid of Object.keys((await loadLedger(dir).catch(() => ({ chats: {} }))).chats)) await convertLedger(dir, sid)
+    const done = await withNumbers(dir, async () => {
+      const r = await renumberChats(dir)
+      if (!r) return undefined
+      await remapLedgers(dir, r)
+      if (r.moves.length > 0 || r.gone.length > 0) await recordRenumbered(dir, r)
+      return r
+    })
+    if (!done) return undefined
+    const map = idMapper(done)
+    const bySid = new Map(done.moves.map((m) => [m.sid, m.to]))
+    for (const st of sessions.values()) {
+      for (const p of [...st.pending, ...st.toCredit]) {
+        const to = bySid.get(p.sid)
+        if (to !== undefined) Object.assign(p, { cid: to, id: String(p.id).replace(/^c\d+/, `c${to}`) })
+      }
+      if (st.dir !== dir) continue
+      st.newlyUsed = st.newlyUsed.map(map).filter(Boolean)
+      st.newlyCredited = st.newlyCredited.map(map).filter(Boolean)
+      if (st.usedIds) st.usedIds = new Set([...st.usedIds].map(map).filter(Boolean))
+      if (st.credited) st.credited = new Set([...st.credited].map(map).filter(Boolean))
+    }
+    return done
+  }
+
+  /** The renumberings a chat has not seen numbers after: those since its first event (#109). */
+  async function renumberedFor(agent) {
+    const events = await loadRenumbered(dirFor(agent)).catch(() => [])
+    return renumberedSince(events, agent.session.eventAt(0)?.time)
   }
 
   /** dsh's observation of a chat's session (header, events), or undefined when it cannot be read here. */
@@ -601,5 +644,5 @@ export function createRuntime(cfg, { agentById = () => undefined, sessionQuery =
   }
 
   // toolTokens: what the recall tool's definition costs per request (set by recall.js).
-  return { cfg, state, tracked, seenDirs, noteDir, sidOf, isSubagent, pendingInput, dirFor, metaFor, inheritOffs, offsOf, ancestorOf, sameText, ownerMeta, forkedFrom, updateFor, setFlags, loadViews, viewOf, messagesOf, resolveTarget, forkSeqOf, indexStart, forkPoints, learnForkPoint, observe, creditUse, toolTokens: 0 }
+  return { cfg, state, tracked, seenDirs, noteDir, sidOf, isSubagent, pendingInput, dirFor, metaFor, inheritOffs, offsOf, ancestorOf, sameText, ownerMeta, forkedFrom, updateFor, setFlags, loadViews, viewOf, messagesOf, resolveTarget, forkSeqOf, indexStart, forkPoints, learnForkPoint, observe, creditUse, compact, renumberedFor, toolTokens: 0 }
 }
