@@ -15,7 +15,8 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { closedAt, memoryOn } from '../core/chat.js'
 import { has, neighbors } from '../core/graph.js'
 import { fence, formatSource, renderChatIndex, renderRange, shares } from '../core/render.js'
-import { collectSpan, turnTranscript } from '../core/session.js'
+import { renumberNotice, renumberedNumber } from '../core/numbers.js'
+import { collectSpan, onSurface, turnTranscript } from '../core/session.js'
 import { estimateTokens } from '../core/text.js'
 import { parseTimeRange } from '../core/time.js'
 import { chatDir } from '../store/chats.js'
@@ -156,6 +157,19 @@ export function registerRecall(ctx, rt, meter) {
     if (used) st.toCredit.push({ id: used.id, node: used.node, cid: used.view.cid, sid: used.view.sid })
   }
 
+  /**
+   * A recall of a chat number that changed since this chat began (#109): its answer first says which
+   * numbers changed, while that line is not in the chat yet, so an id sent before is read anew.
+   */
+  async function noticeFor(agent, id) {
+    const n = /^c(\d+)/.exec(id)?.[1]
+    if (!n) return undefined
+    const events = await rt.renumberedFor(agent).catch(() => [])
+    if (!renumberedNumber(events, Number(n))) return undefined
+    const notice = renumberNotice(events)
+    return onSurface(agent.session.surface?.nodes ?? [], (seq) => agent.session.eventAt(seq), notice) ? undefined : notice
+  }
+
   const definition = defineTool({
     name: 'recall',
     // Sent with every request of every chat, so kept short and each id form named once (#30, #68).
@@ -178,12 +192,14 @@ export function registerRecall(ctx, rt, meter) {
       const agent = exec.agent
       if (!agent?.session) return { status: 'unknown', text: 'recall is unavailable: no session attached to this call.' }
       const id = String(args.id ?? '').trim()
-      const ok = async (text, used) => {
+      const notice = await noticeFor(agent, id)
+      const ok = async (answer, used) => {
+        const text = notice ? `${notice}\n\n${answer}` : answer
         meter.recalls++
         await count(agent, text, used).catch(() => {})
         return { status: 'ok', text }
       }
-      const unknown = (text) => ({ status: 'unknown', text })
+      const unknown = (text) => ({ status: 'unknown', text: notice ? `${notice}\n\n${text}` : text })
       const ownTurn = (n, name) => {
         const turn = turnTranscript((seq) => agent.session.eventAt(seq), n, { maxTokens: cfg.turnMaxTokens })
         return turn ? ok(`# ${name} (turn ${n} of this chat)\n${fence(turn.text)}`) : unknown(`No turn ${name} in this chat.`)

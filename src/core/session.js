@@ -315,27 +315,30 @@ const RECALL_RESULT = /^(?:# [ct]\d|\[context-graph\])/
  *   list    whether the chat list (the top layer) is on the surface (#26)
  *   tokens  the plugin's blocks and recall results still in context: what every request of the
  *           chat re-sends as cached input (#35)
+ * `idsSince` (ms): ids sent before then are left out of `ids`, since chats were renumbered then
+ * (#109) and the same id may now be another topic, which must not count as shown.
  */
-export function shownContext(nodes, eventAt) {
+export function shownContext(nodes, eventAt, { idsSince } = {}) {
   const ids = new Set()
   const texts = new Set()
   let list = false
   let tokens = 0
   for (const seq of nodes) {
     const event = eventAt(seq)
+    const current = !(idsSince > 0 && event?.time < idsSince)
     if (event?.type === 'user/message' && event.data?.source?.kind === SOURCE_KIND) {
       const text = textOf(event.data.content)
       texts.add(text)
       tokens += estimateTokens(text)
       if (event.data.source.layer === 'surface') list = true
-      for (const m of text.matchAll(TOPIC_LINE)) ids.add(m[1])
+      if (current) for (const m of text.matchAll(TOPIC_LINE)) ids.add(m[1])
     } else if (event?.type === 'tool/result') {
       const text = textOf(event.data?.message?.content)
       // Only a recall result names what this chat holds: a file or command output with a
       // "- c3n12 ..." line hides no topic, and is not scanned (#73).
       if (!RECALL_RESULT.test(text)) continue
       tokens += estimateTokens(text)
-      for (const m of text.matchAll(RECALLED)) ids.add(m[1])
+      if (current) for (const m of text.matchAll(RECALLED)) ids.add(m[1])
     }
   }
   return { ids, texts, list, tokens }
@@ -444,3 +447,6 @@ export function turnTranscript(eventAt, n, { maxTokens = 2000, limitSeq = Infini
   flush()
   return parts.length > 0 ? { text: fit(parts, maxTokens), seq: start, endSeq: end } : undefined
 }
+
+/** Whether `text` is on the chat's surface, in a note or a tool result (the renumbering notice, #109). */
+export const onSurface = (nodes, eventAt, text) => nodes.some((seq) => eventText(eventAt(seq))?.includes(text))

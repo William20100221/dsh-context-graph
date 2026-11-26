@@ -9,8 +9,9 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 import { SOURCE_KIND, memoryOn } from '../core/chat.js'
 import { layeredMatch, renderSubjectHint } from '../core/subjects.js'
+import { renumberNotice } from '../core/numbers.js'
 import { formatSource, renderChats, renderHits, renderRange, selfLine } from '../core/render.js'
-import { PROMPT_KINDS, promptText, shownContext } from '../core/session.js'
+import { PROMPT_KINDS, onSurface, promptText, shownContext } from '../core/session.js'
 import { estimateTokens } from '../core/text.js'
 import { asksAboutPast, parseTimeRange } from '../core/time.js'
 import { sourceOf } from '../store/messages.js'
@@ -104,8 +105,11 @@ export function registerMemory(ctx, rt, meter) {
       const own = await rt.metaFor(agent)
       if (!memoryOn(own)) return decision
       const views = await rt.loadViews(agent)
+      // Renumberings since this chat began (#109): ids it was sent before the last one may now be
+      // other topics, so they do not count as shown.
+      const renumbered = await rt.renumberedFor(agent)
       // What this chat already holds: blocks and recalls still on its surface.
-      const shown = shownContext(agent.session.surface.nodes, (seq) => agent.session.eventAt(seq))
+      const shown = shownContext(agent.session.surface.nodes, (seq) => agent.session.eventAt(seq), { idsSince: renumbered.at(-1)?.at })
       // Read from the surface on every human turn, so a compaction that dropped old blocks is seen.
       st.inContext = shown.tokens
       st.generation = agent.session.surface.replaceGeneration
@@ -182,6 +186,10 @@ export function registerMemory(ctx, rt, meter) {
         if (st.toldSelf !== told && ![...shown.texts].some((t) => t.includes(self))) parts.unshift(self)
         st.toldSelf = told
       }
+      // Which numbers changed since this chat began (#109), with a note it gets anyway, while that
+      // line is not in the chat.
+      const notice = parts.length > 0 ? renumberNotice(renumbered) : undefined
+      if (notice && !onSurface(agent.session.surface.nodes, (seq) => agent.session.eventAt(seq), notice)) parts.unshift(notice)
       if (parts.length === 0) return decision
       const text = parts.join('\n\n')
       const tokens = estimateTokens(text)
