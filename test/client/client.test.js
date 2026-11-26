@@ -670,7 +670,7 @@ test('the host\'s reason shows when a change fails, and changes are POSTs with t
   const client = loadClient({ react, fetch: async (url, init) => { sent.push([url, init]); return { ok: false, status: 409, json: async () => ({ error: 'this chat still exists' }) } } })
   const effects = []
   const page = fakeReact({ effects })
-  const own = loadClient({ react: page, fetch: async (url, init) => { sent.push([url, init?.method ?? 'GET', init?.headers?.['x-context-graph']]); return { ok: true, json: async () => (url.includes('overview') ? { workspaces: [{ key: 'a', title: 'A', indexed: 1, topics: 1 }] } : url.includes('tree') ? { key: 'a', title: 'A', chats: [{ cid: 4, summary: '', shared: true, memory: true, total: 1, topics: [['n1', 'x', 'fact']], links: [], gone: true }] } : { forgotten: true }) } } })
+  const own = loadClient({ react: page, fetch: async (url, init) => { sent.push([url, init?.method ?? 'GET', init?.headers?.['x-context-graph']]); return { ok: true, json: async () => (url.includes('overview') ? { workspaces: [{ key: 'a', title: 'A', indexed: 1, topics: 1 }] } : url.includes('tree') ? { key: 'a', title: 'A', numbering: 5, chats: [{ cid: 4, summary: '', shared: true, memory: true, total: 1, topics: [['n1', 'x', 'fact']], links: [], gone: true }] } : { forgotten: true }) } } })
   const draw = () => page.render(own.TreePage, { t })
   draw()
   for (const run of effects.splice(0)) run()
@@ -679,7 +679,7 @@ test('the host\'s reason shows when a change fails, and changes are POSTs with t
   find(draw(), (e) => e.type === own.MemoryTree).props.onChat(4)
   const chatPanel = find(draw(), (e) => e.type === own.ChatPanel)
   await chatPanel.props.onForget(4)
-  assert.deepEqual(sent.filter(([, method]) => method === 'POST'), [['api/context-graph.forget?w=a&cid=4', 'POST', '1']])
+  assert.deepEqual(sent.filter(([, method]) => method === 'POST'), [['api/context-graph.forget?w=a&cid=4&n=5', 'POST', '1']], 'with the numbering the tree was drawn in (#109)')
   assert.equal(sent.at(-1)[0], 'api/context-graph.tree?w=a', 'the tree is read again')
   // A refusal shows the host's reason in the panel.
   const failing = () => react.render(client.ChatPanel, { chat: { cid: 4, total: 1, gone: true, shared: true, memory: true }, t, onClose() {}, onForget: () => Promise.reject(new Error('this chat still exists')) })
@@ -687,6 +687,46 @@ test('the host\'s reason shows when a change fails, and changes are POSTs with t
   find(find(failing(), (e) => e.props?.role === 'alertdialog'), (e) => e.type === 'button' && e.props.children === 't:deleteMemory').props.onClick()
   await settle()
   assert.equal(find(failing(), (e) => e.props?.role === 'alert')?.props.children, 'this chat still exists')
+})
+
+test('a change refused because the chats were renumbered reads the tree again, with nothing chosen (#109)', async () => {
+  const sent = []
+  const effects = []
+  const page = fakeReact({ effects })
+  const tree = { key: 'a', title: 'A', numbering: 5, chats: [{ cid: 4, summary: '', shared: true, memory: true, total: 1, topics: [['n1', 'x', 'fact']], links: [], gone: true }] }
+  const own = loadClient({ react: page, fetch: async (url, init) => {
+    sent.push(url)
+    if (init?.method === 'POST') return { ok: false, status: 409, json: async () => ({ error: 'chat numbers changed: reload the tree' }) }
+    return { ok: true, json: async () => (url.includes('overview') ? { workspaces: [{ key: 'a', title: 'A', indexed: 1, topics: 1 }] } : tree) }
+  } })
+  const draw = () => page.render(own.TreePage, { t })
+  draw()
+  for (const run of effects.splice(0)) run()
+  await settle()
+  await settle()
+  find(draw(), (e) => e.type === own.MemoryTree).props.onChat(4)
+  await assert.rejects(find(draw(), (e) => e.type === own.ChatPanel).props.onHide(4, true), /numbers changed/)
+  assert.equal(sent.at(-1), 'api/context-graph.tree?w=a', 'read again')
+  assert.equal(find(draw(), (e) => e.type === own.ChatPanel), undefined, 'the number may be another chat now: nothing chosen')
+})
+
+test('after a chat\'s memory is deleted, the header chips read their numbers again at once (#109)', async () => {
+  const effects = []
+  const react = fakeReact({ effects })
+  let cid = 4
+  const client = withServices({ uiWorkspace: { archiveSession: async () => {} } }, { react, fetch: async (url) => ({ ok: true, json: async () => (url.includes('forget') ? { forgotten: true } : { w: 'k1', cid, topics: 1, shared: true, memory: true, hidden: false }) }) })
+  const chip = () => react.render(client.MemoryChip, { sessionId: 'sB', t })
+  chip()
+  for (const run of effects.splice(0)) run()
+  await settle()
+  assert.equal(chip().props.children[1], 'c4')
+  cid = 3 // an earlier chat is deleted: this one moves up
+  client.askForget({ sessionId: 'sA', title: 'x', cid: 2, topics: 1 })
+  const dialog = fakeReact({ effects })
+  find(dialog.render(client.ForgetDialog, { t }), (e) => e.type === 'button' && e.props.children === 't:archiveForget').props.onClick()
+  await settle()
+  await settle()
+  assert.equal(chip().props.children[1], 'c3', 'not 30 seconds later')
 })
 
 // ---- v0.12.0: a chat's memory tag and Archive & forget (#92) ---------------------------------------

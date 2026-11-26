@@ -384,8 +384,12 @@ window.__ModuleLoader__.load({
       const response = await fetch(`api/context-graph.${name}?${new URLSearchParams(query)}`, { method: 'POST', headers: { 'x-context-graph': '1' } })
       const body = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`)
+      // A deleted chat's number is freed and the chats after it move up (#109): every chip reads its number again now.
+      if (name === 'forget') for (const read of [...numbersChanged]) read()
       return body
     }
+    /** The header chips' re-reads, called when chat numbers may have changed (#109). */
+    const numbersChanged = new Set()
 
     const number = (n) => Number(n ?? 0).toLocaleString()
     const translator = (t) => (typeof t === 'function' ? (key) => { const s = t(key); return s && s !== key ? s : en[key] ?? key } : (key) => en[key] ?? key)
@@ -1130,8 +1134,15 @@ window.__ModuleLoader__.load({
         const n = generation.current
         return getJson('tree', { w: ws.key }).then((value) => { if (generation.current === n) setMap(value) })
       }
-      const hideChat = (cid, on) => postJson('hide', { w: ws.key, cid, on: on ? '1' : '0' }).then(refresh)
-      const forgetChat = (cid) => postJson('forget', { w: ws.key, cid }).then(() => { setSelected(null); return refresh() })
+      // Chats are named by number with the numbering they were drawn in (#109): if the chats were
+      // renumbered since, the host refuses and the tree is read again, nothing chosen.
+      const numbered = (post) => post.catch((error) => {
+        if (!/numbers changed/.test(String(error?.message))) throw error
+        setSelected(null)
+        return refresh().then(() => { throw error })
+      })
+      const hideChat = (cid, on) => numbered(postJson('hide', { w: ws.key, cid, on: on ? '1' : '0', n: map?.numbering ?? 0 })).then(refresh)
+      const forgetChat = (cid) => numbered(postJson('forget', { w: ws.key, cid, n: map?.numbering ?? 0 })).then(() => { setSelected(null); return refresh() })
       const detail = selected?.topic ? details[selected.topic] : undefined
       // A chosen chat that is no longer in the tree (deleted, or never drawn) shows no panel (#99).
       const chosenChat = selected?.chat !== undefined ? map?.chats?.find((c) => c.cid === selected.chat) : undefined
@@ -1204,7 +1215,8 @@ window.__ModuleLoader__.load({
         read()
         // A chat gets its number at its first index, mid-conversation: the chip appears then.
         const timer = setInterval(read, 30000)
-        return () => { live = false; clearInterval(timer) }
+        numbersChanged.add(read)
+        return () => { live = false; clearInterval(timer); numbersChanged.delete(read) }
       }, [sessionId])
       return info
     }
